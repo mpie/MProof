@@ -1,0 +1,137 @@
+# ===========================
+# Python / Backend
+# ===========================
+
+# Virtual environment
+backend/venv/
+venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Databases
+*.db
+*.sqlite3
+backend/data/*.db
+
+# Uploaded documents and processed data (user data)
+backend/data/subjects/
+
+# Test files
+backend/test.pdf
+backend/test2.pdf
+backend/test3.pdf
+
+# ===========================
+# Node.js / Frontend
+# ===========================
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Next.js
+frontend/.next/
+frontend/out/
+.next/
+
+# Build
+frontend/build/
+
+# ===========================
+# Environment & Secrets
+# ===========================
+
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Keep .env.example files (they don't contain secrets)
+!.env.example
+!**/.env.example
+
+# ===========================
+# IDE & Editors
+# ===========================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (PyCharm, WebStorm)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.#*
+
+# ===========================
+# OS Generated Files
+# ===========================
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ===========================
+# Logs
+# ===========================
+
+*.log
+logs/
+system.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ===========================
+# Misc
+# ===========================
+
+# TypeScript
+*.tsbuildinfo
+
+# Temp files
+*.tmp
+*.temp
+*.bak
+
+# Coverage
+coverage/
+.nyc_output/
