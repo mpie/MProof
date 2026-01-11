@@ -277,24 +277,95 @@ class DocumentProcessor:
         return best['text']
 
     async def _extract_pdf_text(self, file_path: Path) -> Tuple[List[Dict[str, Any]], str, bool]:
-        """Extract text from PDF, using OCR if text extraction yields poor results."""
+        """Extract text from PDF using multiple methods, falling back to OCR if needed."""
         pages = []
         combined_text = ""
         ocr_used = False
 
-        # Try text extraction first
+        # Try multiple extraction methods in order of preference
+        extraction_methods = [
+            ("pymupdf_text", lambda page: page.get_text("text")),  # Plain text extraction
+            ("pymupdf_rawtext", lambda page: page.get_text("rawtext")),  # Raw text (preserves layout)
+            ("pdfminer", None),  # Will be handled separately
+        ]
+
         try:
             doc = fitz.open(str(file_path))
+            
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
-
-                # Try to extract text
-                text = page.get_text()
+                text = ""
                 source = "text-layer"
-
-                # Check if text extraction is poor (less than 200 chars or mostly empty)
-                if len(text.strip()) < 200 or self._is_mostly_empty(text):
-                    # Fall back to OCR with rotation detection
+                
+                # Method 1: Try PyMuPDF text extraction (best quality)
+                try:
+                    text = page.get_text("text")
+                    logger.debug(f"Page {page_num}: PyMuPDF text extraction: {len(text.strip())} chars")
+                    if not text or len(text.strip()) < 50:
+                        # Try rawtext as fallback
+                        text = page.get_text("rawtext")
+                        source = "text-layer-raw"
+                        logger.debug(f"Page {page_num}: PyMuPDF rawtext extraction: {len(text.strip())} chars")
+                except Exception as e:
+                    logger.debug(f"PyMuPDF text extraction failed for page {page_num}: {e}")
+                
+                # Method 2: If PyMuPDF fails, yields poor results, or garbage text, try pypdf
+                is_garbage = self._is_garbage_text(text)
+                if len(text.strip()) < 200 or self._is_mostly_empty(text) or is_garbage:
+                    logger.info(f"Page {page_num}: PyMuPDF text inadequate (len={len(text.strip())}, garbage={is_garbage}), trying pypdf")
+                    try:
+                        from pypdf import PdfReader
+                        reader = PdfReader(str(file_path))
+                        if page_num < len(reader.pages):
+                            page_obj = reader.pages[page_num]
+                            text = page_obj.extract_text()
+                            source = "pypdf"
+                            logger.info(f"Using pypdf for page {page_num} ({len(text.strip())} chars)")
+                    except Exception as e:
+                        logger.debug(f"pypdf extraction failed for page {page_num}: {e}")
+                        
+                    # If pypdf also failed, still poor, or garbage, try pdfminer as last resort
+                    is_garbage = self._is_garbage_text(text)
+                    if len(text.strip()) < 200 or self._is_mostly_empty(text) or is_garbage:
+                        logger.info(f"Page {page_num}: pypdf text inadequate (len={len(text.strip())}, garbage={is_garbage}), trying pdfminer")
+                        try:
+                            from pdfminer.high_level import extract_text as pdfminer_extract
+                            # pdfminer doesn't support per-page extraction well, so we extract all
+                            # This is not ideal but better than nothing
+                            full_text = pdfminer_extract(str(file_path))
+                            # Try to split by page breaks (form feed characters or double newlines)
+                            page_texts = full_text.split('\f')
+                            if len(page_texts) > page_num:
+                                text = page_texts[page_num]
+                            elif len(page_texts) == 1 and len(doc) > 1:
+                                # No page breaks found, try to split evenly
+                                lines = full_text.split('\n')
+                                lines_per_page = len(lines) // len(doc) if len(doc) > 0 else len(lines)
+                                start_line = page_num * lines_per_page
+                                end_line = (page_num + 1) * lines_per_page if page_num < len(doc) - 1 else len(lines)
+                                text = '\n'.join(lines[start_line:end_line])
+                            else:
+                                text = full_text
+                            source = "pdfminer"
+                            logger.info(f"Using pdfminer for page {page_num} ({len(text.strip())} chars)")
+                        except Exception as e:
+                            logger.debug(f"pdfminer extraction failed for page {page_num}: {e}")
+                
+                # Method 3: If all text extraction fails or text is garbage, use OCR
+                is_garbage = self._is_garbage_text(text)
+                needs_ocr = (
+                    len(text.strip()) < 200 or 
+                    self._is_mostly_empty(text) or 
+                    is_garbage
+                )
+                if needs_ocr:
+                    if len(text.strip()) < 200:
+                        reason = "too short"
+                    elif self._is_mostly_empty(text):
+                        reason = "mostly empty"
+                    else:
+                        reason = "garbage text"
+                    logger.info(f"Page {page_num}: All extractors failed ({reason}, len={len(text.strip())}, garbage={is_garbage}), using OCR")
                     pix = page.get_pixmap(dpi=250)
                     img = Image.open(BytesIO(pix.tobytes("png")))
                     text = self._ocr_with_rotation_detection(img)
@@ -306,29 +377,37 @@ class DocumentProcessor:
                     "source": source,
                     "text": text
                 })
-                combined_text += text + "\n"
+                combined_text += text + "\n\n"  # Add extra newline between pages
+                
+                logger.info(f"Page {page_num}: Extracted {len(text.strip())} chars using {source}")
 
             doc.close()
+            
+            logger.info(f"PDF extraction complete: {len(pages)} pages, {len(combined_text.strip())} total chars, OCR used: {ocr_used}")
 
         except Exception as e:
-            logger.warning(f"PDF text extraction failed, trying OCR: {e}")
+            logger.warning(f"PDF text extraction failed, trying full OCR: {e}")
             # Full OCR fallback with rotation detection
-            doc = fitz.open(str(file_path))
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap(dpi=250)
-                img = Image.open(BytesIO(pix.tobytes("png")))
-                text = self._ocr_with_rotation_detection(img)
+            try:
+                doc = fitz.open(str(file_path))
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(dpi=250)
+                    img = Image.open(BytesIO(pix.tobytes("png")))
+                    text = self._ocr_with_rotation_detection(img)
 
-                pages.append({
-                    "page": page_num,
-                    "source": "ocr",
-                    "text": text
-                })
-                combined_text += text + "\n"
-                ocr_used = True
+                    pages.append({
+                        "page": page_num,
+                        "source": "ocr",
+                        "text": text
+                    })
+                    combined_text += text + "\n\n"
+                    ocr_used = True
 
-            doc.close()
+                doc.close()
+            except Exception as ocr_error:
+                logger.error(f"OCR fallback also failed: {ocr_error}")
+                raise
 
         return pages, combined_text, ocr_used
 
@@ -394,6 +473,74 @@ class DocumentProcessor:
         alpha_numeric = len(re.findall(r'[a-zA-Z0-9]', cleaned))
         return (alpha_numeric / len(cleaned)) < 0.1
 
+    def _is_garbage_text(self, text: str) -> bool:
+        """Detect garbage text from corrupted PDF encoding or wrong character mapping.
+        
+        This happens when PDF has embedded fonts with custom encoding that don't 
+        map to standard characters, resulting in readable-looking but meaningless text.
+        """
+        if not text or len(text.strip()) < 50:
+            logger.info(f"Garbage detection: text too short ({len(text.strip()) if text else 0} chars)")
+            return True
+        
+        # Clean text for analysis
+        cleaned = text.strip()
+        
+        # Check 1: Too many special/punctuation characters relative to letters
+        # Garbage text often has patterns like &'/!%.&'1&+$
+        letters = len(re.findall(r'[a-zA-Z]', cleaned))
+        special_chars = len(re.findall(r'[&%$#@!^*+=<>|\\~`\'\"/]', cleaned))
+        if letters > 0 and special_chars / letters > 0.5:
+            logger.info(f"Garbage detection: high special char ratio ({special_chars}/{letters} = {special_chars/letters:.2f})")
+            return True
+        
+        # Check 2: Very few recognizable words (3+ consecutive letters)
+        words = re.findall(r'[a-zA-Z]{3,}', cleaned)
+        if len(cleaned) > 100 and len(words) < 5:
+            logger.info(f"Garbage detection: too few words ({len(words)} in {len(cleaned)} chars)")
+            return True
+        
+        # Check 3: High ratio of control characters or weird unicode
+        control_chars = len(re.findall(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', cleaned))
+        if control_chars > len(cleaned) * 0.05:
+            logger.info(f"Garbage detection: high control char ratio ({control_chars}/{len(cleaned)})")
+            return True
+        
+        # Check 4: Check for common Dutch/English word patterns
+        # If text has enough letters but no common word patterns, it's likely garbage
+        common_patterns = [
+            r'\b(de|het|een|en|van|in|is|dat|op|te|voor|met|aan|zijn|worden|door|als|naar|uit|over|ook|meer|tot|bij|nog|dan|wel|om|of|kan|dit|niet|maar|er|al|wat|hebben|was|jaar|zou|gaan|na|zo|ons|die|hier|wordt)\b',  # Dutch
+            r'\b(the|a|an|is|are|was|were|be|been|have|has|had|do|does|did|will|would|could|should|may|might|must|shall|can|to|of|and|in|for|on|with|at|by|from|or|as|but|not|this|that|it|he|she|we|they|you|i)\b',  # English
+        ]
+        
+        text_lower = cleaned.lower()
+        common_word_count = 0
+        for pattern in common_patterns:
+            common_word_count += len(re.findall(pattern, text_lower))
+        
+        # If we have significant text but very few common words, likely garbage
+        if len(words) > 10 and common_word_count < 3:
+            logger.info(f"Garbage detection: no common words found ({common_word_count} in {len(words)} words)")
+            return True
+        
+        # Check 5: Look for specific garbage patterns common in corrupted PDFs
+        # Patterns like #+0#,1#.-#. or &'/!%.&'1&+$
+        garbage_patterns = [
+            r'[#&][^a-zA-Z\s]{3,}',  # # or & followed by 3+ non-letter chars
+            r'[+\-*/]{2,}',  # Multiple math operators in a row
+            r'\d[#&%]\d',  # Number-symbol-number patterns
+        ]
+        garbage_matches = 0
+        for pattern in garbage_patterns:
+            garbage_matches += len(re.findall(pattern, cleaned))
+        
+        if garbage_matches >= 3:
+            logger.info(f"Garbage detection: found {garbage_matches} garbage patterns")
+            return True
+        
+        logger.debug(f"Garbage detection: text appears valid ({len(cleaned)} chars, {len(words)} words, {common_word_count} common)")
+        return False
+
     def _assess_ocr_quality(self, text: str, ocr_used: bool) -> str:
         """Assess OCR quality based on text characteristics."""
         if not ocr_used:
@@ -421,8 +568,127 @@ class DocumentProcessor:
         else:
             return "high"
 
-    def classify_deterministic(self, text: str, available_types: List[Tuple[str, str]]) -> Optional[str]:
+    async def classify_deterministic_strong(self, text: str, available_types: List[Tuple[str, str]]) -> Optional[str]:
+        """Check for STRONG deterministic matches where ALL kw: rules match.
+        
+        This runs BEFORE trained models to ensure explicit keyword rules have priority.
+        Only returns a match if a document type has kw: rules AND ALL of them match.
+        
+        Args:
+            text: Document text to analyze
+            available_types: List of (slug, classification_hints) tuples
+            
+        Returns:
+            Document type slug if ALL kw: rules match, None otherwise
+        """
+        text_lower = text.lower()
+        strong_matches = []
+        
+        for slug, hints in available_types:
+            if not hints:
+                continue
+                
+            required_keywords = []
+            matched_keywords = []
+            disqualified = False
+            
+            for hint_line in hints.strip().split('\n'):
+                hint_line = hint_line.strip()
+                if not hint_line:
+                    continue
+                    
+                if hint_line.startswith('kw:'):
+                    # Required keyword - ALL must match
+                    keyword = hint_line[3:].strip().lower()
+                    required_keywords.append(keyword)
+                    if keyword in text_lower:
+                        matched_keywords.append(keyword)
+                elif hint_line.startswith('not:'):
+                    # Negative keyword - must NOT appear
+                    negative_word = hint_line[4:].strip().lower()
+                    if negative_word in text_lower:
+                        disqualified = True
+                        break
+            
+            if disqualified:
+                continue
+                
+            # Strong match = has kw: rules AND ALL matched
+            if required_keywords and len(matched_keywords) == len(required_keywords):
+                strong_matches.append((slug, len(required_keywords)))
+                logger.info(f"Strong deterministic match: '{slug}' - all {len(required_keywords)} kw: rules matched: {matched_keywords}")
+        
+        if not strong_matches:
+            return None
+            
+        # If multiple strong matches, pick the one with most keywords
+        strong_matches.sort(key=lambda x: x[1], reverse=True)
+        best_match = strong_matches[0][0]
+        
+        if len(strong_matches) > 1:
+            logger.warning(f"Multiple strong matches found: {[s[0] for s in strong_matches]}, using '{best_match}' (most keywords)")
+        
+        return best_match
+
+    async def _validate_classification_against_not_rules(
+        self, predicted_slug: str, text: str, available_types: List[Tuple[str, str]]
+    ) -> bool:
+        """Validate that a classification doesn't violate any not: rules AND has required kw: matches.
+        
+        Args:
+            predicted_slug: The predicted document type slug
+            text: Document text to check
+            available_types: List of (slug, classification_hints) tuples
+            
+        Returns:
+            True if classification is valid, False if it violates a not: rule or lacks required keywords
+        """
+        text_lower = text.lower()
+        
+        # Find the hints for the predicted type
+        hints = None
+        for slug, type_hints in available_types:
+            if slug == predicted_slug:
+                hints = type_hints
+                break
+        
+        if not hints:
+            return True  # No hints = no rules to check
+        
+        required_keywords = []
+        matched_keywords = []
+        
+        # Check all rules
+        for hint_line in hints.strip().split('\n'):
+            hint_line = hint_line.strip()
+            if not hint_line:
+                continue
+                
+            if hint_line.startswith('not:'):
+                # not: rules - if found, reject
+                negative_word = hint_line[4:].strip().lower()
+                if negative_word in text_lower:
+                    logger.info(f"Classification '{predicted_slug}' rejected: not: rule '{negative_word}' found in text")
+                    return False
+            elif hint_line.startswith('kw:'):
+                # kw: rules - track required keywords
+                keyword = hint_line[3:].strip().lower()
+                required_keywords.append(keyword)
+                if keyword in text_lower:
+                    matched_keywords.append(keyword)
+        
+        # If there are required keywords, at least one must match for NB/BERT to be valid
+        if required_keywords and len(matched_keywords) == 0:
+            logger.info(f"Classification '{predicted_slug}' rejected: no kw: rules matched (required: {required_keywords})")
+            return False
+        
+        return True
+
+    async def classify_deterministic(self, text: str, available_types: List[Tuple[str, str]]) -> Optional[str]:
         """Deterministic pre-classifier that only returns a type if there's strong evidence.
+        
+        Checks both classification_hints AND required fields from document_type_fields.
+        If a document type has required fields, those must be detectable in the text.
 
         Args:
             text: Document text to analyze
@@ -435,53 +701,143 @@ class DocumentProcessor:
         scores = {}
 
         for slug, hints in available_types:
-            if not hints:
-                continue
-
             score = 0
             disqualified = False
+            required_keywords = []  # Track all required keywords (kw:)
+            optional_keywords = []  # Track optional keywords (legacy format)
+            matched_required = []  # Track which required keywords matched
+            matched_optional = []  # Track which optional keywords matched
 
             # Parse hints - supports both structured (kw:, re:, not:) and simple keyword format
-            for hint_line in hints.strip().split('\n'):
-                hint_line = hint_line.strip()
-                if not hint_line:
-                    continue
+            if hints:
+                for hint_line in hints.strip().split('\n'):
+                    hint_line = hint_line.strip()
+                    if not hint_line:
+                        continue
 
-                if hint_line.startswith('kw:'):
-                    # Structured: Required keywords (case-insensitive)
-                    keyword = hint_line[3:].strip().lower()
-                    if keyword in text_lower:
-                        score += 1
-                elif hint_line.startswith('re:'):
-                    # Structured: Regex patterns
-                    try:
-                        pattern = hint_line[3:].strip()
-                        if re.search(pattern, text, re.IGNORECASE):
-                            score += 3  # Regex matches are worth more
-                    except re.error:
-                        logger.warning(f"Invalid regex pattern in hints for {slug}: {pattern}")
-                elif hint_line.startswith('not:'):
-                    # Structured: Negative keywords (must NOT appear)
-                    negative_word = hint_line[4:].strip().lower()
-                    if negative_word in text_lower:
-                        disqualified = True
-                        break
-                else:
-                    # Legacy format: treat as simple keyword (case-insensitive)
-                    keyword = hint_line.lower()
-                    if keyword in text_lower:
-                        score += 1
-                        logger.debug(f"Legacy keyword match '{keyword}' for {slug}")
+                    if hint_line.startswith('kw:'):
+                        # Structured: Required keywords (case-insensitive) - ALL must match
+                        keyword = hint_line[3:].strip().lower()
+                        required_keywords.append(keyword)
+                        if keyword in text_lower:
+                            matched_required.append(keyword)
+                            score += 1
+                    elif hint_line.startswith('re:'):
+                        # Structured: Regex patterns
+                        try:
+                            pattern = hint_line[3:].strip()
+                            if re.search(pattern, text, re.IGNORECASE):
+                                score += 3  # Regex matches are worth more
+                        except re.error:
+                            logger.warning(f"Invalid regex pattern in hints for {slug}: {pattern}")
+                    elif hint_line.startswith('not:'):
+                        # Structured: Negative keywords (must NOT appear)
+                        negative_word = hint_line[4:].strip().lower()
+                        if negative_word in text_lower:
+                            disqualified = True
+                            break
+                    else:
+                        # Legacy format: treat as optional keyword (case-insensitive)
+                        keyword = hint_line.lower()
+                        optional_keywords.append(keyword)
+                        if keyword in text_lower:
+                            matched_optional.append(keyword)
+                            score += 1
+                            logger.debug(f"Legacy keyword match '{keyword}' for {slug}")
 
             if disqualified:
                 continue
 
+            # Check required fields from document_type_fields
+            required_fields = []
+            matched_required_fields = []
+            
+            try:
+                fields_result = await self.db.execute(
+                    text("""
+                        SELECT key, label, regex 
+                        FROM document_type_fields 
+                        WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug)
+                        AND required = 1
+                    """),
+                    {"slug": slug}
+                )
+                required_fields_rows = fields_result.fetchall()
+                
+                for field_key, field_label, field_regex in required_fields_rows:
+                    required_fields.append((field_key, field_label, field_regex))
+                    
+                    # Check if required field is detectable in text
+                    field_detected = False
+                    
+                    # Strategy 1: Check if field key or label appears in text
+                    if field_key.lower() in text_lower or field_label.lower() in text_lower:
+                        field_detected = True
+                    
+                    # Strategy 2: If field has regex, check if it matches
+                    if not field_detected and field_regex:
+                        try:
+                            if re.search(field_regex, text, re.IGNORECASE):
+                                field_detected = True
+                        except re.error:
+                            logger.warning(f"Invalid regex in required field '{field_key}' for {slug}: {field_regex}")
+                    
+                    # Strategy 3: Check for common patterns based on field key
+                    if not field_detected:
+                        key_lower = field_key.lower()
+                        if 'iban' in key_lower:
+                            # IBAN pattern: NL followed by 2 digits and 10+ alphanumeric
+                            if re.search(r'\bNL\d{2}[A-Z0-9]{10,}\b', text, re.IGNORECASE):
+                                field_detected = True
+                        elif 'rekening' in key_lower or 'account' in key_lower:
+                            # Account number patterns
+                            if re.search(r'\b\d{8,}\b', text) or re.search(r'\b[A-Z]{2}\d{2}[A-Z0-9]{10,}\b', text, re.IGNORECASE):
+                                field_detected = True
+                        elif 'datum' in key_lower or 'date' in key_lower:
+                            # Date patterns
+                            if re.search(r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b', text):
+                                field_detected = True
+                        elif 'bedrag' in key_lower or 'amount' in key_lower or 'saldo' in key_lower:
+                            # Amount patterns (EUR, €, numbers with decimals)
+                            if re.search(r'\b\d+[.,]\d{2}\b', text) or re.search(r'€\s*\d+', text, re.IGNORECASE) or re.search(r'EUR\s*\d+', text, re.IGNORECASE):
+                                field_detected = True
+                        elif 'naam' in key_lower or 'name' in key_lower:
+                            # Name patterns (capitalized words)
+                            if re.search(r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b', text):
+                                field_detected = True
+                        elif 'adres' in key_lower or 'address' in key_lower:
+                            # Address patterns (street names, postal codes)
+                            if re.search(r'\b\d{4}\s*[A-Z]{2}\b', text) or re.search(r'\b[A-Z][a-z]+\s+\d+[a-z]?\b', text):
+                                field_detected = True
+                    
+                    if field_detected:
+                        matched_required_fields.append(field_key)
+                        score += 2  # Required fields are worth more
+                    else:
+                        # Required field not detected - this type cannot match
+                        logger.debug(f"Document type '{slug}' skipped: required field '{field_key}' not detected in text")
+                        disqualified = True
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to check required fields for {slug}: {e}")
+
+            if disqualified:
+                continue
+
+            # If there are required keywords (kw:), ALL must match for this type to be eligible
+            if required_keywords:
+                if len(matched_required) != len(required_keywords):
+                    # Not all required keywords matched - skip this type
+                    logger.debug(f"Document type '{slug}' skipped: only {len(matched_required)}/{len(required_keywords)} required keywords matched (matched: {matched_required}, required: {required_keywords})")
+                    continue
+
+            # Only add to scores if we have matches (and all required keywords/fields matched)
             if score > 0:
                 scores[slug] = score
-                logger.debug(f"Document type '{slug}' scored {score}")
+                logger.debug(f"Document type '{slug}' scored {score} (required keywords: {len(matched_required)}/{len(required_keywords)}, required fields: {len(matched_required_fields)}/{len(required_fields)}, optional: {len(matched_optional)})")
 
         if not scores:
-            logger.debug("No deterministic matches found")
+            logger.debug("No deterministic matches found (no scores after required keyword/field checks)")
             return None
 
         # Find the highest score
@@ -516,51 +872,120 @@ class DocumentProcessor:
         
         allowed_slugs = [slug for slug, _ in available_types]
 
-        # Step 1: Try local (trained) Naive Bayes classifier first - PRIORITY over deterministic
+        # Step 0: Check for STRONG deterministic matches first (all kw: rules match)
+        # This ensures explicit keyword rules have priority over trained models
+        strong_deterministic_result = await self.classify_deterministic_strong(sample_text, available_types)
+        if strong_deterministic_result:
+            logger.info(f"Document {document.id} classified as '{strong_deterministic_result}' via STRONG deterministic match (all kw: rules matched)")
+            # Skip to using this result - still run NB/BERT for scores but don't override
+            classifier_result = strong_deterministic_result
+            classifier_confidence = 1.0  # Strong match = 100% confidence
+
+        # Step 1: Try local (trained) Naive Bayes classifier
         nb_pred = None
         bert_pred = None
-        classifier_result = None
-        classifier_confidence = 0.0
+        if not strong_deterministic_result:
+            classifier_result = None
+            classifier_confidence = 0.0
         
         try:
             from app.services.doc_type_classifier import classifier_service
             pred = classifier_service().predict(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
             if pred:
                 nb_pred = pred
-                classifier_result = pred.label
-                classifier_confidence = pred.confidence
+                # Only use NB result if no strong deterministic match
+                if not strong_deterministic_result:
+                    classifier_result = pred.label
+                    classifier_confidence = pred.confidence
                 logger.info(f"Document {document.id} classified as '{pred.label}' via Naive Bayes (p={pred.confidence:.2f}, model={self.model_name or 'default'})")
         except Exception as e:
             logger.warning(f"Naive Bayes classifier failed or unavailable: {e}")
 
         # Step 1.5: Try BERT classifier (always run to get score, even if NB is good)
+        # Try selected model first, then fallback to other available models
         try:
             from app.services.bert_classifier import bert_classifier_service
-            bert_result = bert_classifier_service().predict(sample_text, model_name=self.model_name, allowed_labels=allowed_slugs)
+            bert_svc = bert_classifier_service()
+            
+            # Build list of models to try: selected model first, then all others
+            models_to_try = []
+            if self.model_name:
+                models_to_try.append(self.model_name)
+            
+            # Add all other available models as fallback
+            available_models = bert_svc.list_available_models()
+            for model in available_models:
+                if model != self.model_name:
+                    models_to_try.append(model)
+            
+            # Also try "default" if not already in list
+            if "default" not in models_to_try:
+                models_to_try.append("default")
+            
+            bert_result = None
+            bert_used_model = None
+            
+            for model_name in models_to_try:
+                try:
+                    result = bert_svc.predict(sample_text, model_name=model_name, allowed_labels=allowed_slugs)
+                    if result:
+                        bert_result = result
+                        bert_used_model = model_name
+                        logger.info(f"Document {document.id} BERT classification with model '{model_name}': '{result.label}' (p={result.confidence:.2f})")
+                        break
+                except Exception as e:
+                    logger.debug(f"Document {document.id}: BERT model '{model_name}' failed: {e}")
+                    continue
+            
             if bert_result:
                 bert_pred = bert_result
-                logger.info(f"Document {document.id} BERT classification: '{bert_result.label}' (p={bert_result.confidence:.2f})")
-                # Use BERT result if: no NB result, or BERT confidence is significantly higher
-                if not classifier_result or bert_result.confidence > classifier_confidence + 0.1:
+                # Use BERT result if: no strong deterministic match AND (no NB result, or BERT confidence is significantly higher)
+                if not strong_deterministic_result and (not classifier_result or bert_result.confidence > classifier_confidence + 0.1):
                     classifier_result = bert_result.label
                     classifier_confidence = bert_result.confidence
-                    logger.info(f"Document {document.id} classified as '{bert_result.label}' via BERT (p={bert_result.confidence:.2f}, model={self.model_name or 'default'})")
+                    logger.info(f"Document {document.id} classified as '{bert_result.label}' via BERT (p={bert_result.confidence:.2f}, model={bert_used_model or self.model_name or 'default'})")
+                    if bert_used_model != self.model_name:
+                        logger.info(f"Document {document.id}: Used BERT model '{bert_used_model}' (fallback from '{self.model_name or 'default'}')")
+            else:
+                # Log why BERT didn't return a result
+                if self.model_name:
+                    status = bert_svc.status(self.model_name)
+                    if not status.get('model_exists'):
+                        logger.warning(f"Document {document.id}: BERT model '{self.model_name}' not found, tried {len(models_to_try)} models")
+                    else:
+                        model_labels = status.get('labels', [])
+                        missing_labels = [l for l in allowed_slugs if l not in model_labels]
+                        if missing_labels:
+                            logger.warning(f"Document {document.id}: BERT model '{self.model_name}' missing labels {missing_labels}, tried {len(models_to_try)} models")
+                        else:
+                            logger.info(f"Document {document.id}: BERT returned None for all {len(models_to_try)} models (score below threshold)")
+                else:
+                    logger.info(f"Document {document.id}: BERT returned None for all {len(models_to_try)} available models")
         except Exception as e:
-            logger.debug(f"BERT classifier not available: {e}")
+            logger.warning(f"BERT classifier error: {e}")
 
         # Step 2: Fall back to deterministic if trained models didn't match
         if not classifier_result:
-            classifier_result = self.classify_deterministic(sample_text, available_types)
+            classifier_result = await self.classify_deterministic(sample_text, available_types)
             if classifier_result:
                 logger.info(f"Document {document.id} classified as '{classifier_result}' via deterministic matching (fallback)")
 
-        if classifier_result:
+        if classifier_result and classifier_result != "unknown":
             # Get the document type for metadata extraction
             doc_type_result = await self.db.execute(
                 text("SELECT * FROM document_types WHERE slug = :slug"),
                 {"slug": classifier_result}
             )
             doc_type_row = doc_type_result.fetchone()
+
+            if not doc_type_row:
+                # Document type not found in database
+                classification = ClassificationResult(
+                    doc_type_slug="unknown",
+                    confidence=0.0,
+                    rationale=f"Document type '{classifier_result}' not found in database"
+                )
+                return classification, None
 
             # Check if this type has fields configured
             fields_result = await self.db.execute(
@@ -601,6 +1026,8 @@ class DocumentProcessor:
                         "label": bert_pred.label,
                         "confidence": float(bert_pred.confidence)
                     }
+                    if bert_used_model:
+                        classification_data["bert"]["model_used"] = bert_used_model
                 with open(llm_dir / "classification_local.json", "w") as f:
                     json.dump(classification_data, f, indent=2)
 
@@ -700,9 +1127,10 @@ CRITICAL CLASSIFICATION RULES:
 Then, if you classified it as a specific type (not 'unknown'), extract the metadata according to that type's field definitions.
 
 IMPORTANT:
-- If you cannot confidently classify the document, return 'unknown' and empty metadata
+- If you cannot confidently classify the document, return 'unknown' and empty metadata (empty data and evidence objects)
+- If doc_type_slug is 'unknown', the extraction.data and extraction.evidence MUST be empty objects {{}}
 - For classification, you MUST provide exact evidence from the text that shows DISTINCTIVE features
-- For extraction, follow the field definitions exactly
+- For extraction, ONLY extract if doc_type_slug is NOT 'unknown' - skip extraction entirely if unknown
 - Return both classification and extraction results in one JSON response
 
 Document types and their field definitions:
@@ -752,8 +1180,14 @@ Respond with JSON:
                     "type": "object",
                     "required": ["data", "evidence"],
                     "properties": {
-                        "data": {"type": "object"},
-                        "evidence": {"type": "object"}
+                        "data": {
+                            "type": "object",
+                            "description": "Extracted metadata fields. Must be empty {} if doc_type_slug is 'unknown'"
+                        },
+                        "evidence": {
+                            "type": "object",
+                            "description": "Evidence spans for each field. Must be empty {} if doc_type_slug is 'unknown'"
+                        }
                     }
                 }
             }
@@ -771,16 +1205,20 @@ Respond with JSON:
         curl_command = None
         try:
             logger.info(f"Starting combined LLM analysis for document {document_dir.parent.name}")
-            result, response_text, curl_command = await self.llm.generate_json_with_raw(prompt, schema)
-            logger.info(f"Combined LLM analysis completed for document {document_dir.parent.name}")
+            result, response_text, curl_command, duration = await self.llm.generate_json_with_raw(prompt, schema)
+            logger.info(f"Combined LLM analysis completed for document {document_dir.parent.name} in {duration:.2f}s")
             
-            # Save response and curl command immediately after successful request
+            # Save response, curl command, and timing immediately after successful request
             with open(llm_dir / "combined_analysis_response.txt", "w") as f:
                 f.write(response_text)
             
             if curl_command:
                 with open(llm_dir / "combined_analysis_curl.txt", "w") as f:
                     f.write(curl_command)
+            
+            # Save timing metadata
+            with open(llm_dir / "combined_analysis_timing.json", "w") as f:
+                json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
         except Exception as e:
             logger.error(f"Combined LLM analysis failed for document {document_dir.parent.name}: {e}")
             with open(llm_dir / "combined_analysis_error.txt", "w") as f:
@@ -1009,36 +1447,112 @@ Respond with JSON:
         
         allowed_slugs = [slug for slug, _ in available_types]
 
-        # Step 1: Local (trained) Naive Bayes classifier - PRIORITY over deterministic
+        # Step 0: Check for STRONG deterministic matches first (all kw: rules match)
+        # This ensures explicit keyword rules have priority over trained models
+        strong_deterministic_result = await self.classify_deterministic_strong(sample_text, available_types)
+        
         nb_pred = None
         bert_pred = None
         best_pred = None
         best_method = None
         
+        if strong_deterministic_result:
+            logger.info(f"Document {document.id} classified as '{strong_deterministic_result}' via STRONG deterministic match (all kw: rules matched)")
+            # Create a fake prediction with 100% confidence
+            from dataclasses import dataclass
+            @dataclass
+            class StrongMatch:
+                label: str
+                confidence: float
+            best_pred = StrongMatch(label=strong_deterministic_result, confidence=1.0)
+            best_method = "deterministic_strong"
+
+        # Step 1: Local (trained) Naive Bayes classifier
         try:
             from app.services.doc_type_classifier import classifier_service
             pred = classifier_service().predict(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
             if pred:
                 nb_pred = pred
-                best_pred = pred
-                best_method = "naive_bayes"
+                # Only use NB if no strong deterministic match
+                if not strong_deterministic_result:
+                    best_pred = pred
+                    best_method = "naive_bayes"
                 logger.info(f"Document {document.id} NB classification: '{pred.label}' (p={pred.confidence:.2f})")
         except Exception as e:
             logger.warning(f"Naive Bayes classifier failed or unavailable: {e}")
 
         # Step 1.5: Try BERT classifier (always run to get score, even if NB is good)
+        # Try selected model first, then fallback to other available models
         try:
             from app.services.bert_classifier import bert_classifier_service
-            bert_result = bert_classifier_service().predict(sample_text, model_name=self.model_name, allowed_labels=allowed_slugs)
+            bert_svc = bert_classifier_service()
+            
+            # Build list of models to try: selected model first, then all others
+            models_to_try = []
+            if self.model_name:
+                models_to_try.append(self.model_name)
+            
+            # Add all other available models as fallback
+            available_models = bert_svc.list_available_models()
+            for model in available_models:
+                if model != self.model_name:
+                    models_to_try.append(model)
+            
+            # Also try "default" if not already in list
+            if "default" not in models_to_try:
+                models_to_try.append("default")
+            
+            bert_result = None
+            bert_used_model = None
+            
+            for model_name in models_to_try:
+                try:
+                    result = bert_svc.predict(sample_text, model_name=model_name, allowed_labels=allowed_slugs)
+                    if result:
+                        bert_result = result
+                        bert_used_model = model_name
+                        logger.info(f"Document {document.id} BERT classification with model '{model_name}': '{result.label}' (p={result.confidence:.2f})")
+                        break
+                except Exception as e:
+                    logger.debug(f"Document {document.id}: BERT model '{model_name}' failed: {e}")
+                    continue
+            
             if bert_result:
                 bert_pred = bert_result
-                logger.info(f"Document {document.id} BERT classification: '{bert_result.label}' (p={bert_result.confidence:.2f})")
-                # Use BERT if no NB result or if BERT is significantly better
-                if not best_pred or bert_result.confidence > best_pred.confidence + 0.1:
+                # Use BERT if: no strong deterministic AND (no NB result or BERT is significantly better)
+                if not strong_deterministic_result and (not best_pred or bert_result.confidence > best_pred.confidence + 0.1):
                     best_pred = bert_result
                     best_method = "bert"
+                    if bert_used_model != self.model_name:
+                        logger.info(f"Document {document.id}: Used BERT model '{bert_used_model}' (fallback from '{self.model_name or 'default'}')")
+            else:
+                # Log why BERT didn't return a result
+                if self.model_name:
+                    status = bert_svc.status(self.model_name)
+                    if not status.get('model_exists'):
+                        logger.warning(f"Document {document.id}: BERT model '{self.model_name}' not found, tried {len(models_to_try)} models")
+                    else:
+                        model_labels = status.get('labels', [])
+                        missing_labels = [l for l in allowed_slugs if l not in model_labels]
+                        if missing_labels:
+                            logger.warning(f"Document {document.id}: BERT model '{self.model_name}' missing labels {missing_labels}, tried {len(models_to_try)} models")
+                        else:
+                            logger.info(f"Document {document.id}: BERT returned None for all {len(models_to_try)} models (score below threshold)")
+                else:
+                    logger.info(f"Document {document.id}: BERT returned None for all {len(models_to_try)} available models")
         except Exception as e:
-            logger.debug(f"BERT classifier not available: {e}")
+            logger.warning(f"BERT classifier error: {e}")
+
+        # Step 1.9: Validate NB/BERT result against not: rules
+        if best_pred and best_method in ("naive_bayes", "bert"):
+            # Check if the predicted type has not: rules that are violated
+            is_valid = await self._validate_classification_against_not_rules(
+                best_pred.label, sample_text, available_types
+            )
+            if not is_valid:
+                logger.warning(f"Document {document.id}: {best_method} result '{best_pred.label}' rejected due to not: rule violation")
+                best_pred = None
+                best_method = None
 
         if best_pred:
             # Build rationale with both scores if available
@@ -1078,6 +1592,8 @@ Respond with JSON:
                     "label": bert_pred.label,
                     "confidence": float(bert_pred.confidence)
                 }
+                if bert_used_model:
+                    classification_data["bert"]["model_used"] = bert_used_model
             
             with open(llm_dir / "classification_local.json", "w") as f:
                 json.dump(classification_data, f, indent=2)
@@ -1086,19 +1602,61 @@ Respond with JSON:
             return classification
 
         # Step 2: Deterministic classification (fallback when trained models don't match)
-        deterministic_result = self.classify_deterministic(sample_text, available_types)
-        logger.info(f"Document {document.id} deterministic classification: {deterministic_result} (sample_text_length: {len(sample_text)})")
+        # Only use deterministic if trained models had low confidence (< 0.7) or no result
+        use_deterministic = not best_pred or (best_pred and best_pred.confidence < 0.7)
+        
+        deterministic_result = None
+        if use_deterministic:
+            deterministic_result = await self.classify_deterministic(sample_text, available_types)
+            logger.info(f"Document {document.id} deterministic classification: {deterministic_result} (sample_text_length: {len(sample_text)}, trained_model_confidence: {best_pred.confidence if best_pred else 'none'})")
+        else:
+            logger.info(f"Document {document.id} skipping deterministic (trained model confidence {best_pred.confidence:.2f} >= 0.7)")
 
         if deterministic_result:
             # Deterministic match found (as fallback)
+            # Find the matched hints for this document type
+            matched_keywords = []
+            matched_patterns = []
+            text_lower = sample_text.lower()
+            
+            for slug, hints in available_types:
+                if slug == deterministic_result and hints:
+                    for hint_line in hints.strip().split('\n'):
+                        hint_line = hint_line.strip()
+                        if not hint_line:
+                            continue
+                        if hint_line.startswith('kw:'):
+                            keyword = hint_line[3:].strip().lower()
+                            if keyword in text_lower:
+                                matched_keywords.append(keyword)
+                        elif hint_line.startswith('re:'):
+                            try:
+                                pattern = hint_line[3:].strip()
+                                if re.search(pattern, sample_text, re.IGNORECASE):
+                                    matched_patterns.append(pattern)
+                            except re.error:
+                                pass
+                        elif not hint_line.startswith('not:'):
+                            # Legacy keyword
+                            keyword = hint_line.lower()
+                            if keyword in text_lower:
+                                matched_keywords.append(keyword)
+                    break
+            
+            rationale_parts = [f"Deterministic match (fallback)"]
+            if matched_keywords:
+                rationale_parts.append(f"keywords: {', '.join(matched_keywords[:5])}")
+            if matched_patterns:
+                rationale_parts.append(f"patterns: {len(matched_patterns)} matched")
+            
             classification = ClassificationResult(
                 doc_type_slug=deterministic_result,
                 confidence=0.95,  # High confidence for deterministic matches
-                rationale=f"Deterministic match (fallback)",
+                rationale="; ".join(rationale_parts),
                 evidence=""
             )
 
-            # Save classification artifacts
+            # Save classification artifacts with matched keywords
             llm_dir = document_dir / "llm"
             llm_dir.mkdir(exist_ok=True)
             with open(llm_dir / "classification_deterministic.json", "w") as f:
@@ -1107,9 +1665,11 @@ Respond with JSON:
                     "doc_type_slug": deterministic_result,
                     "confidence": classification.confidence,
                     "rationale": classification.rationale,
+                    "matched_keywords": matched_keywords[:10],  # Limit to 10
+                    "matched_patterns": matched_patterns[:5],   # Limit to 5
                 }, f, indent=2)
 
-            logger.info(f"Document {document.id} classified as '{deterministic_result}' via deterministic matching (fallback)")
+            logger.info(f"Document {document.id} classified as '{deterministic_result}' via deterministic matching (fallback, keywords: {matched_keywords[:3]})")
             return classification
 
         # Step 3: LLM classification as last resort
@@ -1294,18 +1854,24 @@ Respond with JSON only:
         curl_command = None
         response_text = None
         result = None
+        duration = None
         try:
             logger.info(f"Starting LLM classification request for document {document_dir.parent.name}")
-            result, response_text, curl_command = await self.llm.generate_json_with_raw(prompt, schema)
-            logger.info(f"LLM classification completed for document {document_dir.parent.name}")
+            result, response_text, curl_command, duration = await self.llm.generate_json_with_raw(prompt, schema)
+            logger.info(f"LLM classification completed for document {document_dir.parent.name} in {duration:.2f}s")
 
-            # Save response and curl command immediately after successful request
+            # Save response, curl command, and timing immediately after successful request
             with open(llm_dir / "classification_response.txt", "w") as f:
                 f.write(response_text)
             
             if curl_command:
                 with open(llm_dir / "classification_curl.txt", "w") as f:
                     f.write(curl_command)
+            
+            # Save timing metadata
+            if duration is not None:
+                with open(llm_dir / "classification_timing.json", "w") as f:
+                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
         except Exception as e:
             logger.error(f"LLM classification failed for document {document_dir.parent.name}: {e}")
             error_msg = str(e)
@@ -1484,9 +2050,12 @@ Respond with JSON only:
         with open(llm_dir / "extraction_schema.json", "w") as f:
             json.dump(schema, f, indent=2)
         
-        # Split into chunks if text is too large (> 6000 chars to leave room for prompt overhead)
-        CHUNK_SIZE = 6000
-        OVERLAP = 500  # Overlap between chunks to avoid missing data at boundaries
+        # Split into chunks if text is too large
+        # For 4K context models: need ~1500 tokens for response, ~500 for prompt overhead
+        # That leaves ~2000 tokens (~8000 chars) for document text
+        # Use smaller chunks to be safe: 4000 chars = ~1000 tokens
+        CHUNK_SIZE = 4000
+        OVERLAP = 400  # Overlap between chunks to avoid missing data at boundaries
         
         curl_command = None
         response_text = None
@@ -1501,6 +2070,7 @@ Respond with JSON only:
             # Process each chunk
             all_results = []
             chunk_responses = []
+            chunk_durations = []
             total_chunks = len(chunks)  # Store for post-processing stages
             
             # Metadata extraction runs from 60-85%, so we use 60-80% for chunks, 80-85% for merging
@@ -1525,9 +2095,15 @@ Respond with JSON only:
                     f.write(prompt)
                 
                 try:
-                    chunk_result, chunk_response_text, chunk_curl_command = await self.llm.generate_json_with_raw(prompt, schema)
+                    chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, schema)
                     all_results.append(chunk_result)
                     chunk_responses.append(chunk_response_text)
+                    chunk_durations.append(chunk_duration)
+                    
+                    # Log what was found in this chunk
+                    if chunk_result and "data" in chunk_result:
+                        found_fields = [k for k, v in chunk_result["data"].items() if v is not None]
+                        logger.info(f"Chunk {chunk_num}: found {len(found_fields)} fields: {found_fields}")
                     
                     # Save chunk response
                     with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w") as f:
@@ -1535,6 +2111,10 @@ Respond with JSON only:
                     if chunk_curl_command:
                         with open(llm_dir / f"extraction_curl_chunk_{chunk_num}.txt", "w") as f:
                             f.write(chunk_curl_command)
+                    
+                    # Save chunk timing
+                    with open(llm_dir / f"extraction_timing_chunk_{chunk_num}.json", "w") as f:
+                        json.dump({"duration_seconds": chunk_duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
                 except Exception as e:
                     logger.warning(f"Chunk {chunk_num} extraction failed: {e}, continuing with other chunks")
                     continue
@@ -1549,6 +2129,11 @@ Respond with JSON only:
                 if result is None:
                     logger.warning("Failed to merge chunk results, using first chunk")
                     result = all_results[0]
+                else:
+                    # Log merged result
+                    if "data" in result:
+                        merged_fields = [k for k, v in result["data"].items() if v is not None]
+                        logger.info(f"Merged result: {len(merged_fields)} fields with values: {merged_fields}")
                 
                 # Update progress after merging - keep chunk info in stage for visibility
                 await self._update_progress(document.id, MERGE_END, f"extracting_metadata_chunk_done_{total_chunks}", progress_callback)
@@ -1569,7 +2154,18 @@ Respond with JSON only:
                 with open(llm_dir / "extraction_response.txt", "w") as f:
                     f.write(response_text)
                 
-                logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} ({len(chunks)} chunks merged)")
+                # Calculate and save total duration
+                total_duration = sum(chunk_durations) if chunk_durations else 0
+                with open(llm_dir / "extraction_timing.json", "w") as f:
+                    json.dump({
+                        "duration_seconds": total_duration,
+                        "chunk_count": len(chunk_durations),
+                        "chunk_durations": chunk_durations,
+                        "provider": self.llm.provider,
+                        "model": self.llm.model
+                    }, f, indent=2)
+                
+                logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} ({len(chunks)} chunks merged) in {total_duration:.2f}s total")
                 
                 # Save merged result
                 with open(llm_dir / "extraction_result.json", "w") as f:
@@ -1583,53 +2179,86 @@ Respond with JSON only:
             with open(llm_dir / "extraction_prompt.txt", "w") as f:
                 f.write(prompt)
             
-                try:
-                    logger.info(f"Starting LLM metadata extraction for document {document_dir.parent.name}")
-                    result, response_text, curl_command = await self.llm.generate_json_with_raw(prompt, schema)
-                    logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name}")
-                    
-                    # Save response and curl command immediately after successful request
-                    with open(llm_dir / "extraction_response.txt", "w") as f:
-                        f.write(response_text)
-                    
-                    if curl_command:
-                        with open(llm_dir / "extraction_curl.txt", "w") as f:
-                            f.write(curl_command)
-                    
-                    with open(llm_dir / "extraction_result.json", "w") as f:
-                        json.dump(self._json_serialize(result), f, indent=2)
-                except Exception as e:
-                    logger.error(f"LLM metadata extraction failed for document {document_dir.parent.name}: {e}")
-                    error_msg = str(e)
-                    with open(llm_dir / "extraction_error.txt", "w") as f:
-                        f.write(error_msg)
-                    
-                    # Save curl command even if there was an error (if we got that far)
-                    if curl_command:
-                        with open(llm_dir / "extraction_curl.txt", "w") as f:
-                            f.write(curl_command)
-                    
-                    # If we have response_text but parsing failed, try to repair it
-                    if response_text and "Failed to parse JSON" in error_msg:
-                        logger.warning("Attempting to repair JSON from response_text after parsing failure")
-                        try:
-                            repaired_result = self.llm._repair_json(response_text)
-                            if repaired_result:
-                                logger.info("Successfully repaired JSON from response_text")
-                                result = repaired_result
-                                # Save the repaired result
-                                with open(llm_dir / "extraction_response.txt", "w") as f:
-                                    f.write(response_text)
+            result = None
+            response_text = None
+            curl_command = None
+            duration = None
+            try:
+                logger.info(f"Starting LLM metadata extraction for document {document_dir.parent.name}")
+                result, response_text, curl_command, duration = await self.llm.generate_json_with_raw(prompt, schema)
+                logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} in {duration:.2f}s")
+                
+                # Save response, curl command, and timing immediately after successful request
+                with open(llm_dir / "extraction_response.txt", "w") as f:
+                    f.write(response_text)
+                
+                if curl_command:
+                    with open(llm_dir / "extraction_curl.txt", "w") as f:
+                        f.write(curl_command)
+                
+                # Save timing metadata
+                with open(llm_dir / "extraction_timing.json", "w") as f:
+                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
+                
+                with open(llm_dir / "extraction_result.json", "w") as f:
+                    json.dump(self._json_serialize(result), f, indent=2)
+            except Exception as e:
+                logger.error(f"LLM metadata extraction failed for document {document_dir.parent.name}: {e}")
+                error_msg = str(e)
+                with open(llm_dir / "extraction_error.txt", "w") as f:
+                    f.write(error_msg)
+                
+                # Save curl command even if there was an error (if we got that far)
+                if curl_command:
+                    with open(llm_dir / "extraction_curl.txt", "w") as f:
+                        f.write(curl_command)
+                
+                # If we have response_text but parsing failed, try to repair it
+                if response_text:
+                    logger.warning("Attempting to repair JSON from response_text after parsing failure")
+                    try:
+                        repaired_result = self.llm._repair_json(response_text)
+                        if repaired_result:
+                            logger.info("Successfully repaired JSON from response_text")
+                            result = repaired_result
+                            # Save the repaired result
+                            with open(llm_dir / "extraction_response.txt", "w") as f:
+                                f.write(response_text)
+                            with open(llm_dir / "extraction_result.json", "w") as f:
+                                json.dump(self._json_serialize(result), f, indent=2)
+                        else:
+                            logger.error("Failed to repair JSON even from response_text")
+                            # Try to extract at least one object as fallback
+                            json_objects = self.llm._extract_json_objects(response_text)
+                            if json_objects:
+                                logger.warning(f"Using first extracted object as fallback from {len(json_objects)} objects")
+                                result = json_objects[0]
                                 with open(llm_dir / "extraction_result.json", "w") as f:
                                     json.dump(self._json_serialize(result), f, indent=2)
                             else:
-                                logger.error("Failed to repair JSON even from response_text")
                                 raise
-                        except Exception as repair_error:
-                            logger.error(f"JSON repair attempt also failed: {repair_error}")
+                    except Exception as repair_error:
+                        logger.error(f"JSON repair attempt also failed: {repair_error}")
+                        # Last resort: try to extract any JSON object
+                        try:
+                            json_objects = self.llm._extract_json_objects(response_text)
+                            if json_objects:
+                                logger.warning(f"Using first extracted object as last resort from {len(json_objects)} objects")
+                                result = json_objects[0]
+                                with open(llm_dir / "extraction_result.json", "w") as f:
+                                    json.dump(self._json_serialize(result), f, indent=2)
+                            else:
+                                raise e  # Re-raise original error
+                        except Exception as extract_error:
+                            logger.error(f"JSON extraction also failed: {extract_error}")
                             raise e  # Re-raise original error
-                    else:
-                        raise
+                else:
+                    # No response_text available - can't repair
+                    raise
+            
+            # Ensure result is set before post-processing
+            if result is None:
+                raise Exception("LLM extraction failed: no result obtained")
 
         # Post-processing steps - include chunk info if we used chunks
         post_stage_suffix = f"_chunks_{total_chunks}" if total_chunks else ""
@@ -1769,37 +2398,25 @@ NOTE: This is chunk {chunk_num} of {total_chunks} of a large document.
 - Do NOT make up values for fields not found in this chunk.
 - The results from all chunks will be merged automatically."""
 
-        return f"""Extract metadata from this {doc_type} document. Find ALL instances and provide them in a SINGLE JSON response.
+        # Build actual field keys for the JSON structure
+        field_keys = [key for key, _, _, _, _, _ in fields]
+        
+        # Build a concrete JSON template with the actual field names
+        data_template = ", ".join([f'"{k}": null' for k in field_keys])
+        
+        extra_notes = ""
+        if notes_block.strip():
+            extra_notes = f"\n{notes_block.strip()}"
+        if preamble_text.strip():
+            extra_notes += f"\n{preamble_text.strip()}"
+        
+        return f"""Extract from this {doc_type}:{chunk_info}{extra_notes}
 
-IMPORTANT: Respond with exactly ONE JSON object. Return null for fields not found in the text.{chunk_info}
-{notes_block}{preamble_text}
-
-Fields to extract:
-{fields_str}
-
-Document text:
 {text}
 
-Respond with a SINGLE JSON object:
-{{
-  "data": {{
-    "field_key": "extracted_value",
-    ...
-  }},
-  "evidence": {{
-    "field_key": [
-      {{"page": 0, "start": 10, "end": 30, "quote": "exact text span"}},
-      {{"page": 1, "start": 20, "end": 40, "quote": "another text span"}}
-    ],
-    ...
-  }}
-}}
+{{"data": {{{data_template}}}, "evidence": {{}}}}
 
-CRITICAL: The "evidence" field MUST be an OBJECT (not an array), where each key is a field name from "data" and the value is an array of evidence objects for that field. For example:
-- If you extract "iban": "NL35...", then evidence should have "iban": [{{"page": 0, "start": 20, "end": 40, "quote": "NL35 INGB..."}}]
-- If you extract "naam": "Company Name", then evidence should have "naam": [{{"page": 0, "start": 10, "end": 30, "quote": "Company Name"}}]
-
-Each field in "data" should have a corresponding key in "evidence" with an array of evidence objects."""
+Replace null with extracted values. Keep null if not found."""
 
     def _fill_missing_quotes(self, result: Dict[str, Any], pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Fill in missing quote fields in evidence from document text."""
@@ -1816,9 +2433,13 @@ Each field in "data" should have a corresponding key in "evidence" with an array
                 
                 # If quote is missing or empty, try to extract it from the text
                 if not span.get("quote"):
-                    page_num = span.get("page", 0)
-                    start = span.get("start", 0)
-                    end = span.get("end", 0)
+                    page_num = span.get("page")
+                    start = span.get("start")
+                    end = span.get("end")
+                    
+                    # Skip if any required values are None
+                    if page_num is None or start is None or end is None:
+                        continue
                     
                     if page_num < len(pages) and start < end:
                         page_text = pages[page_num].get("text", "")
@@ -1962,6 +2583,11 @@ Each field in "data" should have a corresponding key in "evidence" with an array
                 continue
 
             for span in spans:
+                # Skip validation if page/start/end are None
+                if span.page is None or span.start is None or span.end is None:
+                    errors.append(f"{field_key}: Missing page/start/end in evidence span")
+                    continue
+                
                 if span.page >= len(pages):
                     errors.append(f"{field_key}: Invalid page {span.page}")
                     continue

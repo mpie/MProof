@@ -24,7 +24,7 @@ class TestLLMClient:
                 }
             }
 
-            result, raw = await llm_client.generate_json_with_raw("test prompt", schema)
+            result, raw, curl_cmd = await llm_client.generate_json_with_raw("test prompt", schema)
 
             assert result == {"test": "response_from_assistant"}
 
@@ -36,7 +36,7 @@ class TestLLMClient:
         with patch.object(llm_client, '_make_request', new_callable=AsyncMock) as mock_make_request:
             mock_make_request.return_value = (malformed_response, "curl command")
 
-            result, raw = await llm_client.generate_json_with_raw("test prompt")
+            result, raw, curl_cmd = await llm_client.generate_json_with_raw("test prompt")
 
             assert result == {"test": "value", "number": 42}
 
@@ -59,26 +59,55 @@ class TestLLMClient:
 
     @pytest.mark.asyncio
     async def test_generate_json_timeout_retry(self, llm_client):
-        """Test timeout and retry logic."""
-        with patch.object(llm_client, '_make_request', new_callable=AsyncMock) as mock_make_request:
-            mock_make_request.side_effect = [
-                asyncio.TimeoutError(),
-                asyncio.TimeoutError(),
-                ('{"success": true}', "curl command")
-            ]
-
-            result, raw = await llm_client.generate_json_with_raw("test prompt")
-
+        """Test timeout and retry logic at the HTTP level."""
+        import httpx
+        from unittest.mock import MagicMock
+        
+        # Build expected response based on provider
+        if llm_client.provider == "vllm":
+            mock_json = {"choices": [{"message": {"content": '{"success": true}'}}]}
+        else:
+            mock_json = {"message": {"content": '{"success": true}'}, "done": True}
+        
+        # Determine how many failures before success (based on max_retries)
+        max_failures = llm_client.max_retries - 1  # Fail max_retries-1 times, then succeed
+        
+        call_count = 0
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= max_failures:
+                raise httpx.TimeoutException("Timeout")
+            # Return successful response - use MagicMock for sync methods
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = mock_json  # json() is sync
+            mock_response.raise_for_status.return_value = None  # raise_for_status() is sync
+            return mock_response
+        
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post = mock_post
+            mock_client_class.return_value = mock_client
+            
+            result, raw, curl_cmd = await llm_client.generate_json_with_raw("test prompt")
+            
             assert result == {"success": True}
-            assert mock_make_request.call_count == 3
+            assert call_count == llm_client.max_retries  # Retries until success
 
     @pytest.mark.asyncio
     async def test_generate_json_max_retries_exceeded(self, llm_client):
         """Test max retries exceeded."""
-        with patch.object(llm_client, '_make_request', new_callable=AsyncMock) as mock_make_request:
-            mock_make_request.side_effect = asyncio.TimeoutError()
-
-            with pytest.raises(LLMClientError, match="Max retries exceeded"):
+        import httpx
+        
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.post.side_effect = httpx.TimeoutException("Timeout")
+            mock_client_class.return_value = mock_client
+            
+            with pytest.raises(LLMClientError, match="LLM request timed out"):
                 await llm_client.generate_json_with_raw("test prompt")
 
     @pytest.mark.asyncio
@@ -99,17 +128,26 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_check_health_success(self, llm_client):
         """Test successful health check."""
-        mock_response = {"models": [{"name": "mistral:latest"}]}
+        from unittest.mock import MagicMock
+        
+        # Build response based on provider
+        if llm_client.provider == "vllm":
+            mock_response_data = {"data": [{"id": llm_client.model}]}
+        else:
+            mock_response_data = {"models": [{"name": llm_client.model}]}
+
+        async def mock_get(*args, **kwargs):
+            # Use MagicMock for sync methods
+            mock_response_obj = MagicMock()
+            mock_response_obj.status_code = 200
+            mock_response_obj.json.return_value = mock_response_data  # json() is sync
+            mock_response_obj.raise_for_status.return_value = None  # raise_for_status() is sync
+            return mock_response_obj
 
         with patch('httpx.AsyncClient') as mock_client_class:
-            mock_response_obj = AsyncMock()
-            mock_response_obj.status_code = 200
-            mock_response_obj.json.return_value = mock_response
-            mock_response_obj.raise_for_status.return_value = None
-
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
-            mock_client.get.return_value = mock_response_obj
+            mock_client.get = mock_get
             mock_client_class.return_value = mock_client
 
             result = await llm_client.check_health()
@@ -119,17 +157,26 @@ class TestLLMClient:
     @pytest.mark.asyncio
     async def test_check_health_model_not_found(self, llm_client):
         """Test health check when model is not available."""
-        mock_response = {"models": [{"name": "other-model"}]}
+        from unittest.mock import MagicMock
+        
+        # Build response based on provider
+        if llm_client.provider == "vllm":
+            mock_response_data = {"data": [{"id": "other-model"}]}
+        else:
+            mock_response_data = {"models": [{"name": "other-model"}]}
+
+        async def mock_get(*args, **kwargs):
+            # Use MagicMock for sync methods
+            mock_response_obj = MagicMock()
+            mock_response_obj.status_code = 200
+            mock_response_obj.json.return_value = mock_response_data  # json() is sync
+            mock_response_obj.raise_for_status.return_value = None  # raise_for_status() is sync
+            return mock_response_obj
 
         with patch('httpx.AsyncClient') as mock_client_class:
-            mock_response_obj = AsyncMock()
-            mock_response_obj.status_code = 200
-            mock_response_obj.json.return_value = mock_response
-            mock_response_obj.raise_for_status.return_value = None
-
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
-            mock_client.get.return_value = mock_response_obj
+            mock_client.get = mock_get
             mock_client_class.return_value = mock_client
 
             result = await llm_client.check_health()

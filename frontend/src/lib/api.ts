@@ -231,6 +231,11 @@ export interface SubjectSearchResponse {
   total: number;
 }
 
+export interface SubjectGroupResponse {
+  name: string;
+  groups: Record<string, Subject[]>;
+}
+
 export interface DocumentListResponse {
   documents: Document[];
   total: number;
@@ -401,6 +406,11 @@ export const searchSubjects = async (
   return response.data;
 };
 
+export const searchSubjectsByName = async (name: string): Promise<SubjectGroupResponse> => {
+  const response = await api.get('/subjects/by-name', { params: { name } });
+  return response.data;
+};
+
 export const listSubjects = async (limit = 100): Promise<Subject[]> => {
   const response = await searchSubjects(undefined, undefined, limit);
   return response.subjects;
@@ -445,8 +455,28 @@ export const uploadDocument = async (subjectId: number, file: File, modelName?: 
 };
 
 export const getDocumentArtifact = async (documentId: number, path: string): Promise<Blob> => {
-  const response = await api.get(`/documents/${documentId}/artifact`, { params: { path }, responseType: 'blob' });
-  return response.data;
+  const response = await api.get(`/documents/${documentId}/artifact`, { 
+    params: { path }, 
+    responseType: 'blob',
+  });
+  
+  // Get content type from response headers or infer from path
+  const contentType = response.headers['content-type'] || 
+                      (path.endsWith('.png') ? 'image/png' : 
+                       path.endsWith('.jpg') || path.endsWith('.jpeg') ? 'image/jpeg' : 
+                       'application/octet-stream');
+  
+  // Ensure we have a proper Blob with correct type
+  if (response.data instanceof Blob) {
+    // If the blob type doesn't match, create a new blob with correct type
+    if (response.data.type !== contentType) {
+      return new Blob([response.data], { type: contentType });
+    }
+    return response.data;
+  }
+  
+  // Fallback: create a blob from the data
+  return new Blob([response.data], { type: contentType });
 };
 
 export const getDocumentArtifactText = async (documentId: number, path: string): Promise<string> => {
@@ -727,5 +757,73 @@ export const deleteSkipMarker = async (markerId: number): Promise<void> => {
 
 export const getFraudAnalysis = async (documentId: number): Promise<FraudReport> => {
   const response = await api.get(`/documents/${documentId}/fraud-analysis`);
+  return response.data;
+};
+
+// =============================================================================
+// LLM Settings Types
+// =============================================================================
+
+export interface LLMProviderConfig {
+  provider: string;
+  base_url: string;
+  model: string;
+  timeout: number;
+  max_retries: number;
+  max_tokens: number;
+  is_active: boolean;
+  is_reachable?: boolean;
+}
+
+export interface LLMSettingsResponse {
+  active_provider: string;
+  providers: {
+    ollama: LLMProviderConfig;
+    vllm: LLMProviderConfig;
+  };
+}
+
+export interface LLMHealthProvider {
+  reachable: boolean;
+  model_available?: boolean;
+  available_models?: string[];
+  configured_model: string;
+  base_url: string;
+  is_active: boolean;
+  error?: string;
+}
+
+export interface LLMHealthResponse {
+  active_provider: string;
+  providers: {
+    ollama: LLMHealthProvider;
+    vllm: LLMHealthProvider;
+  };
+}
+
+export interface SwitchProviderResponse {
+  success: boolean;
+  active_provider: string;
+  message: string;
+}
+
+// =============================================================================
+// API Functions - LLM Settings
+// =============================================================================
+
+export const getLLMSettings = async (): Promise<LLMSettingsResponse> => {
+  const response = await api.get('/llm/settings');
+  return response.data;
+};
+
+export const getLLMHealth = async (checkAll: boolean = false): Promise<LLMHealthResponse> => {
+  const response = await api.get('/llm/health', {
+    params: checkAll ? { check_all: true } : {}
+  });
+  return response.data;
+};
+
+export const switchLLMProvider = async (provider: 'ollama' | 'vllm'): Promise<SwitchProviderResponse> => {
+  const response = await api.post('/llm/switch', { provider });
   return response.data;
 };

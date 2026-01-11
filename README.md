@@ -17,8 +17,8 @@ MProof analyzes documents using multiple AI methods:
 
 - **Naive Bayes Classifier** - Fast word-frequency based classification (~1ms)
 - **BERT Embeddings** - Semantic understanding with deep learning (~100ms)
-- **LLM Classification** - Ollama-powered analysis as fallback
-- **Fraud Detection** - PDF metadata, image forensics, text anomaly detection
+- **LLM Classification** - Ollama or vLLM-powered analysis as fallback (vLLM supports parallel processing)
+- **Fraud Detection** - PDF metadata, image forensics (ELA), text anomaly detection
 - **MCP Server** - Integration with AI assistants (Claude, Cursor, etc.)
 
 ## Tech Stack
@@ -27,7 +27,8 @@ MProof analyzes documents using multiple AI methods:
 |-----------|------------|
 | Backend | Python 3.9+, FastAPI, SQLAlchemy, SQLite |
 | Frontend | Next.js 14, TypeScript, Tailwind CSS |
-| AI/ML | BERT (sentence-transformers), Naive Bayes, Ollama |
+| AI/ML | BERT (sentence-transformers), Naive Bayes, Ollama/vLLM |
+| OCR | Tesseract with rotation detection |
 | Protocol | MCP (Model Context Protocol) |
 
 ## Features
@@ -35,23 +36,73 @@ MProof analyzes documents using multiple AI methods:
 ### Document Processing
 - Upload PDF, images (JPG/PNG), Office documents (DOCX/XLSX)
 - Real-time processing with Server-Sent Events (SSE)
-- OCR with Tesseract including quality assessment
-- Inline PDF preview
+- Inline PDF preview with zoom
+
+### Smart Text Extraction
+| Feature | Description |
+|---------|-------------|
+| Multi-method PDF extraction | PyMuPDF → pypdf → pdfminer → OCR (automatic fallback) |
+| Garbage text detection | Detects corrupted font encoding and triggers OCR |
+| Rotation detection | OCR tries 0°, 90°, 180°, 270° and picks best result |
+| Quality assessment | Automatic low/medium/high quality scoring |
+
+**Garbage Detection Checks:**
+- High ratio of special characters (`&'/!%.&'1&+$`) vs letters
+- Too few recognizable words (3+ letter sequences)
+- Control characters or unicode artifacts
+- Lack of common Dutch/English stop words
 
 ### Classification
 | Priority | Method | Description | Speed |
 |----------|--------|-------------|-------|
 | 1 | Naive Bayes | Word frequency classifier | ~1ms |
-| 1 | BERT | Semantic embeddings (when NB confidence low) | ~100ms |
+| 1 | BERT | Semantic embeddings (runs in parallel) | ~100ms |
 | 2 | Deterministic | Keywords/regex matching | <1ms |
-| 3 | LLM | Ollama AI classification | ~2-5s |
+| 3 | LLM | Ollama/vLLM AI classification | ~2-5s |
+
+**Multi-Model Support:**
+- Train separate NB and BERT models per use case (e.g., `backoffice`, `mdoc`)
+- Automatic fallback to default model if named model doesn't exist
+- Confidence scores from both NB and BERT shown in UI
 
 ### Fraud Detection
-- **Risk Scoring**: 0-100% per document
-- **PDF Analysis**: Suspicious generators (FPDF, TCPDF), timestamp mismatches
-- **Image Forensics**: Error Level Analysis (ELA) for JPEG manipulation
-- **Text Anomalies**: Unicode manipulation, repeating patterns
-- **EXIF Analysis**: Photo editing software detection
+
+**Risk Scoring:** 0-100% per document with signal-based analysis.
+
+| Category | Signals |
+|----------|---------|
+| **PDF Metadata** | Suspicious generators (FPDF, TCPDF, wkhtmltopdf), timestamp mismatches, missing producer |
+| **Image Forensics** | Error Level Analysis (ELA) for JPEG manipulation detection |
+| **Text Anomalies** | Unicode manipulation, invisible characters, repeating patterns |
+| **EXIF Analysis** | Photo editing software detection (Photoshop, GIMP) |
+
+**ELA Detection:**
+- Detects JPEG compression inconsistencies indicating manipulation
+- Shows confidence percentage based on bright pixel ratio
+- Visual heatmap highlighting suspicious regions
+- Threshold: >20% bright pixels in error image = potential manipulation
+
+### LLM Integration
+
+**Dual Provider Support:**
+| Feature | Ollama | vLLM |
+|---------|--------|------|
+| API | `/api/chat` | `/v1/chat/completions` (OpenAI-compatible) |
+| Processing | Sequential | Parallel (faster for batches) |
+| Port | 11434 | 8000 |
+| Best For | Development | Production |
+
+**Robust JSON Handling:**
+- Automatic repair of truncated/malformed LLM responses
+- Merges separate `{"data": ...}` and `{"evidence": ...}` objects
+- Strips echoed instructions from responses
+- Converts string `"null"` to proper `null` values
+- Response time tracking (shown in UI)
+
+**Provider Switching:**
+- Active provider stored in database (persists across restarts)
+- Switch via Settings page or API: `POST /api/llm/switch`
+- Health check only queries active provider (not both)
 
 ### Skip Markers
 
@@ -103,7 +154,7 @@ Documents are evaluated against configurable signals and policies:
 - macOS or Linux
 - Python 3.9+
 - Node.js 18+ (20 recommended)
-- Ollama (for LLM features)
+- Ollama or vLLM (for LLM features - vLLM recommended for parallel processing)
 - Tesseract OCR
 - ~500MB RAM for BERT model (optional)
 
@@ -133,8 +184,11 @@ cd frontend
 npm install
 ```
 
-### 4. Install Ollama
+### 4. Install LLM Provider
 
+Choose one or both:
+
+**Option A: Ollama (Development)**
 ```bash
 # macOS
 brew install ollama
@@ -146,6 +200,20 @@ curl -fsSL https://ollama.ai/install.sh | sh
 ollama pull mistral
 ```
 
+**Option B: vLLM (Production - Parallel Processing)**
+```bash
+# Install vLLM
+pip install vllm
+
+# Run vLLM server (example)
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3.2-3B-Instruct \
+  --served-model-name llama3.2:3b \
+  --port 8000
+```
+
+> **Note:** vLLM supports parallel requests, making it faster for batch processing. Ollama processes requests sequentially. You can switch between providers in the Settings page.
+
 ### 5. Install Tesseract
 
 ```bash
@@ -154,23 +222,46 @@ brew install tesseract
 
 # Ubuntu/Debian
 sudo apt install tesseract-ocr
+
+# Add Dutch language pack (optional but recommended)
+brew install tesseract-lang  # macOS
+sudo apt install tesseract-ocr-nld  # Ubuntu
 ```
 
 ## Configuration
 
 ### Backend (`backend/.env`)
 
+MProof supports two LLM providers: **Ollama** and **vLLM**. Configure both in `.env`, then switch between them via the Settings page (the choice is stored in the database).
+
 ```env
-# LLM
+# Ollama Configuration
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=mistral:latest
-OLLAMA_TIMEOUT=60.0
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_TIMEOUT=180.0
+OLLAMA_MAX_RETRIES=3
+
+# vLLM Configuration (OpenAI-compatible)
+VLLM_BASE_URL=http://localhost:8000
+VLLM_MODEL=llama3.2:3b
+VLLM_TIMEOUT=180.0
+VLLM_MAX_RETRIES=3
 
 # Database
 DATABASE_URL=sqlite+aiosqlite:///./data/app.db
 
 # Storage
 DATA_DIR=./data
+```
+
+**Starting vLLM:**
+
+```bash
+# Example: Run vLLM with a model
+python -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3.2-3B-Instruct \
+  --served-model-name llama3.2:3b \
+  --port 8000
 ```
 
 ### Frontend (`frontend/.env.local`)
@@ -233,19 +324,30 @@ curl -X POST "http://localhost:8000/api/classifier/train?model_name=backoffice"
 curl -X POST "http://localhost:8000/api/classifier/bert/train?model_name=backoffice"
 ```
 
+**Model Fallback:**
+- If a named NB model doesn't exist, falls back to default model
+- BERT tries all available models and picks best confidence
+
 ## API Reference
 
 ### Core Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/health` | Health check |
+| GET | `/api/health` | Health check (includes active LLM provider) |
 | GET | `/api/documents` | List documents |
 | GET | `/api/documents/{id}` | Get document |
 | POST | `/api/upload` | Upload document |
 | POST | `/api/documents/{id}/analyze` | Re-analyze document |
 | GET | `/api/documents/{id}/events` | SSE stream |
 | GET | `/api/documents/{id}/fraud-analysis` | Fraud analysis |
+
+### LLM Settings
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/llm/health` | Check LLM provider health |
+| POST | `/api/llm/switch` | Switch active provider |
 
 ### Subjects
 
@@ -287,7 +389,7 @@ curl -X POST "http://localhost:8000/api/classifier/bert/train?model_name=backoff
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/classifier/status` | Get status |
+| GET | `/api/classifier/status` | Get NB status |
 | POST | `/api/classifier/train` | Train Naive Bayes |
 | GET | `/api/classifier/bert/status` | Get BERT status |
 | POST | `/api/classifier/bert/train` | Train BERT |
@@ -331,16 +433,12 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 }
 ```
 
-> **Note:** The `/mcp` endpoint uses regular JSON responses for HTTP transport. SSE is only used when explicitly requested via the `Accept: text/event-stream` header.
-
 **Scopes:**
 - `documents:read` - Read documents, text, metadata
 - `documents:write` - Upload and analyze documents
 - `subjects:read` - Search and read subjects
 - `classification:read` - Read document types, signals, policies
 - `fraud:read` - Read fraud analysis results
-
-> **Note:** The MCP endpoint is available at `/mcp`. SSE streaming is also supported at `/mcp/stream`.
 
 ### Available Tools
 
@@ -378,8 +476,8 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 | Stage | Progress | Description |
 |-------|----------|-------------|
 | Sniffing | 0-10% | MIME detection, SHA256 hash |
-| Text Extraction | 10-45% | OCR with Tesseract |
-| Classification | 45-60% | Trained model → Deterministic → LLM |
+| Text Extraction | 10-45% | Multi-method with OCR fallback |
+| Classification | 45-60% | NB + BERT → Deterministic → LLM |
 | Metadata Extraction | 60-85% | Schema-driven field extraction |
 | Risk Analysis | 85-100% | Fraud detection and scoring |
 
@@ -389,20 +487,31 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 data/subjects/{subject_id}/documents/{document_id}/
 ├── original/{filename}
 ├── text/
-│   ├── extracted.json
-│   └── extracted.txt
+│   ├── extracted.json      # Per-page extraction info
+│   └── extracted.txt       # Combined text
 ├── llm/
-│   ├── classification_*.txt
-│   └── extraction_*.txt
+│   ├── classification_*.txt  # LLM classification artifacts
+│   └── extraction_*.txt      # LLM extraction with timing
 ├── metadata/
-│   ├── result.json
-│   ├── validation.json
-│   └── evidence.json
+│   ├── result.json         # Extracted fields
+│   ├── validation.json     # Field validation results
+│   └── evidence.json       # Quote evidence for fields
 └── risk/
-    └── result.json
+    └── result.json         # Fraud analysis results
 ```
 
 ## Troubleshooting
+
+### Text Extraction Issues
+
+**Garbage text (corrupted fonts):**
+- System automatically detects and switches to OCR
+- Look for log: `"Text extraction garbage text detected, using OCR"`
+
+**Low OCR quality:**
+- Ensure Tesseract language packs are installed
+- Check image resolution (min 150 DPI recommended)
+- System tries multiple rotations automatically
 
 ### Ollama Issues
 
@@ -417,18 +526,34 @@ ollama list
 pkill ollama && ollama serve
 ```
 
-### OCR Issues
+### vLLM Issues
 
 ```bash
-# Check installation
-tesseract --version
+# Check if running (OpenAI-compatible endpoint)
+curl http://localhost:8000/v1/models
 
-# macOS
-brew install tesseract
+# Test chat completion
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama3.2:3b",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "max_tokens": 50
+  }'
 
-# Linux
-sudo apt install tesseract-ocr
+# Check GPU memory
+nvidia-smi
 ```
+
+### LLM Response Issues
+
+**Truncated responses:**
+- System automatically repairs malformed JSON
+- Check logs for `"LLM response appears truncated"`
+
+**Wrong JSON structure:**
+- System merges separate data/evidence objects
+- Converts string "null" to proper null values
 
 ### Database Reset
 

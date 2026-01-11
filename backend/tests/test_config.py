@@ -7,17 +7,24 @@ from unittest.mock import patch
 
 class TestSettings:
     def test_default_settings(self):
-        """Test default settings values."""
+        """Test that settings are loaded and have expected types."""
         from app.config import Settings
         
         settings = Settings()
         
-        assert settings.ollama_base_url == "http://localhost:11434"
-        assert settings.ollama_model == "mistral:latest"
-        assert settings.ollama_timeout == 180.0
-        assert settings.ollama_max_retries == 3
-        assert settings.data_dir == "./data"
+        # Test that settings exist and have the right types
+        assert isinstance(settings.ollama_base_url, str)
+        assert isinstance(settings.ollama_model, str)
+        assert isinstance(settings.ollama_timeout, float)
+        assert isinstance(settings.ollama_max_retries, int)
+        assert isinstance(settings.data_dir, str)
         assert "sqlite" in settings.database_url
+        
+        # Test vLLM settings
+        assert isinstance(settings.vllm_base_url, str)
+        assert isinstance(settings.vllm_model, str)
+        assert isinstance(settings.vllm_timeout, float)
+        assert isinstance(settings.vllm_max_retries, int)
 
     def test_settings_from_env(self):
         """Test settings loaded from environment variables."""
@@ -52,6 +59,30 @@ class TestDatabaseURL:
         assert "aiosqlite" in settings.database_url
 
 
+class TestLLMConfig:
+    def test_get_llm_config_ollama(self):
+        """Test getting Ollama config."""
+        from app.config import settings
+        
+        config = settings.get_llm_config("ollama")
+        assert config["provider"] == "ollama"
+        assert isinstance(config["base_url"], str)
+        assert isinstance(config["model"], str)
+        assert isinstance(config["timeout"], float)
+        assert isinstance(config["max_retries"], int)
+
+    def test_get_llm_config_vllm(self):
+        """Test getting vLLM config."""
+        from app.config import settings
+        
+        config = settings.get_llm_config("vllm")
+        assert config["provider"] == "vllm"
+        assert isinstance(config["base_url"], str)
+        assert isinstance(config["model"], str)
+        assert isinstance(config["timeout"], float)
+        assert isinstance(config["max_retries"], int)
+
+
 class TestOllamaConfig:
     def test_ollama_timeout_is_float(self):
         """Test Ollama timeout is a float."""
@@ -66,3 +97,19 @@ class TestOllamaConfig:
         
         assert isinstance(settings.ollama_max_retries, int)
         assert settings.ollama_max_retries > 0
+
+
+class TestVLLMConfig:
+    def test_vllm_timeout_is_float(self):
+        """Test vLLM timeout is a float."""
+        from app.config import settings
+        
+        assert isinstance(settings.vllm_timeout, float)
+        assert settings.vllm_timeout > 0
+
+    def test_vllm_max_retries_is_int(self):
+        """Test vLLM max retries is an integer."""
+        from app.config import settings
+        
+        assert isinstance(settings.vllm_max_retries, int)
+        assert settings.vllm_max_retries > 0

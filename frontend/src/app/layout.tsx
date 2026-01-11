@@ -16,6 +16,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import "@fortawesome/fontawesome-svg-core/styles.css";
 import { Navigation } from "@/components/Navigation";
+import { LLMStatus } from "@/components/LLMStatus";
 
 // Add all commonly used icons to the library to prevent layout shifts
 library.add(
@@ -81,7 +82,7 @@ export default function RootLayout({
                     </Link>
                     <div className="flex items-center space-x-2 sm:space-x-4">
                       <div className="hidden sm:block">
-                        <OllamaStatus />
+                        <LLMStatus />
                       </div>
                       <Navigation />
                     </div>
@@ -96,15 +97,5 @@ export default function RootLayout({
         </QueryProvider>
       </body>
     </html>
-  );
-}
-
-function OllamaStatus() {
-  // This will be implemented with real health check
-  return (
-    <div className="flex items-center space-x-2 text-white">
-      <FontAwesomeIcon icon={faRobot} className="text-green-400" />
-      <span className="text-sm">Ollama: Online</span>
-    </div>
   );
 }

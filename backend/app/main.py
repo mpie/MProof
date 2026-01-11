@@ -3,6 +3,16 @@ import warnings
 # This must be done BEFORE importing FastAPI/Pydantic
 warnings.filterwarnings("ignore", message=".*Field.*has conflict with protected namespace.*model_.*", category=UserWarning)
 
+# Suppress urllib3 OpenSSL warning on macOS (LibreSSL vs OpenSSL compatibility)
+# This is a known issue: urllib3 v2 requires OpenSSL 1.1.1+, but macOS uses LibreSSL
+# The warning is harmless - httpx/urllib3 still works correctly with LibreSSL
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+except ImportError:
+    # urllib3 might not be installed or version doesn't have this warning
+    pass
+
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -21,7 +31,7 @@ from app.services.job_queue import JobQueue
 from app.api import (
     health, subjects, documents, document_types,
     upload, sse, queue, classifier, api_keys, skip_markers, mcp,
-    classification_policy, signals
+    classification_policy, signals, llm_settings
 )
 
 # Configure logging
@@ -47,6 +57,9 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Load LLM provider from database
+    await load_llm_provider_from_db()
+
     # Initialize job queue
     global job_queue
     job_queue = JobQueue(async_session_maker, llm_client, sse_service)
@@ -66,6 +79,28 @@ async def lifespan(app: FastAPI):
 
     await engine.dispose()
     logger.info("Application shutdown")
+
+
+async def load_llm_provider_from_db():
+    """Load the active LLM provider from database and configure LLM client."""
+    try:
+        from sqlalchemy import select
+        from app.models.database import AppSetting
+        
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(AppSetting).where(AppSetting.key == "llm_provider")
+            )
+            setting = result.scalar_one_or_none()
+            
+            if setting and setting.value in ("ollama", "vllm"):
+                provider = setting.value
+                logger.info(f"Loaded LLM provider from database: {provider}")
+                llm_client._refresh_config(provider)
+            else:
+                logger.info("No LLM provider setting in database, using default: ollama")
+    except Exception as e:
+        logger.warning(f"Failed to load LLM provider from database: {e}. Using default.")
 
 
 async def seed_initial_data():
@@ -243,6 +278,12 @@ app.include_router(
     skip_markers.router,
     prefix="/api",
     tags=["skip-markers"]
+)
+
+app.include_router(
+    llm_settings.router,
+    prefix="/api",
+    tags=["llm-settings"]
 )
 
 # Register MCP router at root level (only /mcp, not /api/mcp)

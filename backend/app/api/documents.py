@@ -2,14 +2,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from typing import Optional
+from typing import Optional, Any
 import json
 import os
+import logging
 from pathlib import Path
 from app.models.schemas import DocumentResponse, DocumentListResponse
 from app.config import settings
+import numpy as np
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, (np.integer, np.floating)):
+            return float(obj) if isinstance(obj, np.floating) else int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 @router.get("/documents", response_model=DocumentListResponse)
@@ -123,7 +136,7 @@ async def analyze_document(
     async with app_main.async_session_maker() as session:
         # Check if document exists
         result = await session.execute(
-            text("SELECT id, status FROM documents WHERE id = :document_id"),
+            text("SELECT id, status, subject_id FROM documents WHERE id = :document_id"),
             {"document_id": document_id}
         )
         document = result.fetchone()
@@ -145,6 +158,47 @@ async def analyze_document(
             {"document_id": document_id, "updated_at": datetime.now()}
         )
         await session.commit()
+        
+        # Clean fraud analysis cache and artifacts for re-analysis (run in background thread)
+        from pathlib import Path
+        from app.config import settings
+        import concurrent.futures
+        
+        def cleanup_artifacts():
+            doc_dir = Path(settings.data_dir) / "subjects" / str(document.subject_id) / "documents" / str(document_id)
+            
+            # Remove fraud analysis cache
+            fraud_cache_path = doc_dir / "fraud_analysis.json"
+            if fraud_cache_path.exists():
+                try:
+                    fraud_cache_path.unlink()
+                    logger.info(f"Removed fraud analysis cache for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove fraud analysis cache: {e}")
+            
+            # Remove ELA heatmap
+            ela_heatmap_path = doc_dir / "risk" / "ela_heatmap.png"
+            if ela_heatmap_path.exists():
+                try:
+                    ela_heatmap_path.unlink()
+                    logger.info(f"Removed ELA heatmap for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove ELA heatmap: {e}")
+            
+            # Remove risk directory artifacts (but keep the directory structure)
+            risk_dir = doc_dir / "risk"
+            if risk_dir.exists():
+                try:
+                    for artifact in risk_dir.glob("*"):
+                        if artifact.is_file():
+                            artifact.unlink()
+                            logger.debug(f"Removed risk artifact {artifact.name} for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove risk artifacts: {e}")
+        
+        # Run cleanup in background thread (don't block response)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            executor.submit(cleanup_artifacts)
 
         # Ensure queue exists + is running, then enqueue
         if app_main.job_queue is None:
@@ -174,7 +228,7 @@ async def get_document_artifact(
     allowed_paths = [
         "original/", "text/extracted.json", "text/extracted.txt",
         "metadata/result.json", "metadata/validation.json", "metadata/evidence.json",
-        "risk/result.json",
+        "risk/result.json", "risk/ela_heatmap.png",
         "llm/",
     ]
 
@@ -213,6 +267,10 @@ async def get_document_artifact(
             media_type = 'application/json'
         elif path.endswith('.txt'):
             media_type = 'text/plain'
+        elif path.endswith('.png'):
+            media_type = 'image/png'
+        elif path.endswith('.jpg') or path.endswith('.jpeg'):
+            media_type = 'image/jpeg'
         elif path.startswith('original/'):
             # Detect MIME type for original files
             import mimetypes
@@ -364,11 +422,14 @@ async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda
                 except Exception:
                     pass
         
-        # Run fraud analysis
-        report = fraud_detector().analyze_document(
+        # Run fraud analysis with LLM client for signal enhancement
+        import app.main as app_main
+        detector = fraud_detector(llm_client=app_main.llm_client)
+        report = await detector.analyze_document(
             file_bytes=file_bytes,
             filename=document.original_filename,
             document_id=document.id,
+            document_dir=doc_dir,
             extracted_text=extracted_text,
             classification_confidence=document.doc_type_confidence,
             existing_signals=existing_signals,
@@ -378,7 +439,7 @@ async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda
         report_dict = report.to_dict()
         try:
             fraud_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            fraud_cache_path.write_text(json.dumps(report_dict, indent=2))
+            fraud_cache_path.write_text(json.dumps(report_dict, indent=2, cls=NumpyJSONEncoder))
         except Exception as e:
             logger.warning(f"Failed to cache fraud analysis: {e}")
         
@@ -395,10 +456,12 @@ async def analyze_fraud_upload(
     Useful for quick checks before full processing.
     """
     from app.services.fraud_detector import fraud_detector
-    
-    report = fraud_detector().analyze_document(
+    import app.main as app_main
+
+    detector = fraud_detector(llm_client=app_main.llm_client)
+    report = await detector.analyze_document(
         file_bytes=file_bytes,
         filename=filename,
     )
-    
+
     return report.to_dict()

@@ -433,17 +433,29 @@ class ClassifierService:
     def _load_model_by_name(self, model_name: str) -> Optional[NaiveBayesTextClassifier]:
         """Load a classifier model by its name (e.g., 'backoffice', 'mdoc')."""
         model_dir = Path(settings.data_dir) / "models"
-        model_path = model_dir / f"doc_type_classifier_{model_name}.json"
+        
+        # Handle "default" specially - use the base model file
+        if model_name == "default":
+            model_path = model_dir / "doc_type_classifier.json"
+        else:
+            model_path = model_dir / f"doc_type_classifier_{model_name}.json"
         
         if not model_path.exists():
-            logger.warning(f"Model file not found: {model_path}")
-            return None
+            # Fallback to default model if named model doesn't exist
+            default_path = model_dir / "doc_type_classifier.json"
+            if model_name != "default" and default_path.exists():
+                logger.info(f"Model '{model_name}' not found, falling back to default NB model")
+                model_path = default_path
+            else:
+                logger.warning(f"Model file not found: {model_path}")
+                return None
         
         try:
             with open(model_path, "r", encoding="utf-8") as f:
                 model = json.load(f)
             if not isinstance(model, dict) or not model.get("labels"):
                 return None
+            logger.info(f"Loaded NB classifier from {model_path}")
             return NaiveBayesTextClassifier(model)
         except Exception as e:
             logger.warning(f"Failed to load model '{model_name}': {e}")

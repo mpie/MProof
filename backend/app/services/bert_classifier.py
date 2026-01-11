@@ -124,6 +124,19 @@ class BertClassifierService:
             return self._model_dir / f"bert_classifier_{model_name}.pkl"
         return self._model_dir / "bert_classifier_default.pkl"
     
+    def list_available_models(self) -> List[str]:
+        """List all available BERT model names."""
+        models = []
+        if not self._model_dir.exists():
+            return models
+        
+        for pkl_file in self._model_dir.glob("bert_classifier_*.pkl"):
+            # Extract model name from filename: bert_classifier_<name>.pkl
+            name = pkl_file.stem.replace("bert_classifier_", "")
+            models.append(name)
+        
+        return sorted(models)
+    
     def _load_classifier(self, model_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Load a trained BERT classifier from disk."""
         cache_key = model_name or "default"

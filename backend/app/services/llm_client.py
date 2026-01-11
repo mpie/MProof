@@ -1,6 +1,7 @@
 import json
 import asyncio
-from typing import Dict, Any, Optional, List
+import time
+from typing import Dict, Any, Optional, List, Tuple
 import httpx
 from app.config import settings
 import logging
@@ -13,65 +14,194 @@ class LLMClientError(Exception):
 
 
 class LLMClient:
-    def __init__(self):
-        self.base_url = settings.ollama_base_url.rstrip('/')
-        self.model = settings.ollama_model
-        self.timeout = settings.ollama_timeout
-        self.max_retries = settings.ollama_max_retries
+    def __init__(self, provider: Optional[str] = None):
+        """
+        Initialize LLM client.
+        
+        Args:
+            provider: Optional provider override. If not specified, uses the active provider.
+        """
+        self._refresh_config(provider)
+    
+    def _refresh_config(self, provider: Optional[str] = None) -> None:
+        """Refresh configuration from settings."""
+        use_provider = provider or "ollama"  # Default to ollama
+        config = settings.get_llm_config(use_provider)
+        
+        self.provider = config["provider"]
+        self.base_url = config["base_url"].rstrip('/')
+        self.model = config["model"]
+        self.timeout = config["timeout"]
+        self.max_retries = config["max_retries"]
+        self.max_tokens = config.get("max_tokens", 2048)
+        
+        logger.info(f"LLMClient configured with provider: {self.provider}, base_url: {self.base_url}, model: {self.model}, max_tokens: {self.max_tokens}")
 
     def _generate_curl_command(self, url: str, payload: Dict[str, Any]) -> str:
         """Generate curl command equivalent of the HTTP request."""
         json_payload = json.dumps(payload, indent=2)
         return f"curl -X POST '{url}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{json_payload}'"
 
-    async def _make_request(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> tuple[str, str]:
-        """Make a request to Ollama API with retries. Returns (response_text, curl_command)."""
-        url = f"{self.base_url}/api/chat"
+    def _get_api_url(self) -> str:
+        """Get the API endpoint URL based on the provider."""
+        if self.provider == "vllm":
+            return f"{self.base_url}/v1/chat/completions"
+        else:  # ollama
+            return f"{self.base_url}/api/chat"
 
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "options": {
+    def _estimate_input_tokens(self, messages: List[Dict[str, str]]) -> int:
+        """Estimate input tokens from messages (conservative estimate: ~3.5 chars per token for safety)."""
+        total_chars = sum(len(msg.get("content", "")) for msg in messages)
+        # Conservative estimate: ~3.5 chars per token (instead of 4) to account for whitespace, punctuation, etc.
+        # Add overhead for message structure (role, JSON formatting, etc.) - roughly 15 tokens per message
+        estimated_tokens = int((total_chars / 3.5) + (len(messages) * 15))
+        # Add 20% buffer for safety (JSON schemas, special characters, etc.)
+        estimated_tokens = int(estimated_tokens * 1.2)
+        return estimated_tokens
+
+    def _calculate_safe_max_tokens(self, messages: List[Dict[str, str]], context_length: int = 4096) -> int:
+        """Calculate safe max_tokens based on input length and context limit."""
+        input_tokens = self._estimate_input_tokens(messages)
+        safety_margin = 200  # Increased safety margin for vLLM
+        available_tokens = context_length - input_tokens - safety_margin
+        
+        # Ensure we have at least some tokens available, but cap at configured max
+        if available_tokens < 100:
+            # If we're really tight on space, use a minimal amount
+            safe_max = max(50, available_tokens // 2) if available_tokens > 0 else 50
+            logger.warning(
+                f"Very limited token space! Using {safe_max} max_tokens "
+                f"(input: ~{input_tokens} tokens, available: {available_tokens}, context: {context_length})"
+            )
+        else:
+            # Use the minimum of configured max_tokens and available tokens
+            safe_max = min(self.max_tokens, available_tokens)
+            
+            if safe_max < self.max_tokens:
+                logger.warning(
+                    f"Reducing max_tokens from {self.max_tokens} to {safe_max} "
+                    f"(input: ~{input_tokens} tokens, available: {available_tokens}, context: {context_length})"
+                )
+        
+        return safe_max
+
+    def _build_request_payload(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Dict[str, Any]:
+        """Build the request payload based on the provider."""
+        if self.provider == "vllm":
+            # Calculate available tokens based on actual model context (4096 for most models)
+            MODEL_CONTEXT = 4096
+            SAFETY_MARGIN = 100  # Buffer for tokenization differences
+            
+            input_tokens = self._estimate_input_tokens(messages)
+            available_tokens = MODEL_CONTEXT - input_tokens - SAFETY_MARGIN
+            
+            # Ensure we don't exceed available space
+            safe_max_tokens = max(available_tokens, 256)  # Minimum 256 for some response
+            # Cap to reasonable maximum
+            safe_max_tokens = min(safe_max_tokens, 2048)
+            
+            logger.info(f"vLLM request: input ~{input_tokens} tokens, available ~{available_tokens}, max_tokens={safe_max_tokens}")
+            # OpenAI-compatible format for vLLM
+            return {
+                "model": self.model,
+                "messages": messages,
                 "temperature": temperature,
-                "num_predict": 8192,  # Increased to prevent truncated JSON responses (especially for metadata extraction)
-                "top_p": 0.9
+                "max_tokens": safe_max_tokens,
+                "top_p": 0.9,
+                "stop": ["\n\n\n", "```", "---"]  # Stop sequences to prevent infinite generation
             }
-        }
+        else:  # ollama
+            return {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": self.max_tokens,
+                    "top_p": 0.9
+                }
+            }
+
+    def _extract_response_content(self, data: Dict[str, Any]) -> str:
+        """Extract the response content based on the provider."""
+        if self.provider == "vllm":
+            # OpenAI-compatible format
+            if "choices" not in data or not data["choices"]:
+                raise LLMClientError("Invalid response format from vLLM")
+            choice = data["choices"][0]
+            if "message" not in choice or "content" not in choice["message"]:
+                raise LLMClientError("Invalid response format from vLLM")
+            return choice["message"]["content"]
+        else:  # ollama
+            if "message" not in data or "content" not in data["message"]:
+                raise LLMClientError("Invalid response format from Ollama")
+            return data["message"]["content"]
+
+    async def _make_request(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Tuple[str, str, float]:
+        """Make a request to the LLM API with retries. Returns (response_text, curl_command, duration_seconds)."""
+        url = self._get_api_url()
+        payload = self._build_request_payload(messages, temperature)
 
         # Generate curl command
         curl_command = self._generate_curl_command(url, payload)
 
         # Log detailed request information
         user_message = next((msg["content"] for msg in messages if msg["role"] == "user"), "")
-        logger.info(f"LLM Request to model '{self.model}' - prompt length: {len(user_message)} chars")
+        logger.info(f"LLM Request to {self.provider} model '{self.model}' - prompt length: {len(user_message)} chars")
         logger.info(f"LLM Request (curl equivalent):\n{curl_command}")
 
         for attempt in range(self.max_retries):
             try:
+                start_time = time.time()
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.post(url, json=payload)
                     response.raise_for_status()
+                    duration = time.time() - start_time
 
                     data = response.json()
-                    if "message" not in data or "content" not in data["message"]:
-                        raise LLMClientError("Invalid response format from Ollama")
-
-                    # Log response info
-                    response_content = data["message"]["content"]
+                    response_content = self._extract_response_content(data)
                     
-                    # Check if response was truncated (Ollama may set done: false or truncate silently)
-                    done = data.get("done", True)
-                    if not done:
-                        logger.warning(f"LLM response may be incomplete (done=false). Response length: {len(response_content)} chars")
+                    # Check if response was truncated (Ollama-specific)
+                    if self.provider == "ollama":
+                        done = data.get("done", True)
+                        if not done:
+                            logger.warning(f"LLM response may be incomplete (done=false). Response length: {len(response_content)} chars")
                     
                     # Check for incomplete JSON in response
-                    if response_content.count('{') > response_content.count('}') or response_content.count('[') > response_content.count(']'):
-                        logger.warning(f"LLM response appears truncated (unbalanced braces/brackets). Response length: {len(response_content)} chars")
+                    # But also check if we have multiple complete JSON objects (which is valid for merging)
+                    open_braces = response_content.count('{')
+                    close_braces = response_content.count('}')
+                    open_brackets = response_content.count('[')
+                    close_brackets = response_content.count(']')
                     
-                    logger.info(f"LLM Response received ({len(response_content)} chars): {response_content[:200]}{'...' if len(response_content) > 200 else ''}")
+                    # If braces/brackets are balanced or only off by 1 (common with multiple objects), check for multiple objects
+                    brace_diff = open_braces - close_braces
+                    bracket_diff = open_brackets - close_brackets
+                    
+                    # Check for multiple JSON objects by looking for patterns like "}\n{" or "}\r\n{" or "} } {"
+                    json_object_patterns = [
+                        response_content.count('}\n{'),
+                        response_content.count('}\r\n{'),
+                        response_content.count('} } {'),
+                        response_content.count('}\n\n{'),
+                    ]
+                    json_object_count = sum(json_object_patterns) + (1 if response_content.strip().startswith('{') else 0)
+                    
+                    if abs(brace_diff) <= 1 and bracket_diff == 0:
+                        # Likely multiple JSON objects
+                        if json_object_count > 1:
+                            logger.info(f"LLM response contains {json_object_count} separate JSON objects (will be merged automatically)")
+                        # Don't warn - this is valid and will be handled by repair logic
+                    elif brace_diff > 1 or bracket_diff > 0:
+                        # Check if we have multiple objects despite unbalanced braces (extra closing braces)
+                        if json_object_count > 1:
+                            logger.info(f"LLM response contains {json_object_count} separate JSON objects with extra closing braces (will be merged automatically)")
+                        else:
+                            logger.warning(f"LLM response appears truncated (unbalanced braces/brackets: {open_braces}/{close_braces} braces, {open_brackets}/{close_brackets} brackets). Response length: {len(response_content)} chars")
+                    
+                    logger.info(f"LLM Response received ({len(response_content)} chars) in {duration:.2f}s: {response_content[:200]}{'...' if len(response_content) > 200 else ''}")
 
-                    return response_content, curl_command
+                    return response_content, curl_command, duration
 
             except httpx.TimeoutException:
                 logger.warning(f"LLM request timeout (attempt {attempt + 1}/{self.max_retries})")
@@ -80,8 +210,18 @@ class LLMClient:
                 await asyncio.sleep(1)
 
             except httpx.HTTPStatusError as e:
+                # Try to get error details from response body
+                try:
+                    error_body = e.response.text
+                    logger.error(f"LLM HTTP error {e.response.status_code} response body: {error_body}")
+                except Exception:
+                    error_body = "Could not read response body"
+                
                 if e.response.status_code == 404:
-                    raise LLMClientError(f"Model '{self.model}' not found on Ollama server")
+                    raise LLMClientError(f"Model '{self.model}' not found on {self.provider} server")
+                elif e.response.status_code == 400:
+                    # 400 errors are usually client errors that won't be fixed by retrying
+                    raise LLMClientError(f"LLM request rejected (400): {error_body}")
                 logger.warning(f"LLM HTTP error {e.response.status_code} (attempt {attempt + 1}/{self.max_retries})")
                 if attempt == self.max_retries - 1:
                     raise e
@@ -95,10 +235,104 @@ class LLMClient:
 
         raise LLMClientError("Max retries exceeded")
 
+    async def _make_single_request_no_retry(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Tuple[str, str, float]:
+        """Make a single request without retries (for batch processing). Returns (response_text, curl_command, duration_seconds)."""
+        url = self._get_api_url()
+        payload = self._build_request_payload(messages, temperature)
+        curl_command = self._generate_curl_command(url, payload)
+
+        start_time = time.time()
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(url, json=payload)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                error_body = response.text
+                logger.error(f"LLM HTTP error {e.response.status_code} response body: {error_body}")
+                if e.response.status_code == 400:
+                    raise LLMClientError(f"LLM request rejected (400): {error_body}")
+                raise
+            data = response.json()
+            response_content = self._extract_response_content(data)
+            duration = time.time() - start_time
+            return response_content, curl_command, duration
+
+    async def make_batch_requests(
+        self,
+        requests: List[Dict[str, Any]],
+        temperature: float = 0.1
+    ) -> List[Tuple[str, str, float]]:
+        """
+        Make multiple requests in parallel (optimized for vLLM).
+        
+        Each request dict should have:
+        - messages: List[Dict[str, str]] - The chat messages
+        
+        Returns list of (response_text, curl_command, duration_seconds) tuples in the same order.
+        
+        For vLLM: All requests are sent in parallel.
+        For Ollama: Requests are sent sequentially (Ollama handles one at a time).
+        """
+        if not requests:
+            return []
+        
+        if self.provider == "vllm":
+            # vLLM can handle parallel requests efficiently
+            logger.info(f"Making {len(requests)} parallel requests to vLLM")
+            
+            async def make_single(req: Dict[str, Any]) -> Tuple[str, str, float]:
+                messages = req.get("messages", [])
+                temp = req.get("temperature", temperature)
+                return await self._make_single_request_no_retry(messages, temp)
+            
+            # Run all requests in parallel
+            results = await asyncio.gather(*[make_single(req) for req in requests], return_exceptions=True)
+            
+            # Process results, re-raising exceptions
+            processed_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Batch request {i} failed: {result}")
+                    raise LLMClientError(f"Batch request {i} failed: {result}")
+                processed_results.append(result)
+            
+            return processed_results
+        else:
+            # Ollama: process sequentially
+            logger.info(f"Making {len(requests)} sequential requests to Ollama")
+            results = []
+            for req in requests:
+                messages = req.get("messages", [])
+                temp = req.get("temperature", temperature)
+                result = await self._make_request(messages, temp)
+                results.append(result)
+            return results
+
     def _repair_json(self, text: str) -> Optional[Dict[str, Any]]:
         """Attempt to repair malformed JSON responses, including multiple JSON objects."""
         # Remove markdown code blocks
         text = text.strip()
+        
+        # Remove instruction text that the LLM sometimes echoes back
+        # This handles cases where the LLM includes schema instructions in its response
+        import re
+        instruction_patterns = [
+            r'"evidence"\s+field\s+MUST\s+be\s+an?\s+[A-Z]+[^"]*',  # "evidence" field MUST be an OBJECT/ARRAY...
+            r'field\s+MUST\s+be\s+an?\s+[A-Z]+[^"]*',  # field MUST be an...
+            r'CRITICAL\s+RULES:.*?(?=\{|\Z)',  # CRITICAL RULES: ...
+            r'Example\s+structure.*?(?=\{|\Z)',  # Example structure...
+            r'IMPORTANT:.*?(?=\{|\Z)',  # IMPORTANT: ...
+            r'NOTE:.*?(?=\{|\Z)',  # NOTE: ...
+        ]
+        
+        original_text = text
+        for pattern in instruction_patterns:
+            text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+        
+        if text != original_text:
+            logger.info("Removed instruction text from LLM response")
+            text = text.strip()
+        
         if text.startswith("```json"):
             text = text[7:]
         if text.startswith("```"):
@@ -135,14 +369,26 @@ class LLMClient:
                         break
                     i -= 1
                 
-                # If we found an opening quote but no closing quote after it, we're mid-string
+                # If we found an opening quote, we need to close the string
                 if last_quote_pos >= 0:
-                    # Check if there's content after the last quote (we're in a string)
-                    remaining = text[last_quote_pos+1:].strip()
-                    if remaining and not remaining.endswith(('}', ']', ',')):
-                        # We're definitely in a string - close it
-                        text = text + '"'
-                        logger.info("Added closing quote for truncated string")
+                    # Check what's after the last quote
+                    remaining = text[last_quote_pos+1:]
+                    
+                    # If remaining is empty or doesn't end with a structure char, close the string
+                    # This handles cases like: "datum_overeenkomst": "  (truncated mid-value)
+                    # and cases like: "datum_overeenkomst": "some value  (truncated mid-string)
+                    if not remaining.rstrip().endswith(('}', ']', ',', ':')):
+                        # Close the string with null value if it's a key-value truncation
+                        # Check if this looks like a truncated value (preceded by colon)
+                        before_quote = text[:last_quote_pos].rstrip()
+                        if before_quote.endswith(':'):
+                            # The value was truncated - use null instead
+                            text = text[:last_quote_pos] + 'null'
+                            logger.info("Replaced truncated string value with null")
+                        else:
+                            # Just close the string
+                            text = text + '"'
+                            logger.info("Added closing quote for truncated string")
             
             # Add missing closing brackets first, then braces
             text = text + (']' * (open_brackets - close_brackets))
@@ -176,15 +422,40 @@ class LLMClient:
         elif len(json_objects) > 1:
             # Multiple JSON objects - try to merge them
             logger.info(f"Found {len(json_objects)} separate JSON objects, attempting merge")
-            logger.debug(f"JSON objects: {json_objects}")
+            logger.debug(f"JSON objects keys: {[list(obj.keys()) for obj in json_objects]}")
             merged = self._merge_json_objects(json_objects)
-            if merged:
-                logger.info("JSON objects successfully merged")
+            if merged and (merged.get("data") or merged.get("evidence")):
+                logger.info(f"JSON objects successfully merged into single object with keys: {list(merged.keys())}")
                 logger.debug(f"Merged result: {merged}")
+                return merged
             else:
-                logger.warning("Failed to merge JSON objects, returning first object")
-                return json_objects[0]  # Return first object as fallback
-            return merged
+                logger.warning("Merging produced empty or invalid result, trying direct combination")
+                # Try direct combination as fallback
+                if len(json_objects) == 2:
+                    obj1, obj2 = json_objects[0], json_objects[1]
+                    if "data" in obj1 and "evidence" in obj2:
+                        return {"data": obj1["data"], "evidence": obj2["evidence"]}
+                    elif "evidence" in obj1 and "data" in obj2:
+                        return {"data": obj2["data"], "evidence": obj1["evidence"]}
+                    # If both have data, merge them
+                    elif "data" in obj1 and "data" in obj2:
+                        merged_data = {}
+                        if isinstance(obj1["data"], dict) and isinstance(obj2["data"], dict):
+                            merged_data.update(obj1["data"])
+                            merged_data.update({k: v for k, v in obj2["data"].items() if v is not None})
+                        return {"data": merged_data}
+                # Last resort: return first object or combine all data keys
+                logger.warning("Using first JSON object as fallback")
+                if json_objects[0]:
+                    return json_objects[0]
+                # If first is empty, try to combine all
+                combined = {}
+                for obj in json_objects:
+                    if "data" in obj and isinstance(obj["data"], dict):
+                        if "data" not in combined:
+                            combined["data"] = {}
+                        combined["data"].update({k: v for k, v in obj["data"].items() if v is not None})
+                return combined if combined else json_objects[0] if json_objects else {}
         else:
             # No JSON objects found - try aggressive extraction
             logger.warning(f"Failed to extract JSON objects, trying aggressive extraction. Text preview: {text[:200]}")
@@ -362,10 +633,55 @@ class LLMClient:
                 result["evidence"] = merged_evidence
             logger.info(f"Successfully merged JSON objects. Data keys: {list(merged_data.keys())}, Evidence keys: {list(merged_evidence.keys())}")
             return result
+        
+        # Special case: if we have exactly 2 objects, try to combine them directly
+        # This handles the case where LLM returns {"data": {...}} and {"evidence": {...}} separately
+        if len(objects) == 2:
+            obj1, obj2 = objects[0], objects[1]
+            combined = {}
+            
+            # Check if one has data and the other has evidence
+            if "data" in obj1 and "evidence" in obj2:
+                combined["data"] = obj1["data"]
+                combined["evidence"] = obj2["evidence"]
+                logger.info("Combined two objects: first has data, second has evidence")
+            elif "evidence" in obj1 and "data" in obj2:
+                combined["data"] = obj2["data"]
+                combined["evidence"] = obj1["evidence"]
+                logger.info("Combined two objects: first has evidence, second has data")
+            else:
+                # Try to merge all keys from both objects
+                combined = {**obj1, **obj2}
+                logger.info(f"Combined two objects by merging all keys: {list(combined.keys())}")
+            
+            if combined:
+                return combined
 
         # Fallback: return the first object if merging fails
         logger.warning("Merging produced empty result, returning first object as fallback")
         return objects[0]
+
+    async def generate_text(self, prompt: str, max_tokens: Optional[int] = None, temperature: float = 0.3) -> Tuple[str, float]:
+        """Generate plain text response from LLM. Returns (response_text, duration_seconds)."""
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # Temporarily override max_tokens if provided
+        original_max_tokens = self.max_tokens
+        if max_tokens:
+            self.max_tokens = max_tokens
+        
+        try:
+            response_text, _, duration = await self._make_request(messages, temperature=temperature)
+            return response_text.strip(), duration
+        finally:
+            # Restore original max_tokens
+            if max_tokens:
+                self.max_tokens = original_max_tokens
 
     async def generate_json(self, prompt: str, schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Generate JSON response from LLM with validation."""
@@ -408,12 +724,12 @@ class LLMClient:
             logger.error(f"LLM JSON generation failed: {e}")
             raise
 
-    async def generate_json_with_raw(self, prompt: str, schema: Optional[Dict[str, Any]] = None) -> tuple[Dict[str, Any], str, str]:
-        """Generate JSON response from LLM, returning parsed JSON, raw response text, and curl command."""
+    async def generate_json_with_raw(self, prompt: str, schema: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], str, str, float]:
+        """Generate JSON response from LLM, returning parsed JSON, raw response text, curl command, and duration in seconds."""
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant that responds ONLY with valid JSON. Do not include any explanatory text, markdown formatting, code blocks, or multiple JSON objects. Always respond with exactly ONE complete JSON object that matches the requested schema. If extracting data from multiple pages, combine all results into a single JSON response."
+                "content": "You are a document analysis assistant. Extract information from the provided document text and respond with valid JSON only. Always extract REAL values from the document - never use placeholder text. Respond with a single complete JSON object, no explanations or markdown."
             },
             {
                 "role": "user",
@@ -424,30 +740,134 @@ class LLMClient:
         if schema:
             messages[0]["content"] += f"\n\nExpected JSON schema: {json.dumps(schema, indent=2)}"
 
-        response_text, curl_command = await self._make_request(messages)
+        response_text, curl_command, duration = await self._make_request(messages)
+
+        # Pre-process: remove any instruction text that the LLM might have echoed
+        import re
+        cleaned_response = response_text
+        instruction_patterns = [
+            r'"evidence"\s+field\s+MUST\s+be\s+[^"]*',  # "evidence" field MUST be...
+            r'field\s+MUST\s+be\s+[^"]*(?=\s*"evidence"|$)',  # field MUST be...
+        ]
+        for pattern in instruction_patterns:
+            cleaned_response = re.sub(pattern, '', cleaned_response, flags=re.IGNORECASE)
+        
+        if cleaned_response != response_text:
+            logger.info("Pre-cleaned instruction text from LLM response")
+            # Try to find and keep only valid JSON structure
+            # Look for the pattern: {"data": {...}} or {"data": {...}, "evidence": {...}}
+            json_start = cleaned_response.find('{')
+            if json_start >= 0:
+                cleaned_response = cleaned_response[json_start:]
 
         # Try to parse JSON
+        result = None  # Initialize to avoid "referenced before assignment" errors
         try:
-            result = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            # Show more context around the error
-            error_pos = getattr(e, 'pos', None)
-            if error_pos:
-                start = max(0, error_pos - 100)
-                end = min(len(response_text), error_pos + 100)
-                context = response_text[start:end]
-                logger.warning(f"Initial JSON parse failed at position {error_pos}: {e}")
-                logger.warning(f"Context around error: ...{context}...")
-            else:
-                logger.warning(f"Initial JSON parse failed: {e}. Response preview: {response_text[:300]}...")
-            logger.debug(f"Full response text ({len(response_text)} chars): {response_text}")
-            result = self._repair_json(response_text)
+            result = json.loads(cleaned_response)
+        except json.JSONDecodeError:
+            # Try with original response if cleaned version failed
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError as e:
+                # Check if response has preamble text before the JSON
+                # Try to find and extract the JSON object
+                first_brace = response_text.find('{')
+                if first_brace > 0:
+                    # There's text before the JSON - try to extract just the JSON part
+                    logger.info(f"Found preamble text before JSON (starts at char {first_brace}), extracting JSON")
+                    json_part = response_text[first_brace:]
+                    # Find matching closing brace
+                    brace_count = 0
+                    end_pos = -1
+                    for i, char in enumerate(json_part):
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i
+                                break
+                    if end_pos > 0:
+                        json_str = json_part[:end_pos + 1]
+                        try:
+                            result = json.loads(json_str)
+                            logger.info("Successfully extracted JSON from response with preamble")
+                        except json.JSONDecodeError:
+                            result = None  # Fall through to repair
+                    else:
+                        result = None
+                
+                # Check if response looks like explanation text rather than JSON
+                # If it starts with bullet points, dashes, or explanation text, try to extract JSON from it
+                if result is None and response_text.strip().startswith(('- ', '* ', '• ', 'If you', 'Example', 'Note:', 'IMPORTANT:', 'Here')):
+                    logger.warning(f"Response appears to be explanation text, attempting to extract JSON from it")
+                    # Try to find JSON object in the text
+                    # Look for JSON object pattern
+                    json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+                    json_matches = re.finditer(json_pattern, response_text, re.DOTALL)
+                    json_candidates = []
+                    for match in json_matches:
+                        try:
+                            candidate = json.loads(match.group(0))
+                            if isinstance(candidate, dict) and ('data' in candidate or 'evidence' in candidate):
+                                json_candidates.append((len(match.group(0)), candidate))
+                        except:
+                            pass
+                    
+                    if json_candidates:
+                        # Use the largest valid JSON object found
+                        json_candidates.sort(reverse=True, key=lambda x: x[0])
+                        result = json_candidates[0][1]
+                        logger.info(f"Extracted JSON object from explanation text ({len(json_candidates)} candidates found)")
+                    else:
+                        # Fall through to repair_json
+                        result = None
+                
+                if result is None:
+                    # Show more context around the error
+                    error_pos = getattr(e, 'pos', None)
+                    if error_pos:
+                        start = max(0, error_pos - 100)
+                        end = min(len(response_text), error_pos + 100)
+                        context = response_text[start:end]
+                        logger.warning(f"Initial JSON parse failed at position {error_pos}: {e}")
+                        logger.warning(f"Context around error: ...{context}...")
+                    else:
+                        logger.warning(f"Initial JSON parse failed: {e}. Response preview: {response_text[:300]}...")
+                    logger.debug(f"Full response text ({len(response_text)} chars): {response_text}")
+                    result = self._repair_json(response_text)
 
-            if result is None:
-                logger.error(f"All JSON repair attempts failed. Response length: {len(response_text)} chars")
-                logger.error(f"Response text (first 1000 chars): {response_text[:1000]}")
-                raise LLMClientError(f"Failed to parse JSON response: {response_text[:500]}")
+                if result is None:
+                    logger.error(f"All JSON repair attempts failed. Response length: {len(response_text)} chars")
+                    logger.error(f"Response text (first 1000 chars): {response_text[:1000]}")
+                    raise LLMClientError(f"Failed to parse JSON response: {response_text[:500]}")
 
+        # Post-process the result to fix common LLM output issues
+        if isinstance(result, dict):
+            # Fix: Convert "null" strings to actual null values
+            if "data" in result and isinstance(result["data"], dict):
+                for key, value in result["data"].items():
+                    if value == "null" or value == "NULL":
+                        result["data"][key] = None
+                        logger.debug(f"Converted string 'null' to null for field '{key}'")
+            
+            # Fix: If evidence is nested inside data, move it out
+            if "data" in result and isinstance(result["data"], dict):
+                if "evidence" in result["data"] and "evidence" not in result:
+                    result["evidence"] = result["data"].pop("evidence")
+                    logger.info("Moved evidence from inside data to top level")
+                    # If evidence was a string "null", convert to empty object
+                    if result["evidence"] == "null" or result["evidence"] is None:
+                        result["evidence"] = {}
+            
+            # Fix: Ensure evidence exists as an object
+            if "evidence" not in result:
+                result["evidence"] = {}
+                logger.info("Added missing evidence object")
+            elif result["evidence"] == "null" or result["evidence"] is None:
+                result["evidence"] = {}
+                logger.info("Converted null evidence to empty object")
+        
         # Repair evidence structure if needed (LLM sometimes returns array instead of object)
         if isinstance(result, dict) and "evidence" in result:
             if isinstance(result["evidence"], list):
@@ -490,7 +910,7 @@ class LLMClient:
         if schema and not self._validate_schema(result, schema):
             raise LLMClientError(f"Response does not match expected schema: {result}")
 
-        return result, response_text, curl_command
+        return result, response_text, curl_command, duration
 
     def _validate_schema(self, data: Dict[str, Any], schema: Dict[str, Any]) -> bool:
         """Basic schema validation for LLM responses."""
@@ -526,19 +946,39 @@ class LLMClient:
         return True
 
     async def check_health(self) -> bool:
-        """Check if Ollama is reachable and model is available."""
+        """Check if the LLM provider is reachable and model is available."""
         try:
-            url = f"{self.base_url}/api/tags"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(url)
-                response.raise_for_status()
+            if self.provider == "vllm":
+                # vLLM uses OpenAI-compatible /v1/models endpoint
+                url = f"{self.base_url}/v1/models"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    
+                    data = response.json()
+                    models = data.get("data", [])
+                    model_ids = [model.get("id") for model in models]
+                    
+                    logger.info(f"vLLM available models: {model_ids}")
+                    logger.info(f"Configured model: '{self.model}' - found: {self.model in model_ids}")
+                    
+                    return self.model in model_ids
+            else:
+                # Ollama uses /api/tags endpoint
+                url = f"{self.base_url}/api/tags"
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
 
-                data = response.json()
-                models = data.get("models", [])
-                model_names = [model.get("name") for model in models]
+                    data = response.json()
+                    models = data.get("models", [])
+                    model_names = [model.get("name") for model in models]
 
-                return self.model in model_names
+                    logger.info(f"Ollama available models: {model_names}")
+                    logger.info(f"Configured model: '{self.model}' - found: {self.model in model_names}")
+
+                    return self.model in model_names
 
         except Exception as e:
-            logger.error(f"Ollama health check failed: {e}")
+            logger.error(f"{self.provider} health check failed: {e}")
             return False

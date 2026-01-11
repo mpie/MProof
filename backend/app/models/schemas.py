@@ -194,6 +194,15 @@ class DocumentListResponse(BaseModel):
 
 # Health check
 class OllamaHealth(BaseModel):
+    """Legacy Ollama health schema (kept for backward compatibility)."""
+    reachable: bool
+    base_url: str
+    model: str
+
+
+class LLMHealth(BaseModel):
+    """LLM provider health status."""
+    provider: str  # "ollama" or "vllm"
     reachable: bool
     base_url: str
     model: str
@@ -201,7 +210,8 @@ class OllamaHealth(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
-    ollama: OllamaHealth
+    ollama: OllamaHealth  # Kept for backward compatibility
+    llm: Optional[LLMHealth] = None  # New field with provider info
 
 
 # Evidence schema

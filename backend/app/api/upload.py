@@ -94,31 +94,10 @@ async def upload_document(
         if not result.fetchone():
             raise HTTPException(status_code=404, detail="Subject not found")
 
-        # Create document directory
-        doc_dir = Path(settings.data_dir) / "subjects" / str(subject_id) / "documents"
-        doc_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get next document ID
-        result = await session.execute(text("SELECT COALESCE(MAX(id), 0) + 1 FROM documents"))
-        document_id = result.scalar()
-
-        document_dir = doc_dir / str(document_id)
-        document_dir.mkdir(exist_ok=True)
-
-        # Save original file
-        original_dir = document_dir / "original"
-        original_dir.mkdir(exist_ok=True)
-        file_path = original_dir / safe_filename
-
-        with open(file_path, "wb") as f:
-            f.write(file_content)
-
-        logger.info(f"File saved to {file_path}")
-
-        # Compute SHA256
+        # Compute SHA256 first
         sha256 = hashlib.sha256(file_content).hexdigest()
 
-        # Create document record
+        # Create document record FIRST to get the real ID (atomic)
         from datetime import datetime
         now = datetime.now()
         result = await session.execute(
@@ -139,6 +118,20 @@ async def upload_document(
         await session.commit()
 
         logger.info(f"Document inserted with ID: {inserted_id}")
+
+        # NOW create directory with the real document ID
+        doc_dir = Path(settings.data_dir) / "subjects" / str(subject_id) / "documents"
+        document_dir = doc_dir / str(inserted_id)
+        original_dir = document_dir / "original"
+        original_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save original file
+        file_path = original_dir / safe_filename
+
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+
+        logger.info(f"File saved to {file_path}")
 
         # Enqueue for processing
         from app import main as app_main

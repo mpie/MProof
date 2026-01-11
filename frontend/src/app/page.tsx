@@ -35,6 +35,7 @@ import {
   listSubjects,
   subscribeToDocumentEvents,
   deleteDocument,
+  getFraudAnalysis,
 } from '@/lib/api';
 
 export default function Dashboard() {
@@ -46,6 +47,9 @@ export default function Dashboard() {
   const [celebrateDone, setCelebrateDone] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ document: Document; isOpen: boolean } | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [blinkingDocs, setBlinkingDocs] = useState<Set<number>>(new Set());
+  const prevDocStatusesRef = useRef<Map<number, string>>(new Map());
+  const [uploadedDocumentIds, setUploadedDocumentIds] = useState<Set<number>>(new Set());
   
   // Use global model context for classification
   const { selectedModel: classifyModelName } = useModel();
@@ -56,14 +60,6 @@ export default function Dashboard() {
   useEffect(() => {
     setMounted(true);
   }, []);
-
-  const activeStep = useMemo(() => {
-    if (!selectedSubject) return 1;
-    if (!activeDocumentId) return 2;
-    // Step 3 is active when document is processing, completed when done
-    // Always return 3 if activeDocumentId exists, even if activeDocument is temporarily undefined
-    return 3;
-  }, [selectedSubject, activeDocumentId]);
 
   const { data: subjects } = useQuery({
     queryKey: ['subjects'],
@@ -142,19 +138,79 @@ export default function Dashboard() {
     },
   });
 
-  // Determine if step 3 is completed (document is done)
+  const activeStep = useMemo(() => {
+    if (!selectedSubject) return 1;
+    // Step 3 is active when there are recent documents being processed
+    const hasActiveDocuments = recentDocs?.documents?.some(
+      doc => doc.status === 'queued' || doc.status === 'processing' || doc.status === 'done'
+    );
+    if (!hasActiveDocuments) return 2;
+    return 3;
+  }, [selectedSubject, recentDocs]);
+
+  // Determine if step 3 is completed (at least one document uploaded in this session is done)
   const isStep3Completed = useMemo(() => {
-    return activeDocument?.status === 'done';
-  }, [activeDocument?.status]);
+    if (!recentDocs?.documents || uploadedDocumentIds.size === 0) return false;
+    // Only consider documents uploaded in this session
+    const uploadedDocs = recentDocs.documents.filter(doc => uploadedDocumentIds.has(doc.id));
+    return uploadedDocs.some(doc => doc.status === 'done') ?? false;
+  }, [recentDocs, uploadedDocumentIds]);
+
+  // Track when documents become done and trigger blink effect
+  useEffect(() => {
+    if (!recentDocs?.documents) return;
+    
+    const currentStatuses = new Map(recentDocs.documents.map(doc => [doc.id, doc.status]));
+    const prevStatuses = prevDocStatusesRef.current;
+    const newlyDoneIds: number[] = [];
+    
+    // Find documents that just transitioned to 'done'
+    recentDocs.documents.forEach(doc => {
+      if (doc.status === 'done') {
+        const prevStatus = prevStatuses.get(doc.id);
+        // Only trigger if it wasn't done before (new transition)
+        if (prevStatus && prevStatus !== 'done') {
+          newlyDoneIds.push(doc.id);
+        }
+      }
+    });
+    
+    // Update ref with current statuses
+    prevDocStatusesRef.current = currentStatuses;
+    
+    // Add newly done documents to blinking set
+    if (newlyDoneIds.length > 0) {
+      setBlinkingDocs(prev => {
+        const updated = new Set(prev);
+        newlyDoneIds.forEach(id => updated.add(id));
+        return updated;
+      });
+      
+      // Remove from blinking set after animation completes (3 blinks = ~3 seconds)
+      const timeout = setTimeout(() => {
+        setBlinkingDocs(prev => {
+          const updated = new Set(prev);
+          newlyDoneIds.forEach(id => updated.delete(id));
+          return updated;
+        });
+      }, 3000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [recentDocs?.documents]);
 
   const handleSubjectChange = (subject: Subject | null) => {
     setSelectedSubject(subject);
     setActiveDocumentId(null);
     setCelebrateDone(false);
+    // Reset uploaded documents when subject changes
+    setUploadedDocumentIds(new Set());
   };
 
   const handleDocumentUploaded = (document: Document) => {
     setActiveDocumentId(document.id);
+    // Track this document as uploaded in this session
+    setUploadedDocumentIds(prev => new Set(prev).add(document.id));
     queryClient.setQueryData(['document', document.id], document);
     queryClient.setQueryData(['documents-recent'], (old: DocumentListResponse | undefined) => {
       if (!old) return { documents: [document], total: 1 };
@@ -559,103 +615,150 @@ export default function Dashboard() {
             )}
           </div>
 
-          {!activeDocumentId && (
+          {!recentDocs?.documents?.length && (
             <div className="text-white/60 text-sm">
               Upload een document om hier live de analyse te volgen.
             </div>
           )}
 
-          {activeDocumentId && (
-            <div className="space-y-4">
-              <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-white font-medium truncate">
-                      {activeDocument?.original_filename || `Document #${activeDocumentId}`}
-                    </div>
-                    <div className="text-white/50 text-xs mt-0.5">
-                      {activeDocument?.status === 'queued' ? 'In wachtrij' : activeDocument?.status === 'processing' ? `Bezig: ${stageLabel(activeDocument.stage, activeDocument.progress)}` : activeDocument?.status === 'done' ? 'Analyse afgerond' : activeDocument?.status === 'error' ? 'Analyse mislukt' : ''}
-                    </div>
-                  </div>
+          {recentDocs?.documents && recentDocs.documents.length > 0 && (() => {
+            // Only consider documents that were uploaded in this session
+            const uploadedDocs = recentDocs.documents.filter(doc => uploadedDocumentIds.has(doc.id));
+            const activeDocs = uploadedDocs.filter(
+              doc => doc.status === 'queued' || doc.status === 'processing' || doc.status === 'error'
+            );
+            const doneDocs = uploadedDocs.filter(doc => doc.status === 'done');
+            const hasActiveDocs = activeDocs.length > 0;
+            const allDone = doneDocs.length > 0 && !hasActiveDocs;
 
-                  <button
-                    onClick={() => openDetail(activeDocumentId)}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 hover:border-white/20 transition-all text-white/80 hover:text-white text-xs sm:text-sm cursor-pointer shrink-0"
-                  >
-                    <FontAwesomeIcon icon={faEye} className="w-4 h-4" />
-                    Bekijk
-                  </button>
-                </div>
-
-                {(activeDocument?.status === 'processing' || activeDocument?.status === 'queued') && (
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between text-xs text-white/60 mb-1">
-                      <span>Voortgang</span>
-                      <span>{activeDocument?.status === 'queued' ? 'Wachten…' : `${Math.round(activeDocument?.progress || 0)}%`}</span>
-                    </div>
-                    <div className="w-full bg-white/15 rounded-full h-2 overflow-hidden">
-                      {activeDocument?.status === 'queued' ? (
-                        <div className="h-2 bg-yellow-500/70 rounded-full animate-pulse w-full" />
-                      ) : (
-                        <div className="h-2 bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${activeDocument?.progress || 0}%` }} />
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <PipelineMini currentIndex={pipelineIndex(activeDocument)} />
-
-              {activeDocument?.status === 'done' && (
-                <div className="grid gap-3">
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-                    <div className="text-white/60 text-xs mb-1">Document type</div>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-white font-medium truncate">
-                        {activeDocument.doc_type_slug ? formatDocumentTypeName(activeDocument.doc_type_slug) : 'Onbekend'}
+            if (allDone) {
+              // Show completion message when all documents are done
+              return (
+                <div className="space-y-4">
+                  <div className="bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 rounded-xl p-4 sm:p-5">
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                        <FontAwesomeIcon icon={faCheckCircle} className="text-emerald-300 w-5 h-5" />
                       </div>
-                      {activeDocument.doc_type_confidence != null && (
-                        <div className="px-2 py-1 rounded-lg bg-purple-500/15 border border-purple-500/25 text-purple-200 text-xs font-semibold shrink-0">
-                          {Math.round(activeDocument.doc_type_confidence * 100)}%
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {activeDocument.risk_score != null && (
-                    <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-                      <div className="text-white/60 text-xs mb-1">Risico</div>
-                      <div className="flex items-center gap-3">
-                        <div className={`text-lg font-bold ${
-                          (activeDocument.risk_score ?? 0) >= 70 ? 'text-red-300' :
-                          (activeDocument.risk_score ?? 0) >= 40 ? 'text-yellow-300' :
-                          'text-emerald-300'
-                        }`}>
-                          {activeDocument.risk_score}
-                        </div>
-                        <div className="flex-1 bg-white/15 rounded-full h-2 overflow-hidden">
-                          <div
-                            className={`h-2 rounded-full ${
-                              (activeDocument.risk_score ?? 0) >= 70 ? 'bg-red-500' :
-                              (activeDocument.risk_score ?? 0) >= 40 ? 'bg-yellow-500' :
-                              'bg-emerald-500'
-                            }`}
-                            style={{ width: `${Math.min(100, Math.max(0, activeDocument.risk_score ?? 0))}%` }}
-                          />
-                        </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-white font-semibold text-base sm:text-lg mb-1">
+                          Analyse voltooid!
+                        </h3>
+                        <p className="text-white/70 text-sm">
+                          Alle documenten zijn succesvol geanalyseerd. Je kunt nu de resultaten bekijken.
+                        </p>
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {activeDocument?.status === 'error' && activeDocument.error_message && (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-200 text-sm">
-                  {activeDocument.error_message}
+                    <div className="space-y-2 mt-4">
+                      <p className="text-white/60 text-xs sm:text-sm font-medium mb-2">Wat kun je nu doen?</p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <button
+                          onClick={() => {
+                            // Open the first done document
+                            const firstDone = doneDocs[0];
+                            if (firstDone) {
+                              openDetail(firstDone.id);
+                            }
+                          }}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 hover:border-white/30 transition-all text-white font-medium text-sm cursor-pointer"
+                        >
+                          <FontAwesomeIcon icon={faEye} className="w-4 h-4" />
+                          Bekijk resultaten
+                        </button>
+                        <Link
+                          href="/documents"
+                          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 hover:border-purple-500/40 transition-all text-white font-medium text-sm cursor-pointer"
+                        >
+                          <FontAwesomeIcon icon={faFileAlt} className="w-4 h-4" />
+                          Alle documenten
+                        </Link>
+                      </div>
+                    </div>
+
+                    {doneDocs.length > 1 && (
+                      <div className="mt-3 pt-3 border-t border-white/10">
+                        <p className="text-white/50 text-xs mb-2">
+                          {doneDocs.length} document{doneDocs.length > 1 ? 'en' : ''} voltooid
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {doneDocs.slice(0, 3).map((doc) => (
+                            <button
+                              key={doc.id}
+                              onClick={() => openDetail(doc.id)}
+                              className="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/70 hover:text-white transition-all cursor-pointer truncate max-w-[150px]"
+                              title={doc.original_filename}
+                            >
+                              {doc.original_filename}
+                            </button>
+                          ))}
+                          {doneDocs.length > 3 && (
+                            <span className="text-xs px-2.5 py-1 text-white/50">
+                              +{doneDocs.length - 3} meer
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+              );
+            }
+
+            // Show active documents (queued, processing, error) - only uploaded ones
+            if (hasActiveDocs) {
+              return (
+                <div className="space-y-3">
+                  {activeDocs.map((doc) => (
+                    <div key={doc.id} className="bg-white/5 border border-white/10 rounded-xl p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-white font-medium truncate">
+                            {doc.original_filename || `Document #${doc.id}`}
+                          </div>
+                          <div className="text-white/50 text-xs mt-0.5">
+                            {doc.status === 'queued' ? 'In wachtrij' : doc.status === 'processing' ? `Bezig: ${stageLabel(doc.stage, doc.progress)}` : doc.status === 'error' ? 'Analyse mislukt' : ''}
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => openDetail(doc.id)}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 hover:border-white/20 transition-all text-white/80 hover:text-white text-xs sm:text-sm cursor-pointer shrink-0"
+                        >
+                          <FontAwesomeIcon icon={faEye} className="w-4 h-4" />
+                          Bekijk
+                        </button>
+                      </div>
+
+                      {(doc.status === 'processing' || doc.status === 'queued') && (
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between text-xs text-white/60 mb-1">
+                            <span>Voortgang</span>
+                            <span>{doc.status === 'queued' ? 'Wachten…' : `${Math.round(doc.progress || 0)}%`}</span>
+                          </div>
+                          <div className="w-full bg-white/15 rounded-full h-2 overflow-hidden">
+                            {doc.status === 'queued' ? (
+                              <div className="h-2 bg-yellow-500/70 rounded-full animate-pulse w-full" />
+                            ) : (
+                              <div className="h-2 bg-blue-500 rounded-full transition-all duration-300" style={{ width: `${doc.progress || 0}%` }} />
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {doc.status === 'error' && doc.error_message && (
+                        <div className="mt-3 bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-red-200 text-xs">
+                          {doc.error_message}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+
+            return null;
+          })()}
         </div>
       </div>
 
@@ -692,7 +795,7 @@ export default function Dashboard() {
                 key={doc.id}
                 className={`w-full py-1.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-3 hover:bg-white/5 rounded-lg transition-colors group cursor-pointer ${
                   index >= 3 ? 'hidden sm:flex' : ''
-                }`}
+                } ${blinkingDocs.has(doc.id) && doc.status === 'done' ? 'doc-blink' : ''}`}
               >
                 <button
                   onClick={() => openDetail(doc.id)}
@@ -719,6 +822,26 @@ export default function Dashboard() {
                             <span className="text-purple-400">{Math.round(doc.doc_type_confidence * 100)}%</span>
                           )}
                         </span>
+                      )}
+                    </div>
+                    {/* Mobile badges - compact but complete */}
+                    <div className="sm:hidden flex flex-wrap items-center gap-1 text-[9px] mt-1">
+                      {doc.risk_score != null && (
+                        <span className={`px-1.5 py-0.5 rounded border font-semibold ${
+                          (doc.risk_score ?? 0) >= 70
+                            ? 'bg-red-500/20 border-red-500/30 text-red-200'
+                            : (doc.risk_score ?? 0) >= 40
+                              ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
+                              : 'bg-emerald-500/20 border-emerald-500/30 text-emerald-200'
+                        }`}>
+                          {doc.risk_score}%
+                        </span>
+                      )}
+                      {doc.status === 'done' && (
+                        <ForensicsBadgeMobile documentId={doc.id} />
+                      )}
+                      {doc.subject_name && (
+                        <span className="text-white/50 truncate max-w-[80px]">· {doc.subject_name}</span>
                       )}
                     </div>
                     {/* Full badges - desktop only */}
@@ -751,6 +874,11 @@ export default function Dashboard() {
 
                       {doc.subject_name && (
                         <span className="text-white/50">· {doc.subject_name}</span>
+                      )}
+                      
+                      {/* Forensics Signals - Show if document is done */}
+                      {doc.status === 'done' && (
+                        <ForensicsBadge documentId={doc.id} />
                       )}
                     </div>
                   </div>
@@ -889,6 +1017,74 @@ export default function Dashboard() {
         </div>
       )}
     </div>
+  );
+}
+
+// Forensics Badge Component for Recent Documents (Desktop)
+function ForensicsBadge({ documentId }: { documentId: number }) {
+  const { data: fraudReport } = useQuery({
+    queryKey: ['fraud-analysis', documentId],
+    queryFn: () => getFraudAnalysis(documentId),
+    enabled: !!documentId,
+    staleTime: Infinity,
+    cacheTime: Infinity,
+  });
+
+  if (!fraudReport || fraudReport.signals.length === 0) {
+    return null;
+  }
+
+  const criticalOrHigh = fraudReport.signals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
+  const hasCritical = fraudReport.signals.some(s => s.risk_level === 'critical');
+
+  return (
+    <div className={`hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border font-semibold text-xs ${
+      hasCritical
+        ? 'bg-red-500/20 border-red-500/30 text-red-200'
+        : criticalOrHigh > 0
+          ? 'bg-orange-500/20 border-orange-500/30 text-orange-200'
+          : 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
+    }`}>
+      <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3" />
+      <span>Forensics: {fraudReport.signals.length}</span>
+      {criticalOrHigh > 0 && (
+        <span className="ml-1">({criticalOrHigh} hoog)</span>
+      )}
+    </div>
+  );
+}
+
+// Forensics Badge Component for Recent Documents (Mobile - compact)
+function ForensicsBadgeMobile({ documentId }: { documentId: number }) {
+  const { data: fraudReport } = useQuery({
+    queryKey: ['fraud-analysis', documentId],
+    queryFn: () => getFraudAnalysis(documentId),
+    enabled: !!documentId,
+    staleTime: Infinity,
+    cacheTime: Infinity,
+  });
+
+  if (!fraudReport || fraudReport.signals.length === 0) {
+    return null;
+  }
+
+  const criticalOrHigh = fraudReport.signals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
+  const hasCritical = fraudReport.signals.some(s => s.risk_level === 'critical');
+
+  return (
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border font-semibold text-[9px] ${
+      hasCritical
+        ? 'bg-red-500/20 border-red-500/30 text-red-200'
+        : criticalOrHigh > 0
+          ? 'bg-orange-500/20 border-orange-500/30 text-orange-200'
+          : 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
+    }`}>
+      <FontAwesomeIcon icon={faExclamationTriangle} className="w-2.5 h-2.5" />
+      <span>{fraudReport.signals.length}</span>
+      {criticalOrHigh > 0 && (
+        <span className="ml-0.5">({criticalOrHigh})</span>
+      )}
+    </span>
   );
 }
 

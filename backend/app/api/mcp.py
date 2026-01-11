@@ -247,6 +247,36 @@ TOOLS = [
             },
             "required": ["text"]
         }
+    },
+    # LLM Provider Tools
+    {
+        "name": "get_llm_status",
+        "description": "Get the current LLM provider status including active provider (ollama/vllm), health status, and configuration",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "switch_llm_provider",
+        "description": "Switch the active LLM provider between 'ollama' and 'vllm'",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "enum": ["ollama", "vllm"], "description": "The LLM provider to switch to"}
+            },
+            "required": ["provider"]
+        }
+    },
+    {
+        "name": "list_llm_models",
+        "description": "List available models from the currently active LLM provider",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "enum": ["ollama", "vllm"], "description": "Optional: specify provider to query (defaults to active provider)"}
+            }
+        }
     }
 ]
 
@@ -442,11 +472,14 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                             except Exception:
                                 pass
                     
-                    # Run fraud analysis
-                    report = fraud_detector().analyze_document(
+                    # Run fraud analysis with LLM client for signal enhancement
+                    from app import main as app_main
+                    detector = fraud_detector(llm_client=app_main.llm_client)
+                    report = await detector.analyze_document(
                         file_bytes=file_bytes,
                         filename=doc_dict["original_filename"],
                         document_id=doc_id,
+                        document_dir=doc_dir,
                         extracted_text=extracted_text,
                         classification_confidence=doc_dict.get("doc_type_confidence"),
                         existing_signals=existing_signals,
@@ -890,6 +923,141 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                         "counts": {r["key"]: r["value"] for r in results if r["type"] == "count" and r["value"] and r["value"] > 0}
                     }
                 }, indent=2)}]}
+            
+            # LLM Provider Tools
+            elif tool_name == "get_llm_status":
+                try:
+                    from app.models.database import AppSetting
+                    from sqlalchemy import select
+                    
+                    # Get active provider from database
+                    result = await session.execute(
+                        select(AppSetting).where(AppSetting.key == "llm_provider")
+                    )
+                    setting = result.scalar_one_or_none()
+                    active_provider = setting.value if setting else "ollama"
+                    
+                    # Get config for active provider
+                    config = settings.get_llm_config(active_provider)
+                    
+                    # Check health
+                    from app.services.llm_client import LLMClient
+                    client = LLMClient(active_provider)
+                    is_healthy = await client.check_health()
+                    
+                    return {"content": [{"type": "text", "text": json.dumps({
+                        "active_provider": active_provider,
+                        "healthy": is_healthy,
+                        "config": {
+                            "base_url": config["base_url"],
+                            "model": config["model"],
+                            "timeout": config["timeout"],
+                            "max_retries": config["max_retries"]
+                        },
+                        "available_providers": ["ollama", "vllm"]
+                    }, indent=2)}]}
+                except Exception as e:
+                    logger.error(f"Error getting LLM status: {e}")
+                    return {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}]}
+            
+            elif tool_name == "switch_llm_provider":
+                provider = arguments.get("provider")
+                if not provider:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": "provider is required"})}]}
+                if provider not in ["ollama", "vllm"]:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": "provider must be 'ollama' or 'vllm'"})}]}
+                
+                try:
+                    from app.models.database import AppSetting
+                    from sqlalchemy import select
+                    
+                    # Get current provider
+                    result = await session.execute(
+                        select(AppSetting).where(AppSetting.key == "llm_provider")
+                    )
+                    setting = result.scalar_one_or_none()
+                    old_provider = setting.value if setting else "ollama"
+                    
+                    # Update in database
+                    if setting:
+                        setting.value = provider
+                    else:
+                        from datetime import datetime
+                        new_setting = AppSetting(
+                            key="llm_provider",
+                            value=provider,
+                            description="Active LLM provider (ollama or vllm)",
+                            created_at=datetime.utcnow(),
+                            updated_at=datetime.utcnow()
+                        )
+                        session.add(new_setting)
+                    await session.commit()
+                    
+                    # Refresh LLM client
+                    import app.main as app_main
+                    app_main.llm_client._refresh_config(provider)
+                    
+                    # Check health of new provider
+                    from app.services.llm_client import LLMClient
+                    client = LLMClient(provider)
+                    is_healthy = await client.check_health()
+                    
+                    return {"content": [{"type": "text", "text": json.dumps({
+                        "success": True,
+                        "old_provider": old_provider,
+                        "new_provider": provider,
+                        "healthy": is_healthy,
+                        "message": f"Switched from {old_provider} to {provider}"
+                    }, indent=2)}]}
+                except Exception as e:
+                    logger.error(f"Error switching LLM provider: {e}")
+                    return {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}]}
+            
+            elif tool_name == "list_llm_models":
+                provider = arguments.get("provider")
+                
+                try:
+                    # If no provider specified, use active provider
+                    if not provider:
+                        from app.models.database import AppSetting
+                        from sqlalchemy import select
+                        result = await session.execute(
+                            select(AppSetting).where(AppSetting.key == "llm_provider")
+                        )
+                        setting = result.scalar_one_or_none()
+                        provider = setting.value if setting else "ollama"
+                    
+                    config = settings.get_llm_config(provider)
+                    base_url = config["base_url"].rstrip('/')
+                    
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        if provider == "vllm":
+                            url = f"{base_url}/v1/models"
+                            response = await client.get(url)
+                            response.raise_for_status()
+                            data = response.json()
+                            models = [{"id": m.get("id"), "object": m.get("object")} for m in data.get("data", [])]
+                        else:  # ollama
+                            url = f"{base_url}/api/tags"
+                            response = await client.get(url)
+                            response.raise_for_status()
+                            data = response.json()
+                            models = [{"name": m.get("name"), "size": m.get("size"), "modified_at": m.get("modified_at")} for m in data.get("models", [])]
+                    
+                    return {"content": [{"type": "text", "text": json.dumps({
+                        "provider": provider,
+                        "base_url": base_url,
+                        "models": models,
+                        "count": len(models),
+                        "configured_model": config["model"]
+                    }, indent=2, default=str)}]}
+                except httpx.HTTPStatusError as e:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": f"HTTP error {e.response.status_code}: {e.response.text}"})}]}
+                except httpx.ConnectError:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": f"Cannot connect to {provider} at {base_url}"})}]}
+                except Exception as e:
+                    logger.error(f"Error listing LLM models: {e}")
+                    return {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}]}
             
             else:
                 return {"content": [{"type": "text", "text": json.dumps({"error": f"Unknown tool: {tool_name}"})}]}
