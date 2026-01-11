@@ -1,0 +1,18 @@
+{
+  "unknown_fallback": "unknown",
+  "normalize_pii_for_classification": true,
+  "default_acceptance": {
+    "trained_model": {
+      "enabled": true,
+      "min_confidence": 0.85,
+      "min_margin": 0.10
+    },
+    "deterministic": {
+      "enabled": true
+    },
+    "llm": {
+      "enabled": true,
+      "require_evidence": true
+    }
+  }
+}

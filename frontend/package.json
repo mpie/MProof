@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/ensure-lightningcss.js",
     "dev": "next dev",
+    "prebuild": "node scripts/ensure-lightningcss.js",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -12,6 +14,7 @@
     "@fortawesome/fontawesome-svg-core": "^7.1.0",
     "@fortawesome/free-solid-svg-icons": "^7.1.0",
     "@fortawesome/react-fontawesome": "^3.0.0",
+    "@tailwindcss/postcss": "^4.1.18",
     "@tanstack/react-query": "^5.90.16",
     "axios": "^1.13.2",
     "next": "16.1.1",
@@ -25,8 +28,9 @@
     "autoprefixer": "^10.4.16",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
+    "lightningcss": "^1.30.2",
     "postcss": "^8.4.32",
-    "tailwindcss": "^3.4.0",
+    "tailwindcss": "^4.1.18",
     "typescript": "^5"
   }
 }

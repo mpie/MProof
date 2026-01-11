@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Ollama LLM
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "mistral:latest"
-    ollama_timeout: float = 60.0
+    ollama_timeout: float = 180.0  # 3 minutes for complex documents
     ollama_max_retries: int = 3
 
     # File storage

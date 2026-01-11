@@ -1,4 +1,9 @@
-from pydantic import BaseModel, Field, validator
+import warnings
+# Suppress Pydantic warning about "model_name" conflicting with protected namespace
+# This is safe because we're using it as a query parameter, not a model field
+warnings.filterwarnings("ignore", message=".*Field.*has conflict with protected namespace.*model_.*")
+
+from pydantic import BaseModel, Field, validator, field_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
@@ -103,6 +108,7 @@ class DocumentTypeCreate(BaseModel):
     description: Optional[str] = None
     classification_hints: Optional[str] = None
     extraction_prompt_preamble: Optional[str] = None
+    classification_policy_json: Optional[Dict[str, Any]] = None
 
 
 class DocumentTypeUpdate(BaseModel):
@@ -111,6 +117,7 @@ class DocumentTypeUpdate(BaseModel):
     description: Optional[str] = None
     classification_hints: Optional[str] = None
     extraction_prompt_preamble: Optional[str] = None
+    classification_policy_json: Optional[Dict[str, Any]] = None
 
 
 class DocumentTypeResponse(BaseModel):
@@ -120,12 +127,27 @@ class DocumentTypeResponse(BaseModel):
     description: Optional[str]
     classification_hints: Optional[str]
     extraction_prompt_preamble: Optional[str]
+    classification_policy_json: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     fields: List[DocumentTypeFieldResponse] = []
 
     class Config:
         from_attributes = True
+
+    @field_validator('classification_policy_json', mode='before')
+    @classmethod
+    def parse_policy_json(cls, v):
+        """Parse JSON string to dict if needed."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            import json
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return None
+        return v
 
 
 # Document schemas
@@ -156,6 +178,8 @@ class DocumentResponse(BaseModel):
     risk_signals_json: Optional[List[Dict[str, Any]]]
     ocr_used: bool
     ocr_quality: Optional[str]
+    skip_marker_used: Optional[str] = None
+    skip_marker_position: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -199,6 +223,7 @@ class RiskSignal(BaseModel):
     severity: Literal["low", "medium", "high"]
     message: str
     evidence: str
+    examples: Optional[Dict[str, Any]] = None
 
 
 class RiskAnalysis(BaseModel):

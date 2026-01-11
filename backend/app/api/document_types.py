@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -6,6 +7,7 @@ from app.models.schemas import (
     DocumentTypeResponse, DocumentTypeCreate, DocumentTypeUpdate,
     DocumentTypeFieldResponse, DocumentTypeFieldCreate, DocumentTypeFieldUpdate
 )
+from app.services.policy_loader import validate_policy_json
 
 router = APIRouter()
 
@@ -102,18 +104,27 @@ async def create_document_type(
         if result.fetchone():
             raise HTTPException(status_code=409, detail="Document type slug already exists")
 
+        # Validate policy JSON if provided
+        policy_json_str = None
+        if doc_type.classification_policy_json:
+            is_valid, error = validate_policy_json(doc_type.classification_policy_json)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=f"Invalid classification policy: {error}")
+            policy_json_str = json.dumps(doc_type.classification_policy_json)
+
         # Create document type
         from datetime import datetime
         now = datetime.now()
         result = await session.execute(
-            text("""INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, created_at, updated_at)
-                   VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, :created_at, :updated_at) RETURNING *"""),
+            text("""INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, classification_policy_json, created_at, updated_at)
+                   VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, :classification_policy_json, :created_at, :updated_at) RETURNING *"""),
             {
                 "name": doc_type.name,
                 "slug": doc_type.slug,
                 "description": doc_type.description,
                 "classification_hints": doc_type.classification_hints,
                 "extraction_prompt_preamble": doc_type.extraction_prompt_preamble,
+                "classification_policy_json": policy_json_str,
                 "created_at": now,
                 "updated_at": now
             }
@@ -185,10 +196,18 @@ async def update_document_type(
         params = {}
 
         update_data = doc_type_update.dict(exclude_unset=True)
-        for i, (field, value) in enumerate(update_data.items()):
+        for field, value in update_data.items():
             if value is not None:
-                update_fields.append(f"{field} = :{field}")
-                params[field] = value
+                # Special handling for classification_policy_json
+                if field == "classification_policy_json":
+                    is_valid, error = validate_policy_json(value)
+                    if not is_valid:
+                        raise HTTPException(status_code=400, detail=f"Invalid classification policy: {error}")
+                    update_fields.append(f"{field} = :{field}")
+                    params[field] = json.dumps(value)
+                else:
+                    update_fields.append(f"{field} = :{field}")
+                    params[field] = value
 
         if not update_fields:
             # No changes, return current

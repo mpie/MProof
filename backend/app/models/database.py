@@ -56,6 +56,7 @@ class DocumentType(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     classification_hints: Mapped[Optional[str]] = mapped_column(Text)
     extraction_prompt_preamble: Mapped[Optional[str]] = mapped_column(Text)
+    classification_policy_json: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -104,7 +105,69 @@ class Document(Base):
     risk_signals_json: Mapped[Optional[list]] = mapped_column(JSON)
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False)
     ocr_quality: Mapped[Optional[str]] = mapped_column(String(20))
+    skip_marker_used: Mapped[Optional[str]] = mapped_column(String(500))  # Pattern that matched
+    skip_marker_position: Mapped[Optional[int]] = mapped_column(Integer)  # Position where text was truncated
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     subject: Mapped["Subject"] = relationship("Subject", back_populates="documents")
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    client_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA256 hash
+    scopes: Mapped[Optional[list]] = mapped_column(JSON)  # ["read", "write", "admin"]
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SkipMarker(Base):
+    """Text patterns that signal to stop processing (e.g., 'Algemene Voorwaarden')."""
+    __tablename__ = "skip_markers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_regex: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SignalTypeEnum(str, enum.Enum):
+    boolean = "boolean"
+    count = "count"
+
+
+class SignalSourceEnum(str, enum.Enum):
+    builtin = "builtin"
+    user = "user"
+
+
+class ComputeKindEnum(str, enum.Enum):
+    builtin = "builtin"
+    keyword_set = "keyword_set"
+    regex_set = "regex_set"
+
+
+class ClassificationSignal(Base):
+    """Classification signals for document eligibility evaluation."""
+    __tablename__ = "classification_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    signal_type: Mapped[str] = mapped_column(String(20), nullable=False)  # 'boolean' or 'count'
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # 'builtin' or 'user'
+    compute_kind: Mapped[str] = mapped_column(String(20), nullable=False)  # 'builtin', 'keyword_set', 'regex_set'
+    config_json: Mapped[Optional[dict]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

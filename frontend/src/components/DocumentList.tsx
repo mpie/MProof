@@ -84,10 +84,39 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
 
   const deleteMutation = useMutation({
     mutationFn: (documentId: number) => deleteDocument(documentId),
-    onSuccess: () => {
+    onSuccess: (_, documentId) => {
+      // Update local documents state immediately
+      onDocumentsChange(documents.filter(d => d.id !== documentId));
+      
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       // Also invalidate subject-specific queries
       queryClient.invalidateQueries({ queryKey: ['documents', subjectId] });
+      
+      // Update documents-stats query cache to remove deleted document
+      queryClient.setQueryData(['documents-stats'], (old: any) => {
+        if (!old || !old.documents) return old;
+        
+        const filteredDocs = old.documents.filter((d: Document) => d.id !== documentId);
+        
+        return {
+          ...old,
+          documents: filteredDocs,
+          total: filteredDocs.length,
+        };
+      });
+
+      // Update documents-recent query cache
+      queryClient.setQueryData(['documents-recent'], (old: any) => {
+        if (!old || !old.documents) return old;
+        
+        const filteredDocs = old.documents.filter((d: Document) => d.id !== documentId);
+        
+        return {
+          ...old,
+          documents: filteredDocs,
+          total: filteredDocs.length,
+        };
+      });
     },
   });
 
@@ -140,10 +169,10 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               updatedDoc.progress = event.progress || 0;
               updatedDoc.updated_at = event.updated_at || new Date().toISOString();
             } else if (event.type === 'result') {
-              updatedDoc.doc_type_slug = event.doc_type_slug || undefined;
-              updatedDoc.confidence = event.confidence || undefined;
-              updatedDoc.metadata = event.metadata || undefined;
-              updatedDoc.risk_score = event.risk_score || undefined;
+              if (event.doc_type_slug != null) updatedDoc.doc_type_slug = event.doc_type_slug;
+              if (event.confidence != null) updatedDoc.doc_type_confidence = event.confidence;
+              if (event.metadata != null) updatedDoc.metadata_json = event.metadata;
+              if (event.risk_score != null) updatedDoc.risk_score = event.risk_score;
               updatedDoc.status = 'done';
               updatedDoc.progress = 100;
             } else if (event.type === 'error') {
@@ -152,6 +181,23 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
             }
 
             onDocumentUpdate(updatedDoc);
+            
+            // Also update the documents-stats query cache for homepage stats
+            queryClient.setQueryData(['documents-stats'], (old: any) => {
+              if (!old || !old.documents) return old;
+              
+              const updatedDocs = old.documents.map((d: Document) => 
+                d.id === updatedDoc.id ? updatedDoc : d
+              );
+              
+              return {
+                ...old,
+                documents: updatedDocs,
+              };
+            });
+
+            // Keep wizard homepage list fresh too
+            queryClient.invalidateQueries({ queryKey: ['documents-recent'] });
           },
           () => {
             // Handle connection error - could implement fallback polling here
@@ -259,30 +305,30 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
         {displayDocuments.map((document) => (
           <div
             key={document.id}
-            className="glass-card p-4 hover:bg-white/20 transition-colors cursor-pointer"
+            className="glass-card p-3 sm:p-4 hover:bg-white/20 transition-colors cursor-pointer"
             onClick={() => handleDocumentClick(document)}
           >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3 flex-1 min-w-0">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-start sm:items-center space-x-2 sm:space-x-3 flex-1 min-w-0">
               <FontAwesomeIcon
                 icon={getMimeTypeIcon(document.mime_type)}
-                className="text-white/70 w-5 h-5 flex-shrink-0"
+                className="text-white/70 w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0 mt-0.5 sm:mt-0"
               />
 
               <div className="flex-1 min-w-0">
-                <h3 className="text-white font-medium truncate">
+                <h3 className="text-white font-medium text-sm sm:text-base truncate">
                   {document.original_filename}
                 </h3>
-                <div className="flex flex-wrap items-center gap-3 text-sm text-white/85">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs sm:text-sm text-white/85 mt-1">
                   <span>{formatFileSize(document.size_bytes)}</span>
-                  <span>{formatDate(document.created_at)}</span>
+                  <span className="hidden sm:inline">{formatDate(document.created_at)}</span>
                   {document.subject_name && (
-                    <span className="text-white/80 font-medium">
-                      {document.subject_name} ({document.subject_context})
+                    <span className="text-white/80 font-medium truncate max-w-[120px] sm:max-w-none">
+                      {document.subject_name} <span className="hidden sm:inline">({document.subject_context})</span>
                     </span>
                   )}
                   {document.doc_type_slug && (
-                    <span className="text-emerald-400 font-medium">
+                    <span className="text-emerald-400 font-medium truncate">
                       {formatDocumentTypeName(document.doc_type_slug)}
                       {document.doc_type_confidence && (
                         <span className="text-white/80">
@@ -295,48 +341,46 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               </div>
             </div>
 
-            <div className="flex items-center space-x-3">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:flex-shrink-0">
               {/* Status and Progress */}
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2 flex-wrap">
                 <FontAwesomeIcon
                   icon={statusIcons[document.status]}
-                  className={`w-4 h-4 ${statusColors[document.status]}`}
+                  className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${statusColors[document.status]}`}
                 />
-                <span className="text-white/80 text-sm capitalize">
+                <span className="text-white/80 text-xs sm:text-sm capitalize">
                   {document.status === 'queued'
-                    ? `Queue position: ${getQueuePosition(document)}`
+                    ? `Queue: ${getQueuePosition(document)}`
                     : document.status
                   }
                 </span>
                 {document.stage && document.status === 'processing' && (
-                  <span className="text-white/80 text-xs">
+                  <span className="text-white/80 text-[10px] sm:text-xs hidden sm:inline">
                     ({stageDescriptions[document.stage as keyof typeof stageDescriptions] || document.stage.replace('_', ' ')})
                   </span>
                 )}
               </div>
 
               {/* Progress Bar */}
-              {document.status === 'processing' && (
-                <div className="w-24 bg-white/20 rounded-full h-2">
-                  <div
-                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${document.progress}%` }}
-                  />
-                </div>
-              )}
-
-              {document.status === 'queued' && (
-                <div className="w-24 bg-white/20 rounded-full h-2 overflow-hidden">
-                  <div className="bg-yellow-500 h-2 rounded-full animate-pulse"
-                       style={{ width: '100%', animation: 'pulse 2s infinite' }} />
+              {(document.status === 'processing' || document.status === 'queued') && (
+                <div className="w-full sm:w-24 bg-white/20 rounded-full h-1.5 sm:h-2">
+                  {document.status === 'processing' ? (
+                    <div
+                      className="bg-blue-500 h-1.5 sm:h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${document.progress}%` }}
+                    />
+                  ) : (
+                    <div className="bg-yellow-500 h-1.5 sm:h-2 rounded-full animate-pulse"
+                         style={{ width: '100%', animation: 'pulse 2s infinite' }} />
+                  )}
                 </div>
               )}
 
               {/* Risk Score */}
-              {document.risk_score !== null && (
-                <div className={`px-2 py-1 rounded text-xs font-medium ${
-                  document.risk_score >= 70 ? 'bg-red-500/20 text-red-400' :
-                  document.risk_score >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
+              {document.risk_score != null && (
+                <div className={`px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-medium shrink-0 ${
+                  (document.risk_score ?? 0) >= 70 ? 'bg-red-500/20 text-red-400' :
+                  (document.risk_score ?? 0) >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
                   'bg-green-500/20 text-green-400'
                 }`}>
                   Risk: {document.risk_score}
@@ -344,23 +388,29 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               )}
 
               {/* Actions */}
-              <div className="flex space-x-1">
+              <div className="flex space-x-1 sm:flex-shrink-0">
                 <button
-                  onClick={() => handleDocumentClick(document)}
-                  className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDocumentClick(document);
+                  }}
+                  className="p-1.5 sm:p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
                   title="View details"
                 >
-                  <FontAwesomeIcon icon={faEye} className="w-4 h-4" />
+                  <FontAwesomeIcon icon={faEye} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </button>
 
                 {document.status === 'done' && (
                   <button
-                    onClick={(e) => handleReanalyze(document.id, e)}
-                    disabled={analyzeMutation.isLoading}
-                    className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleReanalyze(document.id, e);
+                    }}
+                    disabled={analyzeMutation.isPending}
+                    className="p-1.5 sm:p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
                     title="Re-run analysis"
                   >
-                    <FontAwesomeIcon icon={faRedo} className="w-4 h-4" />
+                    <FontAwesomeIcon icon={faRedo} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                 )}
 
@@ -370,11 +420,11 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                     e.stopPropagation();
                     setConfirmDelete({ document, isOpen: true });
                   }}
-                  disabled={deleteMutation.isLoading}
-                  className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
+                  disabled={deleteMutation.isPending}
+                  className="p-1.5 sm:p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
                   title="Delete document"
                 >
-                  <FontAwesomeIcon icon={faTrash} className="w-4 h-4" />
+                  <FontAwesomeIcon icon={faTrash} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </button>
               </div>
             </div>
@@ -430,7 +480,7 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               <button
                 onClick={() => setConfirmDelete(null)}
                 className="flex-1 px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors"
-                disabled={deleteMutation.isLoading}
+                disabled={deleteMutation.isPending}
               >
                 Annuleren
               </button>
@@ -439,10 +489,10 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                   deleteMutation.mutate(confirmDelete.document.id);
                   setConfirmDelete(null);
                 }}
-                disabled={deleteMutation.isLoading}
+                disabled={deleteMutation.isPending}
                 className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {deleteMutation.isLoading ? (
+                {deleteMutation.isPending ? (
                   <>
                     <FontAwesomeIcon icon={faSpinner} className="w-4 h-4 animate-spin mr-2" />
                     Verwijderen...

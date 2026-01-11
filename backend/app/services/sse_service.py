@@ -30,7 +30,8 @@ class SSEService:
         return unsubscribe
 
     async def publish_status_update(self, document_id: int, status: str, stage: str,
-                                  progress: int, updated_at: str) -> None:
+                                  progress: int, updated_at: str,
+                                  doc_type_slug: str = None, doc_type_confidence: float = None) -> None:
         """Publish status update event."""
         event_data = {
             "type": "status",
@@ -39,6 +40,12 @@ class SSEService:
             "progress": progress,
             "updated_at": updated_at
         }
+        
+        # Include classification result if available
+        if doc_type_slug is not None:
+            event_data["doc_type_slug"] = doc_type_slug
+        if doc_type_confidence is not None:
+            event_data["confidence"] = doc_type_confidence
 
         await self._publish_event(document_id, event_data)
 

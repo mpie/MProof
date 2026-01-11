@@ -1,3 +1,8 @@
+import warnings
+# Suppress Pydantic warning about "model_name" conflicting with protected namespace
+# This must be done BEFORE importing FastAPI/Pydantic
+warnings.filterwarnings("ignore", message=".*Field.*has conflict with protected namespace.*model_.*", category=UserWarning)
+
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -15,7 +20,8 @@ from app.services.sse_service import SSEService
 from app.services.job_queue import JobQueue
 from app.api import (
     health, subjects, documents, document_types,
-    upload, sse, queue
+    upload, sse, queue, classifier, api_keys, skip_markers, mcp,
+    classification_policy, signals
 )
 
 # Configure logging
@@ -184,6 +190,19 @@ app.include_router(
     tags=["documents"]
 )
 
+# Register classification_policy before document_types so /document-types/{slug}/policy is matched first
+app.include_router(
+    classification_policy.router,
+    prefix="/api",
+    tags=["classification-policy"]
+)
+
+app.include_router(
+    signals.router,
+    prefix="/api",
+    tags=["signals"]
+)
+
 app.include_router(
     document_types.router,
     prefix="/api",
@@ -206,6 +225,31 @@ app.include_router(
     queue.router,
     prefix="/api",
     tags=["queue"]
+)
+
+app.include_router(
+    classifier.router,
+    prefix="/api",
+    tags=["classifier"]
+)
+
+app.include_router(
+    api_keys.router,
+    prefix="/api",
+    tags=["api-keys"]
+)
+
+app.include_router(
+    skip_markers.router,
+    prefix="/api",
+    tags=["skip-markers"]
+)
+
+# Register MCP router at root level (only /mcp, not /api/mcp)
+app.include_router(
+    mcp.router,
+    prefix="",
+    tags=["mcp"]
 )
 
 

@@ -34,7 +34,7 @@ class LLMClient:
             "stream": False,
             "options": {
                 "temperature": temperature,
-                "num_predict": 4096,  # Increased from 1000 to prevent truncated JSON responses
+                "num_predict": 8192,  # Increased to prevent truncated JSON responses (especially for metadata extraction)
                 "top_p": 0.9
             }
         }
@@ -59,6 +59,16 @@ class LLMClient:
 
                     # Log response info
                     response_content = data["message"]["content"]
+                    
+                    # Check if response was truncated (Ollama may set done: false or truncate silently)
+                    done = data.get("done", True)
+                    if not done:
+                        logger.warning(f"LLM response may be incomplete (done=false). Response length: {len(response_content)} chars")
+                    
+                    # Check for incomplete JSON in response
+                    if response_content.count('{') > response_content.count('}') or response_content.count('[') > response_content.count(']'):
+                        logger.warning(f"LLM response appears truncated (unbalanced braces/brackets). Response length: {len(response_content)} chars")
+                    
                     logger.info(f"LLM Response received ({len(response_content)} chars): {response_content[:200]}{'...' if len(response_content) > 200 else ''}")
 
                     return response_content, curl_command
@@ -103,15 +113,36 @@ class LLMClient:
         open_brackets = text.count('[')
         close_brackets = text.count(']')
         
-        if open_braces > close_braces or open_brackets > close_brackets:
-            logger.warning(f"Detected truncated JSON: braces {open_braces}/{close_braces}, brackets {open_brackets}/{close_brackets}. Attempting repair.")
+        # Detect if we're in the middle of a string by checking for unclosed quotes
+        # Count unescaped double quotes
+        import re
+        # Remove escaped quotes first
+        unescaped_text = re.sub(r'\\.', '', text)
+        quote_count = unescaped_text.count('"')
+        is_in_string = quote_count % 2 != 0
+        
+        if open_braces > close_braces or open_brackets > close_brackets or is_in_string:
+            logger.warning(f"Detected truncated JSON: braces {open_braces}/{close_braces}, brackets {open_brackets}/{close_brackets}, in_string={is_in_string}. Attempting repair.")
             
-            # Check if we're in the middle of a string (odd number of unescaped quotes)
-            # Simple heuristic: if text doesn't end with }, ], or ", we might be mid-string
-            if not text.rstrip().endswith(('}', ']', '"')):
-                # We're likely in the middle of a string, close it
-                text = text + '"'
-                logger.info("Added closing quote for truncated string")
+            # If we're in the middle of a string, close it first
+            if is_in_string:
+                # Find the last unescaped quote position
+                last_quote_pos = -1
+                i = len(text) - 1
+                while i >= 0:
+                    if text[i] == '"' and (i == 0 or text[i-1] != '\\'):
+                        last_quote_pos = i
+                        break
+                    i -= 1
+                
+                # If we found an opening quote but no closing quote after it, we're mid-string
+                if last_quote_pos >= 0:
+                    # Check if there's content after the last quote (we're in a string)
+                    remaining = text[last_quote_pos+1:].strip()
+                    if remaining and not remaining.endswith(('}', ']', ',')):
+                        # We're definitely in a string - close it
+                        text = text + '"'
+                        logger.info("Added closing quote for truncated string")
             
             # Add missing closing brackets first, then braces
             text = text + (']' * (open_brackets - close_brackets))
@@ -289,6 +320,11 @@ class LLMClient:
             # Merge data
             if "data" in obj and isinstance(obj["data"], dict):
                 for key, value in obj["data"].items():
+                    # Skip null/None values - they indicate the field wasn't found in this chunk
+                    if value is None:
+                        logger.debug(f"Skipping null value for key '{key}'")
+                        continue
+                    
                     if key not in merged_data:
                         merged_data[key] = value
                         logger.debug(f"Added data key '{key}': {value}")
@@ -302,6 +338,11 @@ class LLMClient:
             # Merge evidence
             if "evidence" in obj and isinstance(obj["evidence"], dict):
                 for key, value in obj["evidence"].items():
+                    # Skip null or empty evidence arrays
+                    if value is None or (isinstance(value, list) and len(value) == 0):
+                        logger.debug(f"Skipping empty evidence for key '{key}'")
+                        continue
+                    
                     if key not in merged_evidence:
                         merged_evidence[key] = value
                         logger.debug(f"Added evidence key '{key}' with {len(value) if isinstance(value, list) else 1} items")
@@ -389,8 +430,17 @@ class LLMClient:
         try:
             result = json.loads(response_text)
         except json.JSONDecodeError as e:
-            logger.warning(f"Initial JSON parse failed: {e}. Response preview: {response_text[:200]}...")
-            logger.debug(f"Full response text: {response_text}")
+            # Show more context around the error
+            error_pos = getattr(e, 'pos', None)
+            if error_pos:
+                start = max(0, error_pos - 100)
+                end = min(len(response_text), error_pos + 100)
+                context = response_text[start:end]
+                logger.warning(f"Initial JSON parse failed at position {error_pos}: {e}")
+                logger.warning(f"Context around error: ...{context}...")
+            else:
+                logger.warning(f"Initial JSON parse failed: {e}. Response preview: {response_text[:300]}...")
+            logger.debug(f"Full response text ({len(response_text)} chars): {response_text}")
             result = self._repair_json(response_text)
 
             if result is None:

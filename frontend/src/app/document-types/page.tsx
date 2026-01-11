@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faPlus, faEdit, faTrash, faSave, faTimes, faCog, faExclamationTriangle,
-  faChevronRight, faFileAlt, faListUl, faCode, faInfoCircle, faCheck
+  faChevronRight, faFileAlt, faListUl, faCode, faInfoCircle, faCheck, faRobot, faGraduationCap, faFolder, faShieldAlt
 } from '@fortawesome/free-solid-svg-icons';
+import { SignalPolicyEditor } from '@/components/SignalPolicyEditor';
 import {
   listDocumentTypes,
   createDocumentType,
@@ -18,8 +19,12 @@ import {
   updateDocumentTypeField,
   deleteDocumentTypeField,
   DocumentType,
-  DocumentTypeField
+  DocumentTypeField,
+  getTrainingDetails,
+  TrainingDetails,
+  getAvailableModels,
 } from '@/lib/api';
+import { useModel } from '@/context/ModelContext';
 
 const fieldTypeLabels: Record<string, string> = {
   string: 'Tekst',
@@ -47,12 +52,42 @@ export default function DocumentTypesAdmin() {
   const [editingType, setEditingType] = useState<DocumentType | null>(null);
   const [showFieldForm, setShowFieldForm] = useState(false);
   const [editingField, setEditingField] = useState<DocumentTypeField | null>(null);
+  const [showPolicyEditor, setShowPolicyEditor] = useState(false);
   const queryClient = useQueryClient();
+  
+  // Get selected model from global context
+  const { selectedModel } = useModel();
 
   const { data: documentTypes, isLoading } = useQuery({
     queryKey: ['document-types'],
     queryFn: listDocumentTypes,
   });
+
+  const { data: trainingDetails } = useQuery({
+    queryKey: ['training-details'],
+    queryFn: getTrainingDetails,
+  });
+
+  const { data: availableModels } = useQuery({
+    queryKey: ['available-models'],
+    queryFn: getAvailableModels,
+  });
+
+  // Get the selected model's details
+  const selectedModelDetails = useMemo(() => {
+    if (!selectedModel || !availableModels?.models) return null;
+    return availableModels.models.find(m => m.name === selectedModel);
+  }, [selectedModel, availableModels]);
+
+  // Filter document types based on selected model
+  const filteredDocumentTypes = useMemo(() => {
+    if (!documentTypes) return [];
+    if (!selectedModel || !selectedModelDetails) return documentTypes;
+    
+    // Get doc types that exist in the selected model's training data
+    const modelDocTypeSlugs = new Set(selectedModelDetails.document_types?.map(dt => dt.slug) || []);
+    return documentTypes.filter(dt => modelDocTypeSlugs.has(dt.slug));
+  }, [documentTypes, selectedModel, selectedModelDetails]);
 
   const createMutation = useMutation({
     mutationFn: createDocumentType,
@@ -101,7 +136,8 @@ export default function DocumentTypesAdmin() {
   });
 
   const deleteFieldMutation = useMutation({
-    mutationFn: (id: number) => deleteDocumentTypeField(id),
+    mutationFn: ({ slug, fieldId }: { slug: string; fieldId: number }) => 
+      deleteDocumentTypeField(slug, fieldId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['document-types'] });
     },
@@ -121,12 +157,12 @@ export default function DocumentTypesAdmin() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-white text-3xl font-bold">Document Types</h1>
-          <p className="text-white/60 mt-1">Beheer document types en hun velden</p>
+          <h1 className="text-white text-xl sm:text-2xl lg:text-3xl font-bold">Document Types</h1>
+          <p className="text-white/60 mt-1 text-sm sm:text-base">Beheer document types en hun velden</p>
         </div>
         <button
           onClick={() => {
@@ -134,29 +170,60 @@ export default function DocumentTypesAdmin() {
             setSelectedType(null);
             setEditingType(null);
           }}
-          className="flex items-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl hover:from-blue-500 hover:to-blue-600 transition-all shadow-lg shadow-blue-500/25"
+          className="flex items-center space-x-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg sm:rounded-xl hover:from-blue-500 hover:to-blue-600 transition-all shadow-lg shadow-blue-500/25 cursor-pointer text-sm sm:text-base self-start sm:self-auto"
         >
-          <FontAwesomeIcon icon={faPlus} className="w-4 h-4" />
+          <FontAwesomeIcon icon={faPlus} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           <span className="font-medium">Nieuw Type</span>
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Selected Model Info */}
+      {selectedModel && selectedModelDetails && (
+        <div className="glass-card p-3 sm:p-4 bg-purple-500/10 border border-purple-500/20">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FontAwesomeIcon icon={faRobot} className="w-4 h-4 text-purple-400" />
+              <span className="text-white font-medium text-sm">Model: {selectedModel}</span>
+              {selectedModelDetails.is_trained && (
+                <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">trained</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-xs text-white/60">
+              <FontAwesomeIcon icon={faFolder} className="w-3 h-3" />
+              <span className="font-mono truncate max-w-[200px] sm:max-w-[400px]" title={selectedModelDetails.path}>
+                {selectedModelDetails.path}
+              </span>
+            </div>
+          </div>
+          <div className="mt-2 text-xs text-purple-300/70">
+            {selectedModelDetails.document_types?.length || 0} document types · {selectedModelDetails.total_files || 0} training bestanden
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4 lg:gap-6">
         {/* Left Panel - Document Types List */}
         <div className="lg:col-span-1">
           <div className="glass-card p-4 space-y-2">
             <h2 className="text-white font-semibold px-2 pb-2 border-b border-white/10">
-              Document Types ({documentTypes?.length || 0})
+              Document Types ({filteredDocumentTypes?.length || 0})
+              {selectedModel && documentTypes && filteredDocumentTypes.length < documentTypes.length && (
+                <span className="text-white/40 text-xs font-normal ml-2">
+                  (van {documentTypes.length})
+                </span>
+              )}
             </h2>
             
-            {documentTypes?.length === 0 && (
+            {filteredDocumentTypes?.length === 0 && (
               <div className="text-center py-8">
                 <FontAwesomeIcon icon={faFileAlt} className="text-white/20 text-3xl mb-2" />
-                <p className="text-white/40 text-sm">Geen document types</p>
+                <p className="text-white/40 text-sm">
+                  {selectedModel ? `Geen types in model "${selectedModel}"` : 'Geen document types'}
+                </p>
               </div>
             )}
 
-            {documentTypes?.map((docType) => (
+            {filteredDocumentTypes?.map((docType) => (
               <button
                 key={docType.slug}
                 onClick={() => {
@@ -201,7 +268,7 @@ export default function DocumentTypesAdmin() {
         <div className="lg:col-span-2">
           {/* Create Form */}
           {showCreateForm && (
-            <div className="glass-card p-6">
+            <div className="glass-card p-4 sm:p-6">
               <DocumentTypeForm
                 onSubmit={(data) => createMutation.mutate(data)}
                 onCancel={() => setShowCreateForm(false)}
@@ -212,9 +279,9 @@ export default function DocumentTypesAdmin() {
 
           {/* Type Details */}
           {currentType && !showCreateForm && (
-            <div className="space-y-6">
+            <div className="space-y-4 sm:space-y-6">
               {/* Type Header Card */}
-              <div className="glass-card p-6">
+              <div className="glass-card p-4 sm:p-6">
                 {editingType?.slug === currentType.slug ? (
                   <DocumentTypeForm
                     initialData={currentType}
@@ -234,7 +301,7 @@ export default function DocumentTypesAdmin() {
                       <div className="flex space-x-2">
                         <button
                           onClick={() => setEditingType(currentType)}
-                          className="flex items-center space-x-2 px-3 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors"
+                          className="flex items-center space-x-2 px-3 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors cursor-pointer"
                         >
                           <FontAwesomeIcon icon={faEdit} className="w-4 h-4" />
                           <span className="text-sm">Bewerken</span>
@@ -298,7 +365,7 @@ export default function DocumentTypesAdmin() {
                         setShowFieldForm(true);
                         setEditingField(null);
                       }}
-                      className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm"
+                      className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm cursor-pointer"
                     >
                       <FontAwesomeIcon icon={faPlus} className="w-3 h-3" />
                       <span>Veld Toevoegen</span>
@@ -348,51 +415,55 @@ export default function DocumentTypesAdmin() {
                       .map((field) => (
                       <div
                         key={field.id}
-                        className="flex items-center justify-between px-3 py-2 bg-white/5 rounded-lg border border-white/10 hover:border-white/20 transition-colors group"
+                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0 px-2 sm:px-3 py-2 bg-white/5 rounded-lg border border-white/10 hover:border-white/20 transition-colors group"
                       >
-                        <div className="flex items-center space-x-3 min-w-0 flex-1">
-                          <div className={`px-2 py-0.5 rounded text-xs font-medium shrink-0 ${fieldTypeColors[field.field_type] || 'bg-gray-500/20 text-gray-400'}`}>
+                        <div className="flex items-center space-x-2 sm:space-x-3 min-w-0 flex-1">
+                          <div className={`px-1.5 sm:px-2 py-0.5 rounded text-[10px] sm:text-xs font-medium shrink-0 ${fieldTypeColors[field.field_type] || 'bg-gray-500/20 text-gray-400'}`}>
                             {fieldTypeLabels[field.field_type] || field.field_type}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center space-x-2 flex-wrap">
-                              <span className="text-white font-medium text-sm">{field.label}</span>
-                              <code className="text-white/40 text-xs bg-white/10 px-1 py-0.5 rounded">
+                            <div className="flex items-center space-x-1.5 sm:space-x-2 flex-wrap">
+                              <span className="text-white font-medium text-xs sm:text-sm">{field.label}</span>
+                              <code className="text-white/40 text-[10px] sm:text-xs bg-white/10 px-1 py-0.5 rounded">
                                 {field.key}
                               </code>
                               {field.regex && (
-                                <code className="text-amber-400/70 text-xs bg-amber-500/10 px-1 py-0.5 rounded truncate max-w-[150px]" title={field.regex}>
+                                <code className="text-amber-400/70 text-[10px] sm:text-xs bg-amber-500/10 px-1 py-0.5 rounded truncate max-w-[100px] sm:max-w-[150px]" title={field.regex}>
                                   {field.regex}
                                 </code>
                               )}
                               {field.enum_values && field.enum_values.length > 0 && (
-                                <span className="text-white/40 text-xs truncate">
+                                <span className="text-white/40 text-[10px] sm:text-xs truncate hidden sm:inline">
                                   [{field.enum_values.join(', ')}]
                                 </span>
                               )}
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center space-x-2 shrink-0">
+                        <div className="flex items-center justify-between sm:justify-end space-x-2 shrink-0">
                           {/* Required Toggle */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              updateFieldMutation.mutate({
-                                slug: currentType.slug,
-                                fieldId: field.id,
-                                data: { required: !field.required }
-                              });
-                            }}
-                            className={`w-8 h-5 rounded-full transition-colors flex items-center ${field.required ? 'bg-emerald-500' : 'bg-white/20'}`}
-                            title={field.required ? 'Verplicht' : 'Optioneel'}
-                          >
-                            <div className={`w-3 h-3 bg-white rounded-full shadow-md transform transition-transform ${field.required ? 'translate-x-4' : 'translate-x-1'}`} />
-                          </button>
-                          {/* Edit/Delete Buttons */}
-                          <div className="flex space-x-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center space-x-1.5 sm:space-x-2">
+                            <span className="text-white/50 text-[10px] sm:text-xs hidden sm:inline">Verplicht</span>
                             <button
+                              type="button"
                               onClick={() => {
+                                updateFieldMutation.mutate({
+                                  slug: currentType.slug,
+                                  fieldId: field.id,
+                                  data: { required: !field.required }
+                                });
+                              }}
+                              className={`w-7 h-4 sm:w-8 sm:h-5 rounded-full transition-colors flex items-center cursor-pointer ${field.required ? 'bg-emerald-500' : 'bg-white/20'}`}
+                              title={field.required ? 'Verplicht' : 'Optioneel'}
+                            >
+                              <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 bg-white rounded-full shadow-md transform transition-transform ${field.required ? 'translate-x-3.5 sm:translate-x-4' : 'translate-x-0.5 sm:translate-x-1'}`} />
+                            </button>
+                          </div>
+                          {/* Edit/Delete Buttons */}
+                          <div className="flex space-x-0.5 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setEditingField(field);
                                 setShowFieldForm(true);
                               }}
@@ -402,12 +473,13 @@ export default function DocumentTypesAdmin() {
                               <FontAwesomeIcon icon={faEdit} className="w-3 h-3" />
                             </button>
                             <button
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 if (confirm(`Veld "${field.label}" verwijderen?`)) {
-                                  deleteFieldMutation.mutate(field.id);
+                                  deleteFieldMutation.mutate({ slug: currentType.slug, fieldId: field.id });
                                 }
                               }}
-                              className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded"
+                              className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded cursor-pointer"
                               title="Verwijderen"
                             >
                               <FontAwesomeIcon icon={faTrash} className="w-3 h-3" />
@@ -417,6 +489,221 @@ export default function DocumentTypesAdmin() {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* Classification Policy Card */}
+              {!editingType && currentType && (
+                <div className="glass-card p-6">
+                  {showPolicyEditor ? (
+                    <SignalPolicyEditor
+                      slug={currentType.slug}
+                      onClose={() => setShowPolicyEditor(false)}
+                    />
+                  ) : (
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-white font-semibold flex items-center">
+                          <FontAwesomeIcon icon={faShieldAlt} className="w-4 h-4 mr-2 text-indigo-400" />
+                          Classificatiebeleid
+                        </h3>
+                        <button
+                          onClick={() => setShowPolicyEditor(true)}
+                          className="flex items-center space-x-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm cursor-pointer"
+                        >
+                          <FontAwesomeIcon icon={faEdit} className="w-3 h-3" />
+                          <span>Configureren</span>
+                        </button>
+                      </div>
+                      {currentType.classification_policy_json ? (
+                        <div className="space-y-3">
+                          <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-sm">
+                            <div className="text-indigo-400 font-medium mb-2">Aangepast Beleid Actief</div>
+                            
+                            {/* Signal-based summary */}
+                            <div className="space-y-2 mb-3">
+                              {(currentType.classification_policy_json as any).requirements?.length > 0 && (
+                                <div className="text-xs text-white/60">
+                                  <span className="text-teal-400">Vereisten:</span>{' '}
+                                  {(currentType.classification_policy_json as any).requirements
+                                    .map((r: any) => `${r.signal} ${r.op} ${r.value}`)
+                                    .join(', ')}
+                                </div>
+                              )}
+                              {(currentType.classification_policy_json as any).exclusions?.length > 0 && (
+                                <div className="text-xs text-white/60">
+                                  <span className="text-red-400">Uitsluitingen:</span>{' '}
+                                  {(currentType.classification_policy_json as any).exclusions
+                                    .map((e: any) => `${e.signal} ${e.op} ${e.value}`)
+                                    .join(', ')}
+                                </div>
+                              )}
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-2 text-xs text-white/60">
+                              <div>
+                                Getraind Model: {currentType.classification_policy_json.acceptance?.trained_model?.enabled !== false ? (
+                                  <span className="text-green-400">Aan</span>
+                                ) : (
+                                  <span className="text-red-400">Uit</span>
+                                )}
+                              </div>
+                              <div>
+                                Deterministisch: {currentType.classification_policy_json.acceptance?.deterministic?.enabled !== false ? (
+                                  <span className="text-green-400">Aan</span>
+                                ) : (
+                                  <span className="text-red-400">Uit</span>
+                                )}
+                              </div>
+                              <div>
+                                LLM: {currentType.classification_policy_json.acceptance?.llm?.enabled !== false ? (
+                                  <span className="text-green-400">Aan</span>
+                                ) : (
+                                  <span className="text-red-400">Uit</span>
+                                )}
+                              </div>
+                              <div>
+                                Min. Zekerheid: {((currentType.classification_policy_json.acceptance?.trained_model?.min_confidence || 0.85) * 100).toFixed(0)}%
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-center py-4 bg-white/5 rounded-xl border border-dashed border-white/10">
+                          <p className="text-white/40 text-sm">Standaard beleid wordt gebruikt</p>
+                          <p className="text-white/30 text-xs mt-1">Klik op Configureren om aangepaste regels in te stellen</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Training Details Card */}
+              {!editingType && currentType && trainingDetails && (
+                <div className="glass-card p-6">
+                  <h3 className="text-white font-semibold flex items-center mb-4">
+                    <FontAwesomeIcon icon={faRobot} className="w-4 h-4 mr-2 text-purple-400" />
+                    Classificatie Training
+                  </h3>
+
+                  {/* Deterministic (Classification Hints) - Now fallback */}
+                  {currentType.classification_hints && (
+                    <div className="mb-4 p-4 bg-white/5 border border-white/10 rounded-lg">
+                      <div className="flex items-center gap-2 mb-2">
+                        <FontAwesomeIcon icon={faCode} className="w-4 h-4 text-gray-400" />
+                        <h4 className="text-white font-medium text-sm">Fallback: Keywords/Regex</h4>
+                        <span className="text-xs bg-gray-500/20 px-2 py-0.5 rounded text-gray-400">Secundair</span>
+                      </div>
+                      <p className="text-white/60 text-xs mb-2">
+                        Deze hints worden alleen gebruikt als het getrainde model geen match vindt. Het trained model heeft nu prioriteit.
+                      </p>
+                      <pre className="text-white/50 text-xs whitespace-pre-wrap font-mono bg-black/20 p-2 rounded max-h-32 overflow-y-auto">
+                        {currentType.classification_hints}
+                      </pre>
+                    </div>
+                  )}
+
+                  {/* Trained Model Info */}
+                  {trainingDetails.model_exists && trainingDetails.model && (
+                    <div className="space-y-4">
+                      {/* Model Stats */}
+                      <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+                        <div className="flex items-center gap-2 mb-3">
+                          <FontAwesomeIcon icon={faGraduationCap} className="w-4 h-4 text-blue-400" />
+                          <h4 className="text-white font-medium text-sm">Getraind Model (Naive Bayes)</h4>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-xs">
+                          <div>
+                            <span className="text-white/60">Getraind op:</span>
+                            <span className="text-white ml-2">{new Date(trainingDetails.model.updated_at).toLocaleDateString('nl-NL')}</span>
+                          </div>
+                          <div>
+                            <span className="text-white/60">Threshold:</span>
+                            <span className="text-white ml-2">{(trainingDetails.model.threshold * 100).toFixed(0)}%</span>
+                          </div>
+                          <div>
+                            <span className="text-white/60">Vocabulaire:</span>
+                            <span className="text-white ml-2">{trainingDetails.model.vocab_size.toLocaleString()} tokens</span>
+                          </div>
+                          <div>
+                            <span className="text-white/60">Labels:</span>
+                            <span className="text-white ml-2">{trainingDetails.model.labels.length}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Training Data for this Document Type */}
+                      {trainingDetails.training_files_by_label[currentType.slug] && (
+                        <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
+                          <h4 className="text-white font-medium text-sm mb-2 flex items-center gap-2">
+                            <FontAwesomeIcon icon={faFileAlt} className="w-3 h-3 text-green-400" />
+                            Training Data
+                          </h4>
+                          <div className="text-xs text-white/70 mb-2">
+                            <span className="font-semibold">{trainingDetails.training_files_by_label[currentType.slug].length}</span> documenten gebruikt voor training
+                            {trainingDetails.model?.class_doc_counts[currentType.slug] && (
+                              <span className="ml-2">
+                                ({trainingDetails.model.class_doc_counts[currentType.slug]} documenten in model)
+                              </span>
+                            )}
+                          </div>
+                          <div className="max-h-32 overflow-y-auto space-y-1">
+                            {trainingDetails.training_files_by_label[currentType.slug].slice(0, 10).map((file, idx) => (
+                              <div key={idx} className="text-xs text-white/50 font-mono bg-black/20 p-1.5 rounded truncate">
+                                {file.path.split('/').pop()}
+                              </div>
+                            ))}
+                            {trainingDetails.training_files_by_label[currentType.slug].length > 10 && (
+                              <div className="text-xs text-white/40 italic">
+                                +{trainingDetails.training_files_by_label[currentType.slug].length - 10} meer...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Important Tokens */}
+                      {trainingDetails.important_tokens_by_label[currentType.slug] && (
+                        <div className="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+                          <h4 className="text-white font-medium text-sm mb-2 flex items-center gap-2">
+                            <FontAwesomeIcon icon={faCode} className="w-3 h-3 text-purple-400" />
+                            Belangrijkste Tokens (Top 20)
+                          </h4>
+                          <p className="text-white/60 text-xs mb-2">
+                            Deze woorden/tokens zijn het meest kenmerkend voor dit document type volgens het getrainde model.
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {trainingDetails.important_tokens_by_label[currentType.slug].slice(0, 20).map((tokenInfo, idx) => (
+                              <div
+                                key={idx}
+                                className="px-2 py-1 bg-purple-500/20 border border-purple-500/30 rounded text-xs text-purple-200 font-mono"
+                                title={`Aantal: ${tokenInfo.count}`}
+                              >
+                                {tokenInfo.token} <span className="text-purple-400/60">({tokenInfo.count})</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* No Training Data */}
+                      {!trainingDetails.training_files_by_label[currentType.slug] && (
+                        <div className="p-4 bg-white/5 border border-white/10 rounded-lg text-center">
+                          <p className="text-white/50 text-sm">Geen training data beschikbaar voor dit document type</p>
+                          <p className="text-white/40 text-xs mt-1">Plaats documenten in data/{currentType.slug}/ en train het model</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* No Model */}
+                  {!trainingDetails.model_exists && (
+                    <div className="p-4 bg-white/5 border border-white/10 rounded-lg text-center">
+                      <p className="text-white/50 text-sm">Geen getraind model beschikbaar</p>
+                      <p className="text-white/40 text-xs mt-1">Train het model om classificatie details te zien</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -610,7 +897,7 @@ function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading }: Docume
         <button
           type="button"
           onClick={onCancel}
-          className="px-5 py-2.5 bg-white/10 text-white rounded-xl hover:bg-white/20 transition-colors"
+          className="px-5 py-2.5 bg-white/10 text-white rounded-xl hover:bg-white/20 transition-colors cursor-pointer"
         >
           Annuleren
         </button>
@@ -706,7 +993,7 @@ function FieldForm({ initialData, onSubmit, onCancel, isLoading }: FieldFormProp
         <label className="block text-white/80 text-sm font-medium mb-1.5">Type *</label>
         <select
           value={formData.field_type}
-          onChange={(e) => setFormData(prev => ({ ...prev, field_type: e.target.value }))}
+          onChange={(e) => setFormData(prev => ({ ...prev, field_type: e.target.value as 'string' | 'number' | 'date' | 'money' | 'currency' | 'iban' | 'enum' }))}
           className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:ring-2 focus:ring-emerald-400 focus:border-transparent text-sm"
         >
           {Object.entries(fieldTypeLabels).map(([value, label]) => (
@@ -766,7 +1053,7 @@ function FieldForm({ initialData, onSubmit, onCancel, isLoading }: FieldFormProp
         <button
           type="button"
           onClick={onCancel}
-          className="px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors text-sm"
+          className="px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors text-sm cursor-pointer"
         >
           Annuleren
         </button>

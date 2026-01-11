@@ -47,6 +47,31 @@ fi
 echo "✓ Backend setup complete"
 echo
 
+# Check if port 8000 is already in use
+if lsof -Pi :8000 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+    echo "⚠️  Port 8000 is already in use!"
+    echo
+    echo "   To kill the existing uvicorn process, run one of these commands:"
+    echo "   • lsof -ti:8000 | xargs kill -9"
+    echo "   • pkill -f 'uvicorn app.main:app'"
+    echo "   • Find and kill manually: lsof -i :8000"
+    echo
+    echo "   Or restart this script after killing the process."
+    echo
+    read -p "   Do you want to kill the existing process automatically? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "   Killing existing process on port 8000..."
+        lsof -ti:8000 | xargs kill -9 2>/dev/null || pkill -f 'uvicorn app.main:app' 2>/dev/null || true
+        sleep 2
+        echo "   ✓ Process killed"
+    else
+        echo "   Exiting. Please kill the process manually and try again."
+        exit 1
+    fi
+    echo
+fi
+
 # Start backend in background
 echo "Starting backend server with auto-reload enabled..."
 uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000 &
@@ -55,6 +80,31 @@ echo "✓ Backend running on http://localhost:8000 (PID: $BACKEND_PID) with auto
 
 # Wait a moment for backend to start
 sleep 3
+
+# Check if port 3000 is already in use
+if lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+    echo "⚠️  Port 3000 is already in use!"
+    echo
+    echo "   To kill the existing Next.js process, run one of these commands:"
+    echo "   • lsof -ti:3000 | xargs kill -9"
+    echo "   • pkill -f 'next dev'"
+    echo "   • Find and kill manually: lsof -i :3000"
+    echo
+    echo "   Or restart this script after killing the process."
+    echo
+    read -p "   Do you want to kill the existing process automatically? (y/N) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo "   Killing existing process on port 3000..."
+        lsof -ti:3000 | xargs kill -9 2>/dev/null || pkill -f 'next dev' 2>/dev/null || true
+        sleep 2
+        echo "   ✓ Process killed"
+    else
+        echo "   Exiting. Please kill the process manually and try again."
+        exit 1
+    fi
+    echo
+fi
 
 # Start frontend
 echo "Starting frontend..."
@@ -76,6 +126,10 @@ echo "Backend:  http://localhost:8000"
 echo "API Docs: http://localhost:8000/docs"
 echo
 echo "Press Ctrl+C to stop all services"
+echo
+echo "💡 If you need to restart and ports are busy, use:"
+echo "   Backend:  lsof -ti:8000 | xargs kill -9  (or: pkill -f 'uvicorn app.main:app')"
+echo "   Frontend: lsof -ti:3000 | xargs kill -9  (or: pkill -f 'next dev')"
 
 # Wait for user interrupt
 trap "echo; echo 'Stopping services...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT

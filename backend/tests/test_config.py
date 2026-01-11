@@ -14,7 +14,7 @@ class TestSettings:
         
         assert settings.ollama_base_url == "http://localhost:11434"
         assert settings.ollama_model == "mistral:latest"
-        assert settings.ollama_timeout == 60.0
+        assert settings.ollama_timeout == 180.0
         assert settings.ollama_max_retries == 3
         assert settings.data_dir == "./data"
         assert "sqlite" in settings.database_url

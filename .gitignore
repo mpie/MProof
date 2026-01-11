@@ -135,3 +135,5 @@ yarn-error.log*
 # Coverage
 coverage/
 .nyc_output/
+/data/
+/backend/data/models/

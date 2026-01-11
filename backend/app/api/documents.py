@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional
+import json
 import os
 from pathlib import Path
 from app.models.schemas import DocumentResponse, DocumentListResponse
@@ -116,9 +117,10 @@ async def analyze_document(
     document_id: int
 ):
     """Trigger analysis for a document."""
-    from app.main import async_session_maker, job_queue
+    from app import main as app_main
+    from app.services.job_queue import JobQueue
 
-    async with async_session_maker() as session:
+    async with app_main.async_session_maker() as session:
         # Check if document exists
         result = await session.execute(
             text("SELECT id, status FROM documents WHERE id = :document_id"),
@@ -144,8 +146,13 @@ async def analyze_document(
         )
         await session.commit()
 
-        # Enqueue for processing
-        await job_queue.enqueue_document_processing(document_id)
+        # Ensure queue exists + is running, then enqueue
+        if app_main.job_queue is None:
+            app_main.job_queue = JobQueue(app_main.async_session_maker, app_main.llm_client, app_main.sse_service)
+            await app_main.job_queue.start()
+
+        await app_main.job_queue.start()
+        await app_main.job_queue.enqueue_document_processing(document_id)
 
         return {"ok": True, "message": "Analysis started"}
 
@@ -160,7 +167,7 @@ async def get_document_artifact(
     from app.main import async_session_maker
 
     # Validate path to prevent directory traversal
-    if ".." in path or path.startswith("/"):
+    if "\x00" in path or ".." in path or path.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     # Only allow specific artifact types
@@ -207,16 +214,56 @@ async def get_document_artifact(
         elif path.endswith('.txt'):
             media_type = 'text/plain'
         elif path.startswith('original/'):
-            # For original files, we'd need to detect MIME type
-            # For now, return as binary
-            media_type = 'application/octet-stream'
+            # Detect MIME type for original files
+            import mimetypes
+            mime_type, _ = mimetypes.guess_type(str(artifact_path))
+            if mime_type:
+                media_type = mime_type
+            else:
+                # Fallback based on extension
+                if artifact_path.suffix.lower() == '.pdf':
+                    media_type = 'application/pdf'
+                elif artifact_path.suffix.lower() in ['.jpg', '.jpeg']:
+                    media_type = 'image/jpeg'
+                elif artifact_path.suffix.lower() == '.png':
+                    media_type = 'image/png'
+                else:
+                    media_type = 'application/octet-stream'
         else:
             media_type = 'application/octet-stream'
 
-        return FileResponse(
-            path=str(artifact_path),
+        # Set headers for inline display (especially for PDFs and images)
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Expose-Headers': 'Content-Disposition, Content-Type, Content-Length',
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'public, max-age=3600',
+        }
+        
+        # Get file size for Content-Length header
+        file_size = os.path.getsize(artifact_path)
+        headers['Content-Length'] = str(file_size)
+        
+        if media_type == 'application/pdf' or media_type.startswith('image/'):
+            # For PDFs and images, set inline disposition to display in browser
+            headers['Content-Disposition'] = 'inline'
+        else:
+            # For other files, allow download
+            filename = artifact_path.name if not path.startswith('original/') else document.original_filename
+            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+        # Use streaming for efficient file serving
+        def iter_file():
+            with open(artifact_path, 'rb') as f:
+                while chunk := f.read(65536):  # 64KB chunks
+                    yield chunk
+        
+        return StreamingResponse(
+            iter_file(),
             media_type=media_type,
-            filename=artifact_path.name if not path.startswith('original/') else document.original_filename
+            headers=headers
         )
 
 
@@ -244,3 +291,114 @@ async def delete_document(document_id: int, db: AsyncSession = Depends(lambda: N
         await session.commit()
 
         return {"ok": True, "message": "Document deleted"}
+
+
+@router.get("/documents/{document_id}/fraud-analysis")
+async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda: None)):
+    """
+    Get comprehensive fraud analysis for a document.
+    
+    Analyzes:
+    - PDF metadata (creator software, timestamps)
+    - Image forensics (ELA manipulation detection)
+    - Text anomalies (unicode, repetition)
+    - Classification confidence
+    """
+    from app.main import async_session_maker
+    from app.services.fraud_detector import fraud_detector
+    
+    async with async_session_maker() as session:
+        # Get document
+        result = await session.execute(
+            text("""
+                SELECT d.*, s.name as subject_name
+                FROM documents d
+                LEFT JOIN subjects s ON d.subject_id = s.id
+                WHERE d.id = :document_id
+            """),
+            {"document_id": document_id}
+        )
+        document = result.fetchone()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Load document file
+        doc_dir = Path(settings.data_dir) / "subjects" / str(document.subject_id) / "documents" / str(document.id)
+        original_path = doc_dir / "original" / document.original_filename
+        
+        file_bytes = None
+        if original_path.exists():
+            file_bytes = original_path.read_bytes()
+        
+        # Load extracted text
+        extracted_text = None
+        text_path = doc_dir / "text" / "extracted.txt"
+        if text_path.exists():
+            extracted_text = text_path.read_text(encoding='utf-8', errors='ignore')
+        
+        # Check for cached fraud analysis
+        fraud_cache_path = doc_dir / "fraud_analysis.json"
+        if fraud_cache_path.exists():
+            try:
+                cached_data = json.loads(fraud_cache_path.read_text())
+                # Verify cache is still valid (check if document hasn't been reprocessed)
+                # For now, we'll trust the cache if it exists
+                return cached_data
+            except Exception as e:
+                logger.warning(f"Failed to load cached fraud analysis: {e}")
+        
+        # Load existing fraud signals from processing
+        existing_signals = {}
+        llm_dir = doc_dir / "llm"
+        
+        # Check for fpdf flag
+        if llm_dir.exists():
+            for json_file in llm_dir.glob("*.json"):
+                try:
+                    data = json.loads(json_file.read_text())
+                    if "fpdf" in data:
+                        existing_signals["fpdf"] = data.get("fpdf")
+                    if "fraud_signals" in data:
+                        existing_signals.update(data["fraud_signals"])
+                except Exception:
+                    pass
+        
+        # Run fraud analysis
+        report = fraud_detector().analyze_document(
+            file_bytes=file_bytes,
+            filename=document.original_filename,
+            document_id=document.id,
+            extracted_text=extracted_text,
+            classification_confidence=document.doc_type_confidence,
+            existing_signals=existing_signals,
+        )
+        
+        # Cache the result
+        report_dict = report.to_dict()
+        try:
+            fraud_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            fraud_cache_path.write_text(json.dumps(report_dict, indent=2))
+        except Exception as e:
+            logger.warning(f"Failed to cache fraud analysis: {e}")
+        
+        return report_dict
+
+
+@router.post("/documents/analyze-fraud")
+async def analyze_fraud_upload(
+    file_bytes: bytes,
+    filename: str,
+):
+    """
+    Analyze an uploaded file for fraud without saving it.
+    Useful for quick checks before full processing.
+    """
+    from app.services.fraud_detector import fraud_detector
+    
+    report = fraud_detector().analyze_document(
+        file_bytes=file_bytes,
+        filename=filename,
+    )
+    
+    return report.to_dict()
