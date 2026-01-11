@@ -60,6 +60,8 @@ export default function Dashboard() {
   const activeStep = useMemo(() => {
     if (!selectedSubject) return 1;
     if (!activeDocumentId) return 2;
+    // Step 3 is active when document is processing, completed when done
+    // Always return 3 if activeDocumentId exists, even if activeDocument is temporarily undefined
     return 3;
   }, [selectedSubject, activeDocumentId]);
 
@@ -73,6 +75,35 @@ export default function Dashboard() {
     queryKey: ['documents-recent'],
     queryFn: async () => listDocuments(undefined, undefined, 5, 0),
     refetchInterval: 5000,
+    structuralSharing: (oldData, newData) => {
+      if (!oldData || !newData) return newData;
+      
+      // Create a map of old documents by ID for quick lookup
+      const oldMap = new Map(oldData.documents.map(doc => [doc.id, doc]));
+      
+      // Merge: preserve doc_type_slug and confidence from old data if new data doesn't have them
+      const merged = {
+        ...newData,
+        documents: newData.documents.map((doc) => {
+          const oldDoc = oldMap.get(doc.id);
+          if (!oldDoc) return doc;
+          
+          // Preserve doc_type_slug and confidence if they exist in old data but not in new data
+          // Only preserve if document is still processing (not done)
+          if (doc.status === 'processing' || doc.status === 'queued') {
+            return {
+              ...doc,
+              doc_type_slug: doc.doc_type_slug ?? oldDoc.doc_type_slug ?? undefined,
+              doc_type_confidence: doc.doc_type_confidence ?? oldDoc.doc_type_confidence ?? undefined,
+            };
+          }
+          
+          return doc;
+        }),
+      };
+      
+      return merged;
+    },
   });
 
   const { data: classifierStatus } = useQuery({
@@ -110,6 +141,11 @@ export default function Dashboard() {
       return doc && (doc.status === 'processing' || doc.status === 'queued') ? 2000 : false;
     },
   });
+
+  // Determine if step 3 is completed (document is done)
+  const isStep3Completed = useMemo(() => {
+    return activeDocument?.status === 'done';
+  }, [activeDocument?.status]);
 
   const handleSubjectChange = (subject: Subject | null) => {
     setSelectedSubject(subject);
@@ -150,8 +186,14 @@ export default function Dashboard() {
             updated.progress = event.progress ?? old.progress;
             updated.updated_at = event.updated_at || old.updated_at;
             // Classification result can come with status update (after classification stage)
-            if (event.doc_type_slug != null) updated.doc_type_slug = event.doc_type_slug;
-            if (event.confidence != null) updated.doc_type_confidence = event.confidence;
+            // Preserve existing doc_type_slug if event doesn't provide it
+            if (event.doc_type_slug != null) {
+              updated.doc_type_slug = event.doc_type_slug;
+            }
+            // Preserve existing confidence if event doesn't provide it
+            if (event.confidence != null) {
+              updated.doc_type_confidence = event.confidence;
+            }
           } else if (event.type === 'result') {
             if (event.doc_type_slug != null) updated.doc_type_slug = event.doc_type_slug;
             if (event.confidence != null) updated.doc_type_confidence = event.confidence;
@@ -181,8 +223,14 @@ export default function Dashboard() {
                 updated.status = event.status as Document['status'];
                 updated.stage = event.stage || undefined;
                 updated.progress = event.progress ?? doc.progress;
-                if (event.doc_type_slug != null) updated.doc_type_slug = event.doc_type_slug;
-                if (event.confidence != null) updated.doc_type_confidence = event.confidence;
+                // Preserve existing doc_type_slug if event doesn't provide it
+                if (event.doc_type_slug != null) {
+                  updated.doc_type_slug = event.doc_type_slug;
+                }
+                // Preserve existing confidence if event doesn't provide it
+                if (event.confidence != null) {
+                  updated.doc_type_confidence = event.confidence;
+                }
               } else if (event.type === 'result') {
                 if (event.doc_type_slug != null) updated.doc_type_slug = event.doc_type_slug;
                 if (event.confidence != null) updated.doc_type_confidence = event.confidence;
@@ -397,7 +445,7 @@ export default function Dashboard() {
           </div>
 
           <div className="w-full lg:max-w-xl">
-            <WizardStepper activeStep={activeStep} />
+            <WizardStepper activeStep={activeStep} isStep3Completed={isStep3Completed} />
           </div>
         </div>
       </div>

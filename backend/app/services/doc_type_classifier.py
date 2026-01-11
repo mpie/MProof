@@ -119,9 +119,67 @@ def _read_text_file(path: Path) -> str:
             return f.read()
 
 
+def _ocr_with_rotation_detection(img: Image.Image) -> str:
+    """Perform OCR on image, trying different rotations (0, 90, 180, 270) and return best result.
+    
+    Args:
+        img: PIL Image to perform OCR on
+        
+    Returns:
+        Best OCR text result from all rotations
+    """
+    results = []
+    
+    # Try all rotations: 0, 90, 180, 270 degrees
+    for angle in [0, 90, 180, 270]:
+        try:
+            # Rotate image
+            if angle == 0:
+                rotated_img = img
+            else:
+                rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
+            
+            # Perform OCR
+            text = pytesseract.image_to_string(rotated_img, config=settings.tesseract_config)
+            
+            # Score the result: count alphanumeric characters and words
+            alnum_count = sum(1 for c in text if c.isalnum())
+            word_count = len(text.split())
+            
+            # Prefer results with more alphanumeric characters and words
+            score = alnum_count * 2 + word_count
+            
+            results.append({
+                'angle': angle,
+                'text': text,
+                'score': score,
+                'alnum_count': alnum_count,
+                'word_count': word_count
+            })
+            
+            logger.debug(f"OCR rotation {angle}°: {alnum_count} alnum chars, {word_count} words, score: {score}")
+            
+        except Exception as e:
+            logger.warning(f"OCR failed for rotation {angle}°: {e}")
+            continue
+    
+    if not results:
+        logger.warning("All OCR rotations failed, returning empty string")
+        return ""
+    
+    # Sort by score (descending) and return best result
+    results.sort(key=lambda x: x['score'], reverse=True)
+    best = results[0]
+    
+    if best['angle'] != 0:
+        logger.info(f"Best OCR result found at {best['angle']}° rotation ({best['alnum_count']} alnum chars, {best['word_count']} words)")
+    
+    return best['text']
+
+
 def _extract_text_from_image(path: Path) -> str:
     img = Image.open(path)
-    return pytesseract.image_to_string(img, config=settings.tesseract_config)
+    return _ocr_with_rotation_detection(img)
 
 
 def _extract_text_from_pdf(path: Path) -> str:
@@ -134,7 +192,7 @@ def _extract_text_from_pdf(path: Path) -> str:
             if len(text.strip()) < 200 or _is_mostly_empty(text):
                 pix = page.get_pixmap(dpi=250)
                 img = Image.open(BytesIO(pix.tobytes("png")))
-                text = pytesseract.image_to_string(img, config=settings.tesseract_config)
+                text = _ocr_with_rotation_detection(img)
             combined += text + "\n"
     finally:
         doc.close()

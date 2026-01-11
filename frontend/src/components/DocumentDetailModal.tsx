@@ -1141,7 +1141,21 @@ function LLMTab({ documentId, document, downloadArtifact }: {
 
           <div className="space-y-2">
             <CollapsibleBlock id="class-prompt" title="Prompt" content={data.classification.prompt} downloadPath="llm/classification_prompt.txt" downloadName="classification_prompt.txt" />
-            <CollapsibleBlock id="class-response" title="Response" content={data.classification.response} downloadPath="llm/classification_response.txt" downloadName="classification_response.txt" />
+            {/* Only show Response if it's different from Result (e.g., contains non-JSON text or is formatted differently) */}
+            {(() => {
+              const responseText = data.classification.response?.trim() || '';
+              const resultJson = data.classification.result ? JSON.stringify(data.classification.result, null, 2) : '';
+              const responseIsJson = responseText && (responseText.startsWith('{') || responseText.startsWith('['));
+              const responseMatchesResult = responseIsJson && responseText === resultJson;
+              
+              // Show Response only if it's different from Result
+              if (data.classification.response && !responseMatchesResult) {
+                return (
+                  <CollapsibleBlock id="class-response" title="Response" content={data.classification.response} downloadPath="llm/classification_response.txt" downloadName="classification_response.txt" />
+                );
+              }
+              return null;
+            })()}
             {data.classification.result && (
               <CollapsibleBlock id="class-result" title="Result (JSON)" content={JSON.stringify(data.classification.result, null, 2)} downloadPath="llm/classification_result.json" downloadName="classification_result.json" />
             )}
@@ -1165,7 +1179,21 @@ function LLMTab({ documentId, document, downloadArtifact }: {
 
           <div className="space-y-2">
             <CollapsibleBlock id="ext-prompt" title="Prompt" content={data.extraction.prompt} downloadPath="llm/extraction_prompt.txt" downloadName="extraction_prompt.txt" />
-            <CollapsibleBlock id="ext-response" title="Response" content={data.extraction.response} downloadPath="llm/extraction_response.txt" downloadName="extraction_response.txt" />
+            {/* Only show Response if it's different from Result (e.g., contains non-JSON text or is formatted differently) */}
+            {(() => {
+              const responseText = data.extraction.response?.trim() || '';
+              const resultJson = data.extraction.result ? JSON.stringify(data.extraction.result, null, 2) : '';
+              const responseIsJson = responseText && (responseText.startsWith('{') || responseText.startsWith('['));
+              const responseMatchesResult = responseIsJson && responseText === resultJson;
+              
+              // Show Response only if it's different from Result
+              if (data.extraction.response && !responseMatchesResult) {
+                return (
+                  <CollapsibleBlock id="ext-response" title="Response" content={data.extraction.response} downloadPath="llm/extraction_response.txt" downloadName="extraction_response.txt" />
+                );
+              }
+              return null;
+            })()}
             {data.extraction.result && (
               <CollapsibleBlock id="ext-result" title="Result (JSON)" content={JSON.stringify(data.extraction.result, null, 2)} downloadPath="llm/extraction_result.json" downloadName="extraction_result.json" />
             )}

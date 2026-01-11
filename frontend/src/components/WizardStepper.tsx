@@ -13,6 +13,7 @@ export interface WizardStepperStep {
 export interface WizardStepperProps {
   activeStep: WizardStep;
   steps?: [WizardStepperStep, WizardStepperStep, WizardStepperStep];
+  isStep3Completed?: boolean;
 }
 
 const defaultSteps: [WizardStepperStep, WizardStepperStep, WizardStepperStep] = [
@@ -35,9 +36,10 @@ function progressForStep(step: WizardStep): number {
   }
 }
 
-export function WizardStepper({ activeStep, steps = defaultSteps }: WizardStepperProps) {
+export function WizardStepper({ activeStep, steps = defaultSteps, isStep3Completed = false }: WizardStepperProps) {
   const safeStep = clampStep(activeStep);
-  const progress = progressForStep(safeStep);
+  // Show 100% progress if step 3 is completed, even if activeStep is still 3
+  const progress = isStep3Completed ? 100 : progressForStep(safeStep);
 
   return (
     <div className="w-full">
@@ -53,8 +55,8 @@ export function WizardStepper({ activeStep, steps = defaultSteps }: WizardSteppe
       <div className="flex justify-between">
         {steps.map((step, index) => {
           const stepNum = (index + 1) as WizardStep;
-          const isActive = safeStep === stepNum;
-          const isCompleted = safeStep > stepNum;
+          const isActive = safeStep === stepNum && !(stepNum === 3 && isStep3Completed);
+          const isCompleted = safeStep > stepNum || (stepNum === 3 && isStep3Completed);
 
           return (
             <div key={index} className="flex flex-col items-center flex-1">

@@ -219,6 +219,63 @@ class DocumentProcessor:
 
         return result
 
+    def _ocr_with_rotation_detection(self, img: Image.Image) -> str:
+        """Perform OCR on image, trying different rotations (0, 90, 180, 270) and return best result.
+        
+        Args:
+            img: PIL Image to perform OCR on
+            
+        Returns:
+            Best OCR text result from all rotations
+        """
+        results = []
+        
+        # Try all rotations: 0, 90, 180, 270 degrees
+        for angle in [0, 90, 180, 270]:
+            try:
+                # Rotate image
+                if angle == 0:
+                    rotated_img = img
+                else:
+                    rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
+                
+                # Perform OCR
+                text = pytesseract.image_to_string(rotated_img, config=settings.tesseract_config)
+                
+                # Score the result: count alphanumeric characters and words
+                alnum_count = sum(1 for c in text if c.isalnum())
+                word_count = len(text.split())
+                
+                # Prefer results with more alphanumeric characters and words
+                score = alnum_count * 2 + word_count
+                
+                results.append({
+                    'angle': angle,
+                    'text': text,
+                    'score': score,
+                    'alnum_count': alnum_count,
+                    'word_count': word_count
+                })
+                
+                logger.debug(f"OCR rotation {angle}°: {alnum_count} alnum chars, {word_count} words, score: {score}")
+                
+            except Exception as e:
+                logger.warning(f"OCR failed for rotation {angle}°: {e}")
+                continue
+        
+        if not results:
+            logger.warning("All OCR rotations failed, returning empty string")
+            return ""
+        
+        # Sort by score (descending) and return best result
+        results.sort(key=lambda x: x['score'], reverse=True)
+        best = results[0]
+        
+        if best['angle'] != 0:
+            logger.info(f"Best OCR result found at {best['angle']}° rotation ({best['alnum_count']} alnum chars, {best['word_count']} words)")
+        
+        return best['text']
+
     async def _extract_pdf_text(self, file_path: Path) -> Tuple[List[Dict[str, Any]], str, bool]:
         """Extract text from PDF, using OCR if text extraction yields poor results."""
         pages = []
@@ -237,10 +294,10 @@ class DocumentProcessor:
 
                 # Check if text extraction is poor (less than 200 chars or mostly empty)
                 if len(text.strip()) < 200 or self._is_mostly_empty(text):
-                    # Fall back to OCR
+                    # Fall back to OCR with rotation detection
                     pix = page.get_pixmap(dpi=250)
                     img = Image.open(BytesIO(pix.tobytes("png")))
-                    text = pytesseract.image_to_string(img, config=settings.tesseract_config)
+                    text = self._ocr_with_rotation_detection(img)
                     source = "ocr"
                     ocr_used = True
 
@@ -255,13 +312,13 @@ class DocumentProcessor:
 
         except Exception as e:
             logger.warning(f"PDF text extraction failed, trying OCR: {e}")
-            # Full OCR fallback
+            # Full OCR fallback with rotation detection
             doc = fitz.open(str(file_path))
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
                 pix = page.get_pixmap(dpi=250)
                 img = Image.open(BytesIO(pix.tobytes("png")))
-                text = pytesseract.image_to_string(img, config=settings.tesseract_config)
+                text = self._ocr_with_rotation_detection(img)
 
                 pages.append({
                     "page": page_num,
@@ -276,9 +333,9 @@ class DocumentProcessor:
         return pages, combined_text, ocr_used
 
     async def _extract_image_text(self, file_path: Path) -> Tuple[List[Dict[str, Any]], str, bool]:
-        """Extract text from image using OCR."""
+        """Extract text from image using OCR with rotation detection."""
         img = Image.open(file_path)
-        text = pytesseract.image_to_string(img, config=settings.tesseract_config)
+        text = self._ocr_with_rotation_detection(img)
 
         pages = [{
             "page": 0,
@@ -1736,7 +1793,13 @@ Respond with a SINGLE JSON object:
     ],
     ...
   }}
-}}"""
+}}
+
+CRITICAL: The "evidence" field MUST be an OBJECT (not an array), where each key is a field name from "data" and the value is an array of evidence objects for that field. For example:
+- If you extract "iban": "NL35...", then evidence should have "iban": [{{"page": 0, "start": 20, "end": 40, "quote": "NL35 INGB..."}}]
+- If you extract "naam": "Company Name", then evidence should have "naam": [{{"page": 0, "start": 10, "end": 30, "quote": "Company Name"}}]
+
+Each field in "data" should have a corresponding key in "evidence" with an array of evidence objects."""
 
     def _fill_missing_quotes(self, result: Dict[str, Any], pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Fill in missing quote fields in evidence from document text."""

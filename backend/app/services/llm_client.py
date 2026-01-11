@@ -448,6 +448,45 @@ class LLMClient:
                 logger.error(f"Response text (first 1000 chars): {response_text[:1000]}")
                 raise LLMClientError(f"Failed to parse JSON response: {response_text[:500]}")
 
+        # Repair evidence structure if needed (LLM sometimes returns array instead of object)
+        if isinstance(result, dict) and "evidence" in result:
+            if isinstance(result["evidence"], list):
+                logger.warning("LLM returned evidence as array instead of object, attempting repair")
+                evidence_obj = {}
+                data_fields = result.get("data", {})
+                
+                # Try to match evidence items to data fields by comparing quote text with data values
+                evidence_array = result["evidence"]
+                matched_evidence = set()
+                
+                for field_name, field_value in data_fields.items():
+                    if field_value is None:
+                        evidence_obj[field_name] = []
+                        continue
+                    
+                    # Convert field value to string for comparison
+                    field_value_str = str(field_value).strip()
+                    evidence_obj[field_name] = []
+                    
+                    # Try to find evidence items that match this field value
+                    for idx, item in enumerate(evidence_array):
+                        if idx in matched_evidence:
+                            continue
+                        if isinstance(item, dict):
+                            quote = item.get("quote", "").strip()
+                            # Check if quote contains or matches the field value
+                            if field_value_str.lower() in quote.lower() or quote.lower() in field_value_str.lower():
+                                evidence_obj[field_name].append(item)
+                                matched_evidence.add(idx)
+                
+                # Create empty evidence arrays for any remaining data fields
+                for field_name in data_fields.keys():
+                    if field_name not in evidence_obj:
+                        evidence_obj[field_name] = []
+                
+                result["evidence"] = evidence_obj
+                logger.info(f"Repaired evidence structure: {len(evidence_obj)} field keys, matched {len(matched_evidence)}/{len(evidence_array)} evidence items")
+
         if schema and not self._validate_schema(result, schema):
             raise LLMClientError(f"Response does not match expected schema: {result}")
 
