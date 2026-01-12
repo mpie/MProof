@@ -85,26 +85,75 @@ class LLMClient:
         
         return safe_max
 
+    def _normalize_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Normalize messages for the provider.
+        For vLLM: Convert system messages to user messages since vLLM requires roles to alternate user/assistant.
+        For Ollama: Keep messages as-is (supports system messages).
+        """
+        if self.provider == "vllm":
+            # vLLM requires roles to alternate user/assistant/user/assistant
+            # System messages break this pattern, so merge them into the first user message
+            normalized = []
+            system_content_parts = []
+            
+            for msg in messages:
+                if msg["role"] == "system":
+                    # Collect system messages to merge into first user message
+                    system_content_parts.append(msg["content"])
+                else:
+                    # If we have collected system content and this is the first non-system message
+                    if system_content_parts and not normalized:
+                        # Merge all system content into this message if it's a user message
+                        if msg["role"] == "user":
+                            combined_content = "\n\n".join(system_content_parts) + "\n\n" + msg["content"]
+                            normalized.append({"role": "user", "content": combined_content})
+                            system_content_parts = []  # Clear after merging
+                        else:
+                            # If first non-system is not user, create a user message with system content
+                            combined_content = "\n\n".join(system_content_parts)
+                            normalized.append({"role": "user", "content": combined_content})
+                            normalized.append(msg)  # Then add the original message
+                            system_content_parts = []
+                    else:
+                        # No pending system content, just add the message
+                        normalized.append(msg)
+            
+            # If we have system content but no user message to merge into, create a user message
+            if system_content_parts and not normalized:
+                combined_content = "\n\n".join(system_content_parts)
+                normalized.append({"role": "user", "content": combined_content})
+            
+            return normalized
+        else:
+            # Ollama supports system messages, return as-is
+            return messages
+
     def _build_request_payload(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Dict[str, Any]:
         """Build the request payload based on the provider."""
+        # Normalize messages for the provider (e.g., convert system to user for vLLM)
+        normalized_messages = self._normalize_messages(messages)
+        
         if self.provider == "vllm":
             # Calculate available tokens based on actual model context (4096 for most models)
             MODEL_CONTEXT = 4096
             SAFETY_MARGIN = 100  # Buffer for tokenization differences
             
-            input_tokens = self._estimate_input_tokens(messages)
+            input_tokens = self._estimate_input_tokens(normalized_messages)
             available_tokens = MODEL_CONTEXT - input_tokens - SAFETY_MARGIN
             
             # Ensure we don't exceed available space
-            safe_max_tokens = max(available_tokens, 256)  # Minimum 256 for some response
-            # Cap to reasonable maximum
-            safe_max_tokens = min(safe_max_tokens, 2048)
+            if available_tokens <= 0:
+                safe_max_tokens = 50
+            else:
+                safe_max_tokens = min(available_tokens, 2048)
+                safe_max_tokens = max(safe_max_tokens, 50)
             
             logger.info(f"vLLM request: input ~{input_tokens} tokens, available ~{available_tokens}, max_tokens={safe_max_tokens}")
             # OpenAI-compatible format for vLLM
             return {
                 "model": self.model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "temperature": temperature,
                 "max_tokens": safe_max_tokens,
                 "top_p": 0.9,
@@ -113,7 +162,7 @@ class LLMClient:
         else:  # ollama
             return {
                 "model": self.model,
-                "messages": messages,
+                "messages": normalized_messages,
                 "stream": False,
                 "options": {
                     "temperature": temperature,
@@ -147,8 +196,13 @@ class LLMClient:
 
         # Log detailed request information
         user_message = next((msg["content"] for msg in messages if msg["role"] == "user"), "")
-        logger.info(f"LLM Request to {self.provider} model '{self.model}' - prompt length: {len(user_message)} chars")
-        logger.info(f"LLM Request (curl equivalent):\n{curl_command}")
+        prompt_length = len(user_message)
+        doc_length = sum(len(msg.get("content", "")) for msg in messages)
+        request_id = id(payload)  # Simple request ID
+        
+        logger.info(f"LLM Request: provider={self.provider}, model={self.model}, request_id={request_id}, prompt_length={prompt_length}, doc_length={doc_length}")
+        logger.debug(f"LLM Request (curl equivalent):\n{curl_command}")
+        logger.debug(f"LLM Request payload content: {payload}")
 
         for attempt in range(self.max_retries):
             try:
@@ -157,6 +211,8 @@ class LLMClient:
                     response = await client.post(url, json=payload)
                     response.raise_for_status()
                     duration = time.time() - start_time
+                    latency_ms = int(duration * 1000)
+                    status_code = response.status_code
 
                     data = response.json()
                     response_content = self._extract_response_content(data)
@@ -190,16 +246,17 @@ class LLMClient:
                     if abs(brace_diff) <= 1 and bracket_diff == 0:
                         # Likely multiple JSON objects
                         if json_object_count > 1:
-                            logger.info(f"LLM response contains {json_object_count} separate JSON objects (will be merged automatically)")
+                            logger.debug(f"LLM response contains {json_object_count} separate JSON objects (will be merged automatically)")
                         # Don't warn - this is valid and will be handled by repair logic
                     elif brace_diff > 1 or bracket_diff > 0:
                         # Check if we have multiple objects despite unbalanced braces (extra closing braces)
                         if json_object_count > 1:
-                            logger.info(f"LLM response contains {json_object_count} separate JSON objects with extra closing braces (will be merged automatically)")
+                            logger.debug(f"LLM response contains {json_object_count} separate JSON objects with extra closing braces (will be merged automatically)")
                         else:
                             logger.warning(f"LLM response appears truncated (unbalanced braces/brackets: {open_braces}/{close_braces} braces, {open_brackets}/{close_brackets} brackets). Response length: {len(response_content)} chars")
                     
-                    logger.info(f"LLM Response received ({len(response_content)} chars) in {duration:.2f}s: {response_content[:200]}{'...' if len(response_content) > 200 else ''}")
+                    logger.info(f"LLM Response: provider={self.provider}, model={self.model}, request_id={id(payload)}, latency_ms={latency_ms}, status_code={status_code}, response_length={len(response_content)}")
+                    logger.debug(f"LLM Response content: {response_content[:500]}{'...' if len(response_content) > 500 else ''}")
 
                     return response_content, curl_command, duration
 
@@ -701,7 +758,7 @@ class LLMClient:
 
         logger.info(f"Sending JSON request to LLM (model: {self.model})")
         try:
-            response_text, curl_command = await self._make_request(messages)
+            response_text, curl_command, duration = await self._make_request(messages)
             logger.info(f"Received LLM response ({len(response_text)} chars)")
 
             # Try to parse JSON

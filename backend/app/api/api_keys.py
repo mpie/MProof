@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import secrets
 import hashlib
 from pydantic import BaseModel
@@ -125,7 +125,7 @@ async def create_api_key(data: ApiKeyCreate):
     expires_at = None
     if data.expires_days:
         from datetime import timedelta
-        expires_at = datetime.utcnow() + timedelta(days=data.expires_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=data.expires_days)
     
     try:
         async with async_session_maker() as session:
@@ -141,8 +141,8 @@ async def create_api_key(data: ApiKeyCreate):
                     "scopes": json.dumps(data.scopes) if data.scopes else None,
                     "is_active": True,
                     "expires_at": expires_at,
-                    "created_at": datetime.utcnow(),
-                    "updated_at": datetime.utcnow(),
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
                 }
             )
             await session.commit()
@@ -190,7 +190,7 @@ async def update_api_key(key_id: int, data: ApiKeyUpdate):
         
         # Build update query
         updates = []
-        params = {"id": key_id, "updated_at": datetime.utcnow()}
+        params = {"id": key_id, "updated_at": datetime.now(timezone.utc)}
         
         if data.name is not None:
             updates.append("name = :name")
@@ -292,7 +292,7 @@ async def regenerate_api_key(key_id: int):
             {
                 "id": key_id,
                 "secret_hash": secret_hash,
-                "updated_at": datetime.utcnow(),
+                "updated_at": datetime.now(timezone.utc),
             }
         )
         await session.commit()

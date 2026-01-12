@@ -14,6 +14,7 @@ pytesseract==0.3.10
 python-docx==1.1.0
 openpyxl==3.1.2
 httpx==0.25.2
+urllib3<2.0  # Pin to v1.x for LibreSSL compatibility
 pydantic-settings==2.1.0
 pytest==7.4.3
 pytest-asyncio==0.21.1

@@ -271,6 +271,10 @@ export interface ClassifierStatus {
   last_summary?: Record<string, unknown> | null;
   model_path?: string;
   dataset_dir?: string;
+  current_file?: string | null;
+  current_label?: string | null;
+  ocr_rotation?: number | null;
+  active_files?: Array<{ file: string; label: string; path?: string }> | null;
 }
 
 export interface AvailableModel {
@@ -535,6 +539,11 @@ export const deleteDocumentType = async (slug: string): Promise<void> => {
   await api.delete(`/document-types/${slug}`);
 };
 
+export const generateDocumentTypePrefill = async (data: { name: string; keywords: string }): Promise<{ description: string; extraction_prompt_preamble: string }> => {
+  const response = await api.post('/document-types/generate-prefill', data);
+  return response.data;
+};
+
 export const checkDocumentTypeNameUnique = async (name: string, excludeSlug?: string): Promise<boolean> => {
   try {
     const params = new URLSearchParams({ name });
@@ -670,8 +679,10 @@ export const getClassifierStatus = async (): Promise<ClassifierStatus> => {
   return response.data;
 };
 
-export const trainClassifier = async (modelName?: string): Promise<ClassifierStatus> => {
-  const params = modelName ? { model_name: modelName } : undefined;
+export const trainClassifier = async (modelName?: string, incremental: boolean = false): Promise<ClassifierStatus> => {
+  const params: any = {};
+  if (modelName) params.model_name = modelName;
+  if (incremental) params.incremental = 'true';
   const response = await api.post('/classifier/train', undefined, { timeout: 0, params });
   return response.data;
 };
@@ -693,10 +704,33 @@ export const getBertClassifierStatus = async (modelName?: string): Promise<BertC
   return response.data;
 };
 
-export const trainBertClassifier = async (modelName?: string, threshold = 0.7): Promise<BertClassifierStatus> => {
+export const trainBertClassifier = async (modelName?: string, threshold = 0.7, incremental: boolean = false): Promise<BertClassifierStatus> => {
   const params: Record<string, string | number> = { threshold };
   if (modelName) params.model_name = modelName;
+  if (incremental) params.incremental = 'true';
   const response = await api.post('/classifier/bert/train', undefined, { timeout: 0, params });
+  return response.data;
+};
+
+// App Settings
+export interface AppSetting {
+  key: string;
+  value: string;
+  description?: string | null;
+}
+
+export const getAppSettings = async (): Promise<AppSetting[]> => {
+  const response = await api.get('/app-settings');
+  return response.data;
+};
+
+export const getAppSetting = async (key: string): Promise<AppSetting> => {
+  const response = await api.get(`/app-settings/${key}`);
+  return response.data;
+};
+
+export const updateAppSetting = async (key: string, value: string, description?: string): Promise<AppSetting> => {
+  const response = await api.put(`/app-settings/${key}`, { value, description });
   return response.data;
 };
 

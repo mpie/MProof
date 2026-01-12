@@ -1,14 +1,15 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faCog, faKey, faRobot, faPlug, faPlus, faTrash, faCopy, faCheck,
   faEye, faEyeSlash, faRefresh, faExclamationTriangle, faGraduationCap,
   faFileAlt, faCode, faDatabase, faFilter, faToggleOn, faToggleOff, faTimes, faSpinner,
   faFolder, faChevronDown, faBan, faHandPointer, faSearch, faBullseye, faBolt, faBrain,
-  faLightbulb, faGlobe, faCommentDots, faChartBar, faRocket
+  faLightbulb, faGlobe, faCommentDots, faChartBar, faRocket, faShieldAlt, faImage
 } from '@fortawesome/free-solid-svg-icons';
 import {
   getTrainingDetails,
@@ -38,10 +39,14 @@ import {
   switchLLMProvider,
   LLMSettingsResponse,
   LLMHealthResponse,
+  getAppSettings,
+  updateAppSetting,
+  listDocumentTypes,
+  generateDocumentTypePrefill,
 } from '@/lib/api';
 import { useModel } from '@/context/ModelContext';
 
-type TabType = 'model' | 'llm' | 'api-keys' | 'skip-markers' | 'mcp';
+type TabType = 'model' | 'llm' | 'api-keys' | 'skip-markers' | 'fraud-detection' | 'mcp';
 
 interface TokenInfo {
   token: string;
@@ -63,6 +68,63 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
   const [selectedLabel, setSelectedLabel] = useState<string | null>(null);
   const [showTokensModal, setShowTokensModal] = useState(false);
   const { selectedModel } = useModel();
+  const router = useRouter();
+  
+  // Fetch existing document types to check which ones don't exist
+  const { data: existingDocumentTypes } = useQuery({
+    queryKey: ['document-types'],
+    queryFn: listDocumentTypes,
+  });
+  
+  // Create a set of existing document type slugs for quick lookup
+  const existingSlugs = useMemo(() => {
+    if (!existingDocumentTypes) return new Set<string>();
+    return new Set(existingDocumentTypes.map(dt => dt.slug.toLowerCase()));
+  }, [existingDocumentTypes]);
+  
+  // Helper function to generate slug from label
+  const generateSlug = (label: string): string => {
+    return label
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  };
+  
+  // Helper function to capitalize first letter
+  const capitalizeFirst = (str: string): string => {
+    if (!str) return str;
+    return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  };
+  
+  // Helper function to create classification hints from top tokens
+  const createClassificationHints = (label: string): string => {
+    const tokens = tokensByLabel[label] || [];
+    const topTokens = tokens.slice(0, 10).map(t => t.token);
+    // Format as "kw:keyword" per line
+    return topTokens.map(token => `kw:${token}`).join('\n');
+  };
+  
+  // Navigate to document types page with prefill
+  const handleCreateDocumentType = (label: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const slug = generateSlug(label);
+    const hints = createClassificationHints(label);
+    const capitalizedName = capitalizeFirst(label);
+    
+    // Navigate immediately, LLM will be called on the document types page
+    const params = new URLSearchParams({
+      create: 'true',
+      name: capitalizedName,
+      slug: slug,
+      classification_hints: hints,
+      generate_llm: 'true', // Flag to trigger LLM generation on the page
+    });
+    
+    router.push(`/document-types?${params.toString()}`);
+  };
 
   // Build a map of label -> model name for "Standaard" view
   const labelToModel = useMemo(() => {
@@ -136,12 +198,14 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
 
       {/* Compact Grid - scrollable for many items */}
       <div className="max-h-96 overflow-y-auto pr-1 scrollbar-thin">
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           {filteredLabels.map((label) => {
             const docCount = docCounts[label] || 0;
             const topTokens = tokensByLabel[label] || [];
             const hasTokens = topTokens.length > 0;
             const belongsToModel = labelToModel[label];
+            const labelSlug = generateSlug(label);
+            const documentTypeExists = existingSlugs.has(labelSlug.toLowerCase());
 
             return (
               <div 
@@ -150,16 +214,25 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
                   setSelectedLabel(label);
                   setShowTokensModal(true);
                 }}
-                className="bg-white/5 rounded-lg p-3 border border-white/10 hover:border-white/30 hover:bg-white/10 transition-all cursor-pointer group"
+                className="bg-white/5 rounded-lg p-4 border border-white/10 hover:border-white/30 hover:bg-white/10 transition-all cursor-pointer group relative min-h-[120px]"
               >
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <h4 className="text-white font-semibold text-sm truncate flex-1" title={label}>
+                <div className="flex items-start justify-between gap-2 mb-2 pr-16">
+                  <h4 className="text-white font-semibold text-sm flex-1 break-words" title={label}>
                     {label}
                   </h4>
-                  <span className="text-xs bg-blue-500/20 text-blue-200 px-2 py-0.5 rounded shrink-0 font-medium">
-                    {docCount}
-                  </span>
                 </div>
+                
+                {/* Create Document Type button if it doesn't exist */}
+                {!documentTypeExists && (
+                  <button
+                    onClick={(e) => handleCreateDocumentType(label, e)}
+                    className="absolute top-2.5 right-2.5 z-10 flex items-center gap-1 px-1.5 py-0.5 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 text-green-400 text-[10px] rounded transition-colors cursor-pointer opacity-70 hover:opacity-100"
+                    title="Maak document type aan"
+                  >
+                    <FontAwesomeIcon icon={faPlus} className="w-2.5 h-2.5" />
+                    <span>Maak aan</span>
+                  </button>
+                )}
                 
                 {/* Show model name when viewing all (Standaard) */}
                 {!selectedModel && belongsToModel && (
@@ -176,7 +249,7 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
                   <div className="flex flex-wrap gap-1 mb-2">
                     {topTokens.slice(0, 3).map((t, i) => (
                       <span 
-                        key={i} 
+                        key={i}
                         className="text-xs bg-purple-500/15 text-white/90 px-1.5 py-0.5 rounded font-mono truncate max-w-[80px]"
                         title={t.token}
                       >
@@ -184,17 +257,30 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
                       </span>
                     ))}
                     {topTokens.length > 3 && (
-                      <span className="text-xs text-white/40 px-1.5 py-0.5">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedLabel(label);
+                          setShowTokensModal(true);
+                        }}
+                        className="text-xs text-purple-300 hover:text-purple-100 px-1.5 py-0.5 hover:bg-purple-500/30 rounded transition-colors cursor-pointer font-medium underline decoration-purple-400/50 hover:decoration-purple-300"
+                        title={`Bekijk alle ${topTokens.length} woorden`}
+                      >
                         +{topTokens.length - 3} meer
-                      </span>
+                      </button>
                     )}
                   </div>
                 )}
 
-                {/* Click hint */}
-                <div className="flex items-center gap-1.5 text-xs text-white/60 group-hover:text-white/80 transition-colors">
-                  <FontAwesomeIcon icon={faHandPointer} className="w-3 h-3" />
-                  <span>Klik voor woorden</span>
+                {/* Click hint with document count */}
+                <div className="flex items-center justify-between gap-2 text-xs text-white/60 group-hover:text-white/80 transition-colors">
+                  <div className="flex items-center gap-1.5">
+                    <FontAwesomeIcon icon={faHandPointer} className="w-3 h-3" />
+                    <span>Bekijk details</span>
+                  </div>
+                  <span className="text-xs bg-blue-500/20 text-blue-200 px-2 py-0.5 rounded font-medium">
+                    {docCount}
+                  </span>
                 </div>
               </div>
             );
@@ -319,6 +405,7 @@ export default function SettingsPage() {
     { id: 'model' as TabType, label: 'Model', icon: faRobot },
     { id: 'llm' as TabType, label: 'LLM', icon: faBrain },
     { id: 'skip-markers' as TabType, label: 'Skip Markers', icon: faFilter },
+    { id: 'fraud-detection' as TabType, label: 'Fraud Detection', icon: faShieldAlt },
     { id: 'api-keys' as TabType, label: 'API Keys', icon: faKey },
     { id: 'mcp' as TabType, label: 'MCP', icon: faPlug },
   ];
@@ -358,6 +445,7 @@ export default function SettingsPage() {
       {activeTab === 'model' && <ModelTab />}
       {activeTab === 'llm' && <LLMTab />}
       {activeTab === 'skip-markers' && <SkipMarkersTab />}
+      {activeTab === 'fraud-detection' && <FraudDetectionTab />}
       {activeTab === 'api-keys' && <ApiKeysTab />}
       {activeTab === 'mcp' && <McpTab />}
     </div>
@@ -369,6 +457,102 @@ function ModelTab() {
   const queryClient = useQueryClient();
   const { selectedModel, setSelectedModel } = useModel();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const [showStopwordsModal, setShowStopwordsModal] = useState(false);
+  const [activeSection, setActiveSection] = useState<string>('naive-bayes');
+  const isProgrammaticScrollRef = useRef(false);
+
+  // Scroll spy to update active section
+  useEffect(() => {
+    let scrollTimeout: NodeJS.Timeout;
+
+    const handleScroll = () => {
+      // Skip scroll spy updates during programmatic scrolling
+      if (isProgrammaticScrollRef.current) {
+        return;
+      }
+
+      // Clear any pending scroll end detection
+      clearTimeout(scrollTimeout);
+
+      const sections = [
+        { id: 'naive-bayes', element: document.getElementById('naive-bayes') },
+        { id: 'bert', element: document.getElementById('bert') },
+        { id: 'training-data', element: document.getElementById('training-data') },
+        { id: 'classification-priority', element: document.getElementById('classification-priority') },
+        { id: 'stopwords', element: document.getElementById('stopwords') },
+      ];
+
+      // Get scroll position with proper offset for sticky sidebar
+      const scrollPosition = window.scrollY + 100; // Offset for sticky header
+
+      // Find the section that's currently in view
+      let activeId = sections[0].id; // Default to first section
+      
+      for (let i = sections.length - 1; i >= 0; i--) {
+        const { id, element } = sections[i];
+        if (element) {
+          const rect = element.getBoundingClientRect();
+          const elementTop = window.scrollY + rect.top;
+          
+          // Check if section is in the viewport (with some threshold)
+          if (scrollPosition >= elementTop - 50) {
+            activeId = id;
+            break;
+          }
+        }
+      }
+
+      // Only update if it's different to avoid unnecessary re-renders
+      setActiveSection((prev) => {
+        if (prev !== activeId) {
+          return activeId;
+        }
+        return prev;
+      });
+
+      // Debounce scroll end detection
+      scrollTimeout = setTimeout(() => {
+        // Scroll ended
+      }, 100);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll(); // Initial check
+    
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      clearTimeout(scrollTimeout);
+    };
+  }, []);
+  
+  // App settings for ELA/EXIF
+  const { data: appSettings } = useQuery({
+    queryKey: ['app-settings'],
+    queryFn: () => getAppSettings(),
+  });
+  
+  const elaEnabled = appSettings?.find(s => s.key === 'ela_enabled')?.value === 'true' || false;
+  const exifEnabled = appSettings?.find(s => s.key === 'exif_enabled')?.value === 'true' || false;
+  
+  const updateSettingMutation = useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) => updateAppSetting(key, value),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['app-settings'] });
+    },
+  });
+  
+  // Dutch stopwords - complete list from backend
+  const dutchStopwords = {
+    'Articles & Pronouns': ['de', 'het', 'een', 'die', 'dat', 'deze', 'dit', 'hij', 'zij', 'wij', 'jullie', 'hun', 'haar', 'hem', 'mij', 'jou', 'ons', 'hen', 'wie', 'wat', 'welke', 'welk'],
+    'Prepositions': ['van', 'in', 'op', 'te', 'aan', 'met', 'voor', 'door', 'over', 'bij', 'naar', 'uit', 'tot', 'om', 'onder', 'tegen', 'tussen', 'zonder', 'binnen', 'buiten'],
+    'Conjunctions': ['en', 'of', 'maar', 'want', 'dus', 'omdat', 'als', 'dan', 'toen', 'terwijl', 'hoewel', 'indien', 'tenzij', 'zodra', 'voordat', 'nadat', 'zodat'],
+    'Common Verbs': ['is', 'zijn', 'was', 'waren', 'ben', 'bent', 'heeft', 'hebben', 'had', 'hadden', 'wordt', 'worden', 'werd', 'werden', 'kan', 'kunnen', 'kon', 'konden', 'zal', 'zullen', 'zou', 'zouden', 'moet', 'moeten', 'moest', 'moesten', 'mag', 'mogen', 'wil', 'willen', 'wilde', 'wilden', 'gaat', 'gaan', 'ging', 'gingen', 'komt', 'komen', 'kwam', 'kwamen', 'doet', 'doen', 'deed', 'deden', 'zegt', 'zeggen'],
+    'Adverbs & Misc': ['niet', 'ook', 'nog', 'wel', 'al', 'er', 'hier', 'daar', 'waar', 'hoe', 'nu', 'dan', 'toen', 'zo', 'toch', 'heel', 'erg', 'zeer', 'meer', 'veel', 'weinig', 'alle', 'alles', 'iets', 'niets', 'iemand', 'niemand', 'elke', 'elk', 'ander', 'andere', 'eigen', 'zelf', 'alleen', 'samen', 'verder', 'eerst', 'laatste'],
+    'Numbers (as words)': ['een', 'twee', 'drie', 'vier', 'vijf', 'zes', 'zeven', 'acht', 'negen', 'tien'],
+    'Common Document Words': ['pagina', 'bladzijde', 'datum', 'naam', 'adres', 'www', 'http', 'https', 'com', 'org', 'net'],
+  };
+  
+  const totalStopwords = Object.values(dutchStopwords).flat().length;
 
   const { data: availableModels } = useQuery({
     queryKey: ['available-models'],
@@ -422,12 +606,12 @@ function ModelTab() {
     queryFn: getClassifierStatus,
     refetchInterval: (query) => {
       const status = query.state.data as ClassifierStatus | undefined;
-      return status?.running ? 2000 : false;
+      return status?.running ? 1000 : false;
     },
   });
 
   const trainMutation = useMutation({
-    mutationFn: async (modelName?: string) => {
+    mutationFn: async ({ modelName, incremental }: { modelName?: string; incremental?: boolean } = {}) => {
       if (!modelName && availableModels?.models && availableModels.models.length > 0) {
         // Train all available models when "Standaard" is selected
         // We DON'T train the default model because with model folders,
@@ -435,7 +619,7 @@ function ModelTab() {
         const results = [];
         for (const model of availableModels.models) {
           try {
-            const result = await trainClassifier(model.name);
+            const result = await trainClassifier(model.name, incremental || false);
             results.push({ model: model.name, result });
           } catch (error) {
             results.push({ model: model.name, error: String(error) });
@@ -444,7 +628,7 @@ function ModelTab() {
         return results;
       }
       // Train specific model or default (when no model folders exist)
-      return trainClassifier(modelName);
+      return trainClassifier(modelName, incremental || false);
     },
     onMutate: async () => {
       // Immediately invalidate and refetch status when training starts
@@ -588,8 +772,161 @@ function ModelTab() {
         )}
       </div>
 
+      {/* Settings Layout with Sidebar */}
+      <div className="flex gap-6">
+        {/* Sidebar Navigation */}
+        <aside className="hidden lg:block w-64 shrink-0">
+          <div className="glass-card p-4 sticky top-4">
+            <h3 className="text-white/80 font-semibold text-xs uppercase tracking-wider mb-4">Navigatie</h3>
+            <nav className="space-y-1">
+              <a
+                href="#naive-bayes"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('naive-bayes');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('naive-bayes');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20; // Small offset for sticky header
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'naive-bayes'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faGraduationCap} className="w-4 h-4" />
+                Naive Bayes
+              </a>
+              <a
+                href="#bert"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('bert');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('bert');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20;
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'bert'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faBrain} className="w-4 h-4" />
+                BERT Classifier
+              </a>
+              <a
+                href="#training-data"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('training-data');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('training-data');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20;
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'training-data'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faFileAlt} className="w-4 h-4" />
+                Training Data
+              </a>
+              <a
+                href="#classification-priority"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('classification-priority');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('classification-priority');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20;
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'classification-priority'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faCode} className="w-4 h-4" />
+                Classificatie Prioriteit
+              </a>
+              <a
+                href="#stopwords"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('stopwords');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('stopwords');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20;
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'stopwords'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faBan} className="w-4 h-4" />
+                Stopwoorden
+              </a>
+            </nav>
+          </div>
+        </aside>
+
+        {/* Main Content */}
+        <div className="flex-1 space-y-6">
       {/* Model Status */}
-      <div className="glass-card p-6">
+      <div id="naive-bayes" className="glass-card p-6 scroll-mt-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-white text-xl font-semibold flex items-center gap-2">
             <div className="w-9 h-9 rounded-lg bg-purple-500/20 border border-purple-500/30 flex items-center justify-center">
@@ -597,24 +934,38 @@ function ModelTab() {
             </div>
             {selectedModel ? `Model: ${selectedModel}` : 'Classificatie Model'}
           </h2>
-          <button
-            onClick={() => trainMutation.mutate(selectedModel)}
-            disabled={trainMutation.isPending || classifierStatus?.running}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            title={!selectedModel ? "Traint alle modellen (Standaard + alle beschikbare modellen)" : undefined}
-          >
-            <FontAwesomeIcon 
-              icon={faRefresh} 
-              className={`w-4 h-4 ${(trainMutation.isPending || classifierStatus?.running) ? 'animate-spin' : ''}`} 
-            />
-            {classifierStatus?.running ? (
-              'Training...'
-            ) : !selectedModel ? (
-              'Train Alle Modellen'
-            ) : (
-              `Train ${selectedModel}`
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => trainMutation.mutate({ modelName: selectedModel, incremental: false })}
+              disabled={trainMutation.isPending || classifierStatus?.running}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              title={!selectedModel ? "Traint alle modellen (Standaard + alle beschikbare modellen)" : undefined}
+            >
+              <FontAwesomeIcon 
+                icon={faRefresh} 
+                className={`w-4 h-4 ${(trainMutation.isPending || classifierStatus?.running) ? 'animate-spin' : ''}`} 
+              />
+              {classifierStatus?.running ? (
+                'Training...'
+              ) : !selectedModel ? (
+                'Train Alle Modellen'
+              ) : (
+                `Train ${selectedModel}`
+              )}
+            </button>
+            <button
+              onClick={() => trainMutation.mutate({ modelName: selectedModel, incremental: true })}
+              disabled={trainMutation.isPending || classifierStatus?.running}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-500/50 text-white rounded-lg hover:bg-purple-500/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              title="Incrementeel trainen (alleen nieuwe/gewijzigde bestanden)"
+            >
+              <FontAwesomeIcon 
+                icon={faRefresh} 
+                className={`w-4 h-4 ${(trainMutation.isPending || classifierStatus?.running) ? 'animate-spin' : ''}`} 
+              />
+              Incrementeel
+            </button>
+          </div>
         </div>
 
         {/* Training Progress */}
@@ -632,11 +983,49 @@ function ModelTab() {
                       <>Gestart: {new Date(classifierStatus.started_at).toLocaleTimeString('nl-NL')} • </>
                     )}
                     {(() => {
-                      const minutes = Math.floor(trainingElapsed / 60);
+                      const hours = Math.floor(trainingElapsed / 3600);
+                      const minutes = Math.floor((trainingElapsed % 3600) / 60);
                       const seconds = trainingElapsed % 60;
-                      return `Looptijd: ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`;
+                      const parts = [];
+                      if (hours > 0) parts.push(`${hours}u`);
+                      if (minutes > 0) parts.push(`${minutes}m`);
+                      parts.push(`${seconds}s`);
+                      return `Looptijd: ${parts.join(' ')}`;
                     })()}
                   </div>
+                  {/* Show active files being processed */}
+                  {classifierStatus?.active_files && classifierStatus.active_files.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="text-purple-300 font-medium text-sm">
+                        Actieve bestanden ({classifierStatus.active_files.length}):
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {classifierStatus.active_files.map((fileInfo: any, idx: number) => (
+                          <div
+                            key={idx}
+                            className="px-2 py-1 bg-purple-500/20 border border-purple-500/30 rounded text-xs"
+                          >
+                            <div className="text-purple-200 font-medium">{fileInfo.label || 'Unknown'}</div>
+                            <div className="text-white/70 truncate max-w-[200px]" title={fileInfo.path || fileInfo.file}>
+                              {fileInfo.file}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (classifierStatus?.current_file || classifierStatus?.current_label) && (
+                    <div className="text-purple-300 font-medium">
+                      {classifierStatus.current_label && (
+                        <span className="mr-2">Type: {classifierStatus.current_label}</span>
+                      )}
+                      {classifierStatus.current_file && (
+                        <span className="text-white/70">Bestand: {classifierStatus.current_file}</span>
+                      )}
+                      {classifierStatus.ocr_rotation != null && classifierStatus.ocr_rotation !== 0 && (
+                        <span className="ml-2 text-blue-300">OCR: {classifierStatus.ocr_rotation}°</span>
+                      )}
+                    </div>
+                  )}
                   <div className="text-white/50">
                     <span>Training stappen:</span>
                     <ul className="list-disc list-inside ml-2 mt-1 space-y-0.5">
@@ -780,7 +1169,13 @@ function ModelTab() {
         )}
       </div>
 
+      {/* BERT Classifier Section - Under Naive Bayes */}
+      <div id="bert" className="mt-6 scroll-mt-4">
+        <BertClassifierSection selectedModel={selectedModel} />
+      </div>
+
       {/* Training Data per Label - Scalable */}
+      <div id="training-data" className="scroll-mt-4">
       {(() => {
         // When "Standaard" is selected, show all document types from all models
         if (!selectedModel && availableModels?.models) {
@@ -857,9 +1252,10 @@ function ModelTab() {
         
         return null;
       })()}
+      </div>
 
       {/* Classification Priority Info */}
-      <div className="glass-card p-6">
+      <div id="classification-priority" className="glass-card p-6 scroll-mt-4">
         <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center">
             <FontAwesomeIcon icon={faCode} className="text-cyan-400 w-4 h-4" />
@@ -870,37 +1266,37 @@ function ModelTab() {
           Het systeem gebruikt meerdere methodes om documenten te classificeren. De volgorde bepaalt welke methode voorrang krijgt.
         </p>
         <div className="space-y-3">
-          <div className="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
-            <div className="w-8 h-8 bg-green-500/20 rounded-full flex items-center justify-center text-green-400 text-sm font-bold flex-shrink-0">1</div>
+          <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-lg">
+            <div className="w-8 h-8 bg-red-500/20 rounded-full flex items-center justify-center text-red-400 text-sm font-bold flex-shrink-0">1</div>
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <span className="text-white font-medium">Trained Model</span>
-                <span className="text-[10px] bg-green-500/30 text-green-300 px-1.5 py-0.5 rounded uppercase font-semibold">Primair</span>
+                <span className="text-white font-medium">Deterministic Matching (STRONG)</span>
+                <span className="text-[10px] bg-red-500/30 text-red-300 px-1.5 py-0.5 rounded uppercase font-semibold">Hoogste Prioriteit</span>
               </div>
               <div className="text-white/70 text-sm mb-2">
-                <strong>Multinomial Naive Bayes</strong> - Machine learning model getraind op voorbeelddocumenten.
-              </div>
-              <div className="text-white/50 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Leert automatisch</span>
-                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Confidence score</span>
-                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Verbetert met data</span>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 p-4 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-            <div className="w-8 h-8 bg-amber-500/20 rounded-full flex items-center justify-center text-amber-400 text-sm font-bold flex-shrink-0">2</div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-white font-medium">Deterministic Matching</span>
-                <span className="text-[10px] bg-amber-500/30 text-amber-300 px-1.5 py-0.5 rounded uppercase font-semibold">Fallback</span>
-              </div>
-              <div className="text-white/70 text-sm mb-2">
-                <strong>Keywords & Regex</strong> - Zoekt naar specifieke trefwoorden of patronen in de tekst.
+                <strong>Keywords & Regex</strong> - Als <strong>alle</strong> kw: regels matchen, heeft dit voorrang boven alle andere methodes.
               </div>
               <div className="text-white/50 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Snel & voorspelbaar</span>
                 <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> 100% match</span>
                 <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3 text-amber-400" /> Handmatig</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
+            <div className="w-8 h-8 bg-green-500/20 rounded-full flex items-center justify-center text-green-400 text-sm font-bold flex-shrink-0">2</div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-white font-medium">Trained Models</span>
+                <span className="text-[10px] bg-green-500/30 text-green-300 px-1.5 py-0.5 rounded uppercase font-semibold">Primair</span>
+              </div>
+              <div className="text-white/70 text-sm mb-2">
+                <strong>Naive Bayes & BERT</strong> - Beide worden uitgevoerd, de beste wordt gekozen. BERT wint als het significant beter is (+0.1 confidence).
+              </div>
+              <div className="text-white/50 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Leert automatisch</span>
+                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Confidence score</span>
+                <span className="inline-flex items-center gap-1"><FontAwesomeIcon icon={faCheck} className="w-3 h-3 text-green-400" /> Verbetert met data</span>
               </div>
             </div>
           </div>
@@ -947,7 +1343,7 @@ function ModelTab() {
       </div>
 
       {/* Stopwords & Training Settings */}
-      <div className="glass-card p-6">
+      <div id="stopwords" className="glass-card p-6 scroll-mt-4">
         <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center">
             <FontAwesomeIcon icon={faBan} className="text-amber-400 w-4 h-4" />
@@ -969,7 +1365,13 @@ function ModelTab() {
                     {word}
                   </span>
                 ))}
-                <span className="text-white/40 text-xs">+80 meer...</span>
+                <button
+                  onClick={() => setShowStopwordsModal(true)}
+                  className="text-xs text-amber-300 hover:text-amber-100 px-1.5 py-0.5 hover:bg-amber-500/30 rounded transition-colors cursor-pointer font-medium underline decoration-amber-400/50 hover:decoration-amber-300"
+                  title={`Bekijk alle ${totalStopwords} stopwoorden`}
+                >
+                  +{totalStopwords - 20} meer...
+                </button>
               </div>
             </div>
             <p className="text-amber-300/60 text-xs mt-3 flex items-center gap-1.5">
@@ -981,8 +1383,59 @@ function ModelTab() {
         </div>
       </div>
 
-      {/* BERT Classifier Section */}
-      <BertClassifierSection selectedModel={selectedModel} />
+      {/* Stopwords Modal */}
+      {showStopwordsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-gray-900 border border-white/20 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-white/10 flex items-center justify-between">
+              <div>
+                <h3 className="text-white font-bold text-lg">Nederlandse Stopwoorden</h3>
+                <p className="text-white/60 text-sm mt-1">
+                  Totaal {totalStopwords} woorden die automatisch worden genegeerd tijdens training
+                </p>
+              </div>
+              <button
+                onClick={() => setShowStopwordsModal(false)}
+                className="text-white/60 hover:text-white transition-colors"
+              >
+                <FontAwesomeIcon icon={faTimes} className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-6">
+                {Object.entries(dutchStopwords).map(([category, words]) => (
+                  <div key={category}>
+                    <h4 className="text-amber-400 font-semibold text-sm mb-3 flex items-center gap-2">
+                      <FontAwesomeIcon icon={faBan} className="w-3 h-3" />
+                      {category} ({words.length})
+                    </h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {words.map(word => (
+                        <span
+                          key={word}
+                          className="text-xs bg-amber-500/20 text-amber-300 px-2 py-1 rounded font-mono border border-amber-500/30"
+                        >
+                          {word}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="p-4 border-t border-white/10 bg-white/5">
+              <button
+                onClick={() => setShowStopwordsModal(false)}
+                className="w-full px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg transition-colors font-medium"
+              >
+                Sluiten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -997,7 +1450,7 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
     queryFn: () => getBertClassifierStatus(selectedModel),
     refetchInterval: (query) => {
       const status = query.state.data as BertClassifierStatus | undefined;
-      return status?.running ? 2000 : false;
+      return status?.running ? 1000 : false;
     },
   });
 
@@ -1007,7 +1460,7 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
   });
 
   const trainBertMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({ incremental }: { incremental?: boolean } = {}) => {
       if (!selectedModel && availableModels?.models && availableModels.models.length > 0) {
         // Train all available models when "Standaard" is selected
         // We DON'T train the default model because with model folders,
@@ -1015,7 +1468,7 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
         const results = [];
         for (const model of availableModels.models) {
           try {
-            const result = await trainBertClassifier(model.name, bertThreshold);
+            const result = await trainBertClassifier(model.name, bertThreshold, incremental || false);
             results.push({ model: model.name, result });
           } catch (error) {
             results.push({ model: model.name, error: String(error) });
@@ -1024,7 +1477,7 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
         return results;
       }
       // Train specific model or default (when no model folders exist)
-      return trainBertClassifier(selectedModel, bertThreshold);
+      return trainBertClassifier(selectedModel, bertThreshold, incremental || false);
     },
     onSuccess: () => {
       // Invalidate both with and without model name
@@ -1067,23 +1520,37 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
             Experimenteel
           </span>
         </h3>
-        <button
-          onClick={() => trainBertMutation.mutate()}
-          disabled={trainBertMutation.isPending || bertStatus?.running}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          <FontAwesomeIcon
-            icon={faRefresh}
-            className={`w-4 h-4 ${(trainBertMutation.isPending || bertStatus?.running) ? 'animate-spin' : ''}`}
-          />
-          {bertStatus?.running ? (
-            'Training...'
-          ) : !selectedModel ? (
-            'Train BERT (Alle Modellen)'
-          ) : (
-            'Train BERT'
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => trainBertMutation.mutate({ incremental: false })}
+            disabled={trainBertMutation.isPending || bertStatus?.running}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+          >
+            <FontAwesomeIcon
+              icon={faRefresh}
+              className={`w-4 h-4 ${(trainBertMutation.isPending || bertStatus?.running) ? 'animate-spin' : ''}`}
+            />
+            {bertStatus?.running ? (
+              'Training...'
+            ) : !selectedModel ? (
+              'Train BERT (Alle Modellen)'
+            ) : (
+              'Train BERT'
+            )}
+          </button>
+          <button
+            onClick={() => trainBertMutation.mutate({ incremental: true })}
+            disabled={trainBertMutation.isPending || bertStatus?.running}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-500/50 text-white rounded-lg hover:bg-blue-500/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            title="Incrementeel trainen (alleen nieuwe/gewijzigde bestanden)"
+          >
+            <FontAwesomeIcon
+              icon={faRefresh}
+              className={`w-4 h-4 ${(trainBertMutation.isPending || bertStatus?.running) ? 'animate-spin' : ''}`}
+            />
+            Incrementeel
+          </button>
+        </div>
       </div>
 
       <p className="text-white/60 text-sm mb-4">
@@ -1169,85 +1636,63 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
         </div>
       )}
 
-      {/* BERT Capabilities & Training Details */}
+      {/* BERT Model Summary - Compact */}
       {bertStatus?.model_exists && bertStatus?.last_summary && (
-        <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center">
-              <FontAwesomeIcon icon={faBrain} className="w-4 h-4 text-blue-400" />
+        <div className="mt-4 p-4 bg-gradient-to-br from-blue-500/15 to-purple-500/10 border border-blue-500/30 rounded-lg">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center">
+                <FontAwesomeIcon icon={faBrain} className="w-4 h-4 text-blue-400" />
+              </div>
+              <div>
+                <h3 className="text-blue-300 font-bold text-sm">BERT Model</h3>
+                {bertStatus.finished_at && (
+                  <p className="text-white/50 text-xs">
+                    Getraind: {new Date(bertStatus.finished_at).toLocaleDateString('nl-NL', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric'
+                    })}
+                  </p>
+                )}
+              </div>
             </div>
-            <div className="text-blue-400 text-sm font-medium">Wat kan BERT doen?</div>
+            <div className="flex gap-2 text-xs">
+              <div className="bg-white/5 rounded px-2 py-1 border border-white/10">
+                <span className="text-white/50">Types:</span>
+                <span className="text-white font-bold ml-1">{bertStatus.last_summary.labels?.length || 0}</span>
+              </div>
+              <div className="bg-white/5 rounded px-2 py-1 border border-white/10">
+                <span className="text-white/50">Docs:</span>
+                <span className="text-white font-bold ml-1">{bertStatus.last_summary.total_documents || 0}</span>
+              </div>
+              <div className="bg-white/5 rounded px-2 py-1 border border-white/10">
+                <span className="text-white/50">Threshold:</span>
+                <span className="text-white font-bold ml-1">{Math.round((bertStatus.last_summary.threshold || 0.7) * 100)}%</span>
+              </div>
+            </div>
           </div>
           
-          <div className="space-y-3 text-xs text-white/70">
-            <div>
-              <div className="text-white/90 font-medium mb-1 flex items-center gap-1.5">
-                <FontAwesomeIcon icon={faLightbulb} className="w-3 h-3 text-yellow-400" />
-                Semantisch begrip
-              </div>
-              <p className="ml-5">
-                BERT begrijpt de <strong className="text-white">betekenis</strong> van tekst, niet alleen exacte woorden. 
-                Documenten met vergelijkbare inhoud worden herkend, ook als de exacte woorden verschillen.
-              </p>
-            </div>
-
-            <div>
-              <div className="text-white/90 font-medium mb-1 flex items-center gap-1.5">
-                <FontAwesomeIcon icon={faBullseye} className="w-3 h-3 text-green-400" />
-                Verschil met Naive Bayes
-              </div>
-              <p className="ml-5">
-                <strong className="text-white">Naive Bayes</strong> matcht op exacte woorden/tokens. 
-                <strong className="text-white"> BERT</strong> matcht op betekenis en context. 
-                BERT is beter voor variaties in formulering en synoniemen.
-              </p>
-            </div>
-
-            <div>
-              <div className="text-white/90 font-medium mb-1 flex items-center gap-1.5">
-                <FontAwesomeIcon icon={faChartBar} className="w-3 h-3 text-purple-400" />
-                Threshold ({Math.round((bertStatus?.threshold || 0.7) * 100)}%)
-              </div>
-              <p className="ml-5">
-                Documenten moeten minimaal <strong className="text-white">{Math.round((bertStatus?.threshold || 0.7) * 100)}%</strong> gelijkenis hebben 
-                met een getraind document type. Hogere threshold = strenger (minder matches), lagere = soepeler (meer matches).
-              </p>
-            </div>
-
-            {bertStatus.last_summary.samples_per_label && Object.keys(bertStatus.last_summary.samples_per_label).length > 0 && (
-              <div>
-                <div className="text-white/90 font-medium mb-2 flex items-center gap-1.5">
-                  <FontAwesomeIcon icon={faFileAlt} className="w-3 h-3 text-cyan-400" />
-                  Getrainde document types
-                </div>
-                <div className="ml-5 space-y-1">
+          {bertStatus.last_summary.samples_per_label && Object.keys(bertStatus.last_summary.samples_per_label).length > 0 && (
+            <details className="mt-2">
+              <summary className="text-white/70 text-xs cursor-pointer hover:text-white transition-colors">
+                Getrainde types ({Object.keys(bertStatus.last_summary.samples_per_label).length}) • 
+                Semantisch begrip • Beter dan NB bij variaties
+              </summary>
+              <div className="mt-2 pt-2 border-t border-white/10">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
                   {Object.entries(bertStatus.last_summary.samples_per_label)
                     .sort(([, a], [, b]) => (b as number) - (a as number))
                     .map(([label, count]) => (
-                      <div key={label} className="flex items-center justify-between gap-2">
+                      <div key={label} className="bg-white/5 rounded px-2 py-1 border border-white/10 flex items-center justify-between">
                         <span className="text-white/80 truncate">{label}</span>
-                        <span className="text-white/60 shrink-0">
-                          {count} {count === 1 ? 'document' : 'documenten'}
-                        </span>
+                        <span className="text-cyan-300 font-semibold shrink-0 ml-1">{count}</span>
                       </div>
                     ))}
                 </div>
               </div>
-            )}
-
-            <div>
-              <div className="text-white/90 font-medium mb-1 flex items-center gap-1.5">
-                <FontAwesomeIcon icon={faRocket} className="w-3 h-3 text-orange-400" />
-                Wat kun je verwachten?
-              </div>
-              <ul className="ml-5 space-y-1 list-disc list-inside">
-                <li>Herkenning van documenten met <strong className="text-white">vergelijkbare betekenis</strong>, ook bij andere formulering</li>
-                <li>Betere resultaten bij <strong className="text-white">variatie in tekst</strong> (synoniemen, andere woordvolgorde)</li>
-                <li>Minder false positives bij <strong className="text-white">toevallige woordmatches</strong></li>
-                <li>Werkt het beste met <strong className="text-white">meerdere voorbeelddocumenten</strong> per type</li>
-              </ul>
-            </div>
-          </div>
+            </details>
+          )}
         </div>
       )}
 
@@ -1284,9 +1729,14 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
                     <>Gestart: {new Date(bertStatus.started_at).toLocaleTimeString('nl-NL')} • </>
                   )}
                   {(() => {
-                    const minutes = Math.floor(bertTrainingElapsed / 60);
+                    const hours = Math.floor(bertTrainingElapsed / 3600);
+                    const minutes = Math.floor((bertTrainingElapsed % 3600) / 60);
                     const seconds = bertTrainingElapsed % 60;
-                    return `Looptijd: ${minutes > 0 ? `${minutes}m ` : ''}${seconds}s`;
+                    const parts = [];
+                    if (hours > 0) parts.push(`${hours}u`);
+                    if (minutes > 0) parts.push(`${minutes}m`);
+                    parts.push(`${seconds}s`);
+                    return `Looptijd: ${parts.join(' ')}`;
                   })()}
                 </div>
                 <div className="text-white/50">
@@ -1353,10 +1803,13 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
         </div>
       </div>
 
-      {/* Comparison with Naive Bayes */}
-      <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-        <h4 className="text-white/80 font-medium mb-2 text-sm">BERT vs Naive Bayes</h4>
-        <div className="grid grid-cols-2 gap-4 text-xs">
+      {/* Comparison with Naive Bayes - Compact */}
+      <details className="mt-4 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+        <summary className="text-white/80 font-medium text-sm cursor-pointer hover:text-white transition-colors">
+          BERT vs Naive Bayes
+        </summary>
+        <div className="mt-3">
+          <div className="grid grid-cols-2 gap-4 text-xs">
           <div>
             <div className="text-blue-400 font-medium mb-2 flex items-center gap-2">
               <div className="w-5 h-5 rounded bg-blue-500/20 border border-blue-500/30 flex items-center justify-center">
@@ -1386,6 +1839,103 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
               <li className="flex items-center gap-1.5"><FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3 text-amber-400 shrink-0" /> Mist context</li>
               <li className="flex items-center gap-1.5"><FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3 text-amber-400 shrink-0" /> Woordfrequentie</li>
             </ul>
+          </div>
+        </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+// Fraud Detection Tab
+function FraudDetectionTab() {
+  const queryClient = useQueryClient();
+  
+  // App settings for ELA/EXIF
+  const { data: appSettings } = useQuery({
+    queryKey: ['app-settings'],
+    queryFn: () => getAppSettings(),
+  });
+  
+  const elaEnabled = appSettings?.find(s => s.key === 'ela_enabled')?.value === 'true' || false;
+  const exifEnabled = appSettings?.find(s => s.key === 'exif_enabled')?.value === 'true' || false;
+  
+  const updateSettingMutation = useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) => updateAppSetting(key, value),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['app-settings'] });
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="glass-card p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-xl bg-red-500/20 border border-red-500/30 flex items-center justify-center">
+            <FontAwesomeIcon icon={faShieldAlt} className="text-red-400 w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Fraud Detection Instellingen</h2>
+            <p className="text-white/60 text-sm">Configureer fraud detection analyse opties</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Settings */}
+      <div className="glass-card p-6">
+        <h3 className="text-white font-semibold text-sm mb-4 flex items-center gap-2">
+          <FontAwesomeIcon icon={faShieldAlt} className="w-4 h-4 text-red-400" />
+          Analyse Opties
+        </h3>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between p-4 bg-white/5 rounded-lg border border-white/10">
+            <div className="flex items-center gap-4 flex-1">
+              <div className="w-12 h-12 rounded-lg bg-red-500/20 border border-red-500/30 flex items-center justify-center">
+                <FontAwesomeIcon icon={faImage} className="w-6 h-6 text-red-400" />
+              </div>
+              <div className="flex-1">
+                <div className="text-white font-medium text-base mb-1">Error Level Analysis (ELA)</div>
+                <div className="text-white/60 text-sm">
+                  Detecteert JPEG manipulatie via compressie inconsistenties. Standaard uit (vaak ruis bij scans).
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => updateSettingMutation.mutate({ key: 'ela_enabled', value: elaEnabled ? 'false' : 'true' })}
+              disabled={updateSettingMutation.isPending}
+              className={`relative w-14 h-7 rounded-full transition-colors cursor-pointer ${
+                elaEnabled ? 'bg-green-500' : 'bg-white/20'
+              }`}
+            >
+              <div className={`absolute top-1 left-1 w-5 h-5 bg-white rounded-full transition-transform ${
+                elaEnabled ? 'translate-x-7' : 'translate-x-0'
+              }`} />
+            </button>
+          </div>
+          <div className="flex items-center justify-between p-4 bg-white/5 rounded-lg border border-white/10">
+            <div className="flex items-center gap-4 flex-1">
+              <div className="w-12 h-12 rounded-lg bg-orange-500/20 border border-orange-500/30 flex items-center justify-center">
+                <FontAwesomeIcon icon={faImage} className="w-6 h-6 text-orange-400" />
+              </div>
+              <div className="flex-1">
+                <div className="text-white font-medium text-base mb-1">EXIF Analyse</div>
+                <div className="text-white/60 text-sm">
+                  Detecteert foto editing software (Photoshop, GIMP). Standaard uit (vaak ruis bij scans).
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => updateSettingMutation.mutate({ key: 'exif_enabled', value: exifEnabled ? 'false' : 'true' })}
+              disabled={updateSettingMutation.isPending}
+              className={`relative w-14 h-7 rounded-full transition-colors cursor-pointer ${
+                exifEnabled ? 'bg-green-500' : 'bg-white/20'
+              }`}
+            >
+              <div className={`absolute top-1 left-1 w-5 h-5 bg-white rounded-full transition-transform ${
+                exifEnabled ? 'translate-x-7' : 'translate-x-0'
+              }`} />
+            </button>
           </div>
         </div>
       </div>

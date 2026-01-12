@@ -31,7 +31,7 @@ from app.services.job_queue import JobQueue
 from app.api import (
     health, subjects, documents, document_types,
     upload, sse, queue, classifier, api_keys, skip_markers, mcp,
-    classification_policy, signals, llm_settings
+    classification_policy, signals, llm_settings, app_settings
 )
 
 # Configure logging
@@ -74,6 +74,38 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    logger.info("Shutting down application...")
+    
+    # Cancel training tasks gracefully
+    try:
+        from app.services.doc_type_classifier import classifier_service
+        from app.services.bert_classifier import bert_classifier_service
+        
+        classifier = classifier_service()
+        if hasattr(classifier, '_train_task') and classifier._train_task and not classifier._train_task.done():
+            logger.info("Cancelling classifier training task...")
+            classifier._cancelled.set()  # Signal sync thread to stop first
+            classifier._train_task.cancel()
+            try:
+                await asyncio.wait_for(classifier._train_task, timeout=3.0)
+                logger.info("Classifier training task cancelled successfully")
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.warning("Classifier training task cancellation timed out or was cancelled")
+        
+        bert_classifier = bert_classifier_service()
+        if hasattr(bert_classifier, '_train_task') and bert_classifier._train_task and not bert_classifier._train_task.done():
+            logger.info("Cancelling BERT training task...")
+            if hasattr(bert_classifier, '_cancelled'):
+                bert_classifier._cancelled.set()  # Signal sync thread to stop first
+            bert_classifier._train_task.cancel()
+            try:
+                await asyncio.wait_for(bert_classifier._train_task, timeout=3.0)
+                logger.info("BERT training task cancelled successfully")
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.warning("BERT training task cancellation timed out or was cancelled")
+    except Exception as e:
+        logger.warning(f"Error during training task cancellation: {e}")
+    
     if job_queue:
         await job_queue.stop()
 
@@ -107,8 +139,10 @@ async def seed_initial_data():
     """Seed initial document types and fields."""
     try:
         async with async_session_maker() as session:
-            # Check if already seeded
             from sqlalchemy import text
+            from datetime import datetime, timezone
+            
+            # Check if already seeded
             result = await session.execute(text("SELECT COUNT(*) FROM document_types"))
             count = result.scalar()
             if count > 0:
@@ -116,13 +150,137 @@ async def seed_initial_data():
                 return
 
             logger.info("Seeding initial document types...")
+            now = datetime.now(timezone.utc)
 
-            # For now, skip seeding due to SQLAlchemy parameter issues
-            # This will be fixed in production
-            logger.warning("Skipping initial data seeding due to SQL parameter issues")
-            return
+            # Insert document types
+            doc_type_count = 0
+            field_count = 0
 
-            # The rest of the seeding code is commented out until SQL issues are resolved
+            # Insert invoice type
+            result = await session.execute(
+                text("SELECT id FROM document_types WHERE slug = :slug"),
+                {"slug": "invoice"}
+            )
+            if not result.fetchone():
+                await session.execute(
+                    text("""
+                        INSERT INTO document_types (name, slug, description, created_at, updated_at)
+                        VALUES (:name, :slug, :description, :created_at, :updated_at)
+                    """),
+                    {
+                        "name": "Invoice",
+                        "slug": "invoice",
+                        "description": "Invoice document",
+                        "created_at": now,
+                        "updated_at": now
+                    }
+                )
+                doc_type_count += 1
+
+            # Insert bank_statement type
+            result = await session.execute(
+                text("SELECT id FROM document_types WHERE slug = :slug"),
+                {"slug": "bank_statement"}
+            )
+            if not result.fetchone():
+                await session.execute(
+                    text("""
+                        INSERT INTO document_types (name, slug, description, created_at, updated_at)
+                        VALUES (:name, :slug, :description, :created_at, :updated_at)
+                    """),
+                    {
+                        "name": "Bank Statement",
+                        "slug": "bank_statement",
+                        "description": "Bank statement document",
+                        "created_at": now,
+                        "updated_at": now
+                    }
+                )
+                doc_type_count += 1
+
+            await session.commit()
+
+            # Get document type IDs for fields
+            result = await session.execute(
+                text("SELECT id FROM document_types WHERE slug = :slug"),
+                {"slug": "invoice"}
+            )
+            invoice_row = result.fetchone()
+            invoice_id = invoice_row[0] if invoice_row else None
+
+            result = await session.execute(
+                text("SELECT id FROM document_types WHERE slug = :slug"),
+                {"slug": "bank_statement"}
+            )
+            bank_row = result.fetchone()
+            bank_id = bank_row[0] if bank_row else None
+
+            # Insert fields for invoice
+            if invoice_id:
+                fields = [
+                    ("invoice_number", "Invoice Number", "string", True),
+                    ("date", "Date", "date", True),
+                    ("amount", "Amount", "money", False),
+                    ("vat_amount", "VAT Amount", "money", False),
+                ]
+                for key, label, field_type, required in fields:
+                    result = await session.execute(
+                        text("SELECT id FROM document_type_fields WHERE document_type_id = :doc_type_id AND key = :key"),
+                        {"doc_type_id": invoice_id, "key": key}
+                    )
+                    if not result.fetchone():
+                        await session.execute(
+                            text("""
+                                INSERT INTO document_type_fields 
+                                (document_type_id, key, label, field_type, required, created_at, updated_at)
+                                VALUES (:document_type_id, :key, :label, :field_type, :required, :created_at, :updated_at)
+                            """),
+                            {
+                                "document_type_id": invoice_id,
+                                "key": key,
+                                "label": label,
+                                "field_type": field_type,
+                                "required": required,
+                                "created_at": now,
+                                "updated_at": now
+                            }
+                        )
+                        field_count += 1
+
+            # Insert fields for bank_statement
+            if bank_id:
+                fields = [
+                    ("account_number", "Account Number", "iban", True),
+                    ("statement_date", "Statement Date", "date", True),
+                    ("balance", "Balance", "money", False),
+                    ("transaction_count", "Transaction Count", "number", False),
+                ]
+                for key, label, field_type, required in fields:
+                    result = await session.execute(
+                        text("SELECT id FROM document_type_fields WHERE document_type_id = :doc_type_id AND key = :key"),
+                        {"doc_type_id": bank_id, "key": key}
+                    )
+                    if not result.fetchone():
+                        await session.execute(
+                            text("""
+                                INSERT INTO document_type_fields 
+                                (document_type_id, key, label, field_type, required, created_at, updated_at)
+                                VALUES (:document_type_id, :key, :label, :field_type, :required, :created_at, :updated_at)
+                            """),
+                            {
+                                "document_type_id": bank_id,
+                                "key": key,
+                                "label": label,
+                                "field_type": field_type,
+                                "required": required,
+                                "created_at": now,
+                                "updated_at": now
+                            }
+                        )
+                        field_count += 1
+
+            await session.commit()
+            logger.info(f"Seed completed: {doc_type_count} document types, {field_count} fields")
 
     except Exception as e:
         logger.error(f"Failed to seed initial data: {e}")
@@ -284,6 +442,12 @@ app.include_router(
     llm_settings.router,
     prefix="/api",
     tags=["llm-settings"]
+)
+
+app.include_router(
+    app_settings.router,
+    prefix="/api",
+    tags=["app-settings"]
 )
 
 # Register MCP router at root level (only /mcp, not /api/mcp)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import threading
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from sqlalchemy import text
 
 import fitz  # PyMuPDF
 import pytesseract
@@ -22,6 +24,11 @@ from app.services.feature_extractor import preprocess_text_for_classification
 from app.services.policy_loader import load_global_config
 
 logger = logging.getLogger(__name__)
+
+# Set environment variables to prevent oversubscription on macOS
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 # Dutch stopwords - common words that don't add classification value
 DUTCH_STOPWORDS = frozenset([
@@ -119,25 +126,53 @@ def _read_text_file(path: Path) -> str:
             return f.read()
 
 
-def _ocr_with_rotation_detection(img: Image.Image) -> str:
+def _ocr_with_rotation_detection(img: Image.Image, set_rotation_callback: Optional[callable] = None) -> str:
     """Perform OCR on image, trying different rotations (0, 90, 180, 270) and return best result.
+    
+    Optimized: First tries 0°, only tries other rotations if 0° doesn't produce good results.
     
     Args:
         img: PIL Image to perform OCR on
+        set_rotation_callback: Optional callback to set the rotation angle (for status updates)
         
     Returns:
         Best OCR text result from all rotations
     """
     results = []
     
-    # Try all rotations: 0, 90, 180, 270 degrees
-    for angle in [0, 90, 180, 270]:
+    # First try 0° (no rotation) - most common case
+    try:
+        text_0 = pytesseract.image_to_string(img, config=settings.tesseract_config)
+        alnum_count_0 = sum(1 for c in text_0 if c.isalnum())
+        word_count_0 = len(text_0.split())
+        score_0 = alnum_count_0 * 2 + word_count_0
+        
+        results.append({
+            'angle': 0,
+            'text': text_0,
+            'score': score_0,
+            'alnum_count': alnum_count_0,
+            'word_count': word_count_0
+        })
+        
+        logger.debug(f"OCR rotation 0°: {alnum_count_0} alnum chars, {word_count_0} words, score: {score_0}")
+        
+        # If 0° produces good results (reasonable amount of text), skip other rotations
+        # Threshold: at least 50 alphanumeric characters and 10 words indicates readable text
+        if alnum_count_0 >= 50 and word_count_0 >= 10:
+            logger.debug(f"OCR 0° produces good results ({alnum_count_0} alnum, {word_count_0} words), skipping other rotations")
+            if set_rotation_callback:
+                set_rotation_callback(0)
+            return text_0
+        
+    except Exception as e:
+        logger.warning(f"OCR failed for rotation 0°: {e}")
+    
+    # If 0° didn't produce good results, try other rotations
+    for angle in [90, 180, 270]:
         try:
             # Rotate image
-            if angle == 0:
-                rotated_img = img
-            else:
-                rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
+            rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
             
             # Perform OCR
             text = pytesseract.image_to_string(rotated_img, config=settings.tesseract_config)
@@ -173,27 +208,49 @@ def _ocr_with_rotation_detection(img: Image.Image) -> str:
     
     if best['angle'] != 0:
         logger.info(f"Best OCR result found at {best['angle']}° rotation ({best['alnum_count']} alnum chars, {best['word_count']} words)")
+        if set_rotation_callback:
+            set_rotation_callback(best['angle'])
+    elif set_rotation_callback:
+        set_rotation_callback(0)
     
     return best['text']
 
 
-def _extract_text_from_image(path: Path) -> str:
+def _extract_text_from_image(path: Path, set_rotation_callback: Optional[callable] = None) -> str:
     img = Image.open(path)
-    return _ocr_with_rotation_detection(img)
+    return _ocr_with_rotation_detection(img, set_rotation_callback=set_rotation_callback)
 
 
-def _extract_text_from_pdf(path: Path) -> str:
+def _extract_text_from_pdf(path: Path, skip_markers: Optional[List[Tuple[str, bool]]] = None, pdf_max_pages: Optional[int] = None, set_rotation_callback: Optional[callable] = None) -> str:
     doc = fitz.open(str(path))
     combined = ""
     try:
-        for page_num in range(len(doc)):
+        max_pages = pdf_max_pages or int(os.getenv("MPROOF_TRAIN_PDF_MAX_PAGES", "5"))
+        for page_num in range(min(len(doc), max_pages)):
             page = doc.load_page(page_num)
             text = page.get_text() or ""
             if len(text.strip()) < 200 or _is_mostly_empty(text):
                 pix = page.get_pixmap(dpi=250)
                 img = Image.open(BytesIO(pix.tobytes("png")))
-                text = _ocr_with_rotation_detection(img)
+                text = _ocr_with_rotation_detection(img, set_rotation_callback=set_rotation_callback)
             combined += text + "\n"
+            
+            # Check skip markers on combined text
+            if skip_markers:
+                for pattern, is_regex in skip_markers:
+                    try:
+                        if is_regex:
+                            match = re.search(pattern, combined, re.IGNORECASE)
+                            if match:
+                                combined = combined[:match.start()].strip()
+                                return combined
+                        else:
+                            pos = combined.lower().find(pattern.lower())
+                            if pos != -1:
+                                combined = combined[:pos].strip()
+                                return combined
+                    except re.error:
+                        pass
     finally:
         doc.close()
     return combined
@@ -204,14 +261,14 @@ def _extract_text_from_docx(path: Path) -> str:
     return "\n".join(p.text for p in doc.paragraphs)
 
 
-def _extract_text(path: Path) -> str:
+def _extract_text(path: Path, skip_markers: Optional[List[Tuple[str, bool]]] = None, pdf_max_pages: Optional[int] = None, set_rotation_callback: Optional[callable] = None) -> str:
     ext = path.suffix.lower()
     if ext == ".txt":
         return _read_text_file(path)
     if ext == ".pdf":
-        return _extract_text_from_pdf(path)
+        return _extract_text_from_pdf(path, skip_markers=skip_markers, pdf_max_pages=pdf_max_pages, set_rotation_callback=set_rotation_callback)
     if ext in {".png", ".jpg", ".jpeg"}:
-        return _extract_text_from_image(path)
+        return _extract_text_from_image(path, set_rotation_callback=set_rotation_callback)
     if ext == ".docx":
         return _extract_text_from_docx(path)
     raise ValueError(f"Unsupported training file type: {ext}")
@@ -239,7 +296,12 @@ def _tokenize(text: str, remove_stopwords: bool = True, normalize_pii: bool = Tr
             pass  # If policy loading fails, proceed without normalization
     
     norm = unicodedata.normalize("NFKC", text or "").lower()
-    tokens = re.findall(r"[a-z0-9_]{3,}", norm)  # Include underscore for __IBAN__ etc.
+    # Extract tokens: letters and underscores only (exclude numbers)
+    # This allows __IBAN__, __DATE__, __AMOUNT__ placeholders but excludes pure numbers
+    tokens = re.findall(r"[a-z_]{3,}", norm)  # Only letters and underscore, min 3 chars
+    
+    # Filter out tokens that are only underscores or contain only numbers
+    tokens = [t for t in tokens if not t.replace("_", "").isdigit() and t != "___"]
     
     if remove_stopwords:
         tokens = [t for t in tokens if t not in DUTCH_STOPWORDS]
@@ -331,11 +393,18 @@ class ClassifierService:
 
         # Initialize state variables
         self._lock = asyncio.Lock()
+        self._sync_lock = threading.Lock()  # For sync thread updates
         self._running = False
         self._started_at: Optional[str] = None
         self._finished_at: Optional[str] = None
         self._last_error: Optional[str] = None
         self._last_summary: Optional[Dict[str, Any]] = None
+        self._current_file: Optional[str] = None
+        self._current_label: Optional[str] = None
+        self._ocr_rotation: Optional[int] = None
+        self._active_files: List[Dict[str, Any]] = []  # List of files currently being processed
+        self._train_task: Optional[asyncio.Task] = None
+        self._cancelled = threading.Event()  # Cancellation flag for sync thread
 
         self._classifier: Optional[NaiveBayesTextClassifier] = None
         self._classifier_mtime: Optional[float] = None
@@ -352,6 +421,12 @@ class ClassifierService:
 
     def _status_unlocked(self) -> Dict[str, Any]:
         model_path, _ = self._get_model_paths()
+        # Thread-safe read of status fields
+        with self._sync_lock:
+            current_file = self._current_file
+            current_label = self._current_label
+            ocr_rotation = self._ocr_rotation
+            active_files = self._active_files.copy()  # Copy to avoid race conditions
         return {
             "running": self._running,
             "started_at": self._started_at,
@@ -360,6 +435,10 @@ class ClassifierService:
             "last_summary": self._last_summary,
             "model_path": str(model_path),
             "dataset_dir": str(_dataset_dir()),
+            "current_file": current_file,
+            "current_label": current_label,
+            "ocr_rotation": ocr_rotation,
+            "active_files": active_files,  # List of files being processed
         }
 
     def _load_index(self) -> Dict[str, Any]:
@@ -429,6 +508,24 @@ class ClassifierService:
         if pred.confidence < clf.threshold:
             return None
         return pred
+    
+    def predict_with_threshold_info(self, text: str, allowed_labels: Optional[Iterable[str]] = None, model_name: str = None) -> tuple[Optional[Prediction], Optional[float], Optional[Prediction]]:
+        """
+        Predict document type and return threshold info even if below threshold.
+        Returns: (prediction_if_above_threshold, threshold, raw_prediction_below_threshold)
+        """
+        if model_name:
+            clf = self._load_model_by_name(model_name)
+        else:
+            clf = self._load_classifier_if_changed()
+        if not clf:
+            return None, None, None
+        pred = clf.predict(text, allowed_labels=allowed_labels)
+        if not pred:
+            return None, clf.threshold, None
+        if pred.confidence < clf.threshold:
+            return None, clf.threshold, pred  # Return threshold and raw prediction
+        return pred, clf.threshold, None
 
     def _load_model_by_name(self, model_name: str) -> Optional[NaiveBayesTextClassifier]:
         """Load a classifier model by its name (e.g., 'backoffice', 'mdoc')."""
@@ -476,20 +573,51 @@ class ClassifierService:
             self._finished_at = None
             self._last_error = None
             self._last_summary = None
+            self._current_file = None
+            self._current_label = None
+            self._ocr_rotation = None
             should_start = True
             status = self._status_unlocked()
 
         if should_start:
-            asyncio.create_task(self._train_background())
+            self._cancelled.clear()  # Reset cancellation flag
+            self._train_task = asyncio.create_task(self._train_background())
 
         return status
 
     async def _train_background(self) -> None:
         try:
+            # Load skip markers and compute signature before thread
+            from app.main import async_session_maker
+            pdf_max_pages = int(os.getenv("MPROOF_TRAIN_PDF_MAX_PAGES", "5"))
+            skip_markers = []
+            
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    text("SELECT pattern, is_regex FROM skip_markers WHERE is_active = 1 ORDER BY pattern ASC, is_regex ASC")
+                )
+                rows = result.fetchall()
+                skip_markers = [(row.pattern, bool(row.is_regex)) for row in rows]
+            
+            # Force sort for determinism
+            skip_markers = sorted(skip_markers, key=lambda x: (x[0], int(x[1])))
+            skip_sig = hashlib.sha256(json.dumps(skip_markers, sort_keys=True).encode()).hexdigest()[:8]
+            
+            # Store for training thread
+            self._train_skip_markers = skip_markers
+            self._train_skip_sig = skip_sig
+            self._train_pdf_max_pages = pdf_max_pages
+            
             summary = await asyncio.to_thread(self._train_sync)
             async with self._lock:
                 self._last_summary = summary
                 self._finished_at = _utc_now_iso()
+        except asyncio.CancelledError:
+            logger.info("Training task cancelled")
+            async with self._lock:
+                self._last_error = "Training cancelled"
+                self._finished_at = _utc_now_iso()
+            raise
         except Exception as e:
             logger.exception("Classifier training failed")
             async with self._lock:
@@ -498,6 +626,7 @@ class ClassifierService:
         finally:
             async with self._lock:
                 self._running = False
+                self._train_task = None
 
     def _train_sync(self) -> Dict[str, Any]:
         dataset_dir = _dataset_dir()
@@ -519,18 +648,47 @@ class ClassifierService:
         used_examples: List[Tuple[str, str]] = []
         seen_rel_paths: set[str] = set()
 
-        # Scan first-level folders as labels
-        for folder in sorted(dataset_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not folder.is_dir():
-                continue
-            if folder.name.startswith("."):
-                continue
-
-            mapped = label_map.get(folder.name)
-            label = mapped or _safe_slug_from_folder(folder.name)
-            if not label:
-                continue
-
+        # Scan folders recursively - handle both first-level and nested subfolders
+        # Collect all folders that should be treated as labels
+        folders_to_process: List[Tuple[Path, str]] = []  # (folder_path, label)
+        processed_folders: set[Path] = set()  # Track processed folders to avoid duplicates
+        
+        def collect_folders(root: Path, depth: int = 0, max_depth: int = 3):
+            """Recursively collect folders that contain training files directly (not via subfolders)."""
+            if depth > max_depth:
+                return
+            
+            for folder in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+                if not folder.is_dir():
+                    continue
+                if folder.name.startswith("."):
+                    continue
+                if folder in processed_folders:
+                    continue
+                
+                # Check if this folder contains training files DIRECTLY (not in subfolders)
+                has_direct_files = False
+                for path in folder.iterdir():
+                    if path.is_file() and path.suffix.lower() in allowed_ext:
+                        has_direct_files = True
+                        break
+                
+                if has_direct_files:
+                    # This folder has files directly - use it as a label
+                    mapped = label_map.get(folder.name)
+                    label = mapped or _safe_slug_from_folder(folder.name)
+                    if label:
+                        folders_to_process.append((folder, label))
+                        processed_folders.add(folder)
+                else:
+                    # No direct files - check subfolders recursively
+                    if depth < max_depth:
+                        collect_folders(folder, depth + 1, max_depth)
+        
+        collect_folders(dataset_dir)
+        
+        # Process each folder
+        for folder, label in folders_to_process:
             by_stem: Dict[str, List[Path]] = defaultdict(list)
             for path in folder.rglob("*"):
                 if not path.is_file():
@@ -563,6 +721,11 @@ class ClassifierService:
                 return paths[0]
 
             for _stem, paths in by_stem.items():
+                # Check cancellation flag
+                if self._cancelled.is_set():
+                    logger.info("Training cancelled, stopping file processing")
+                    break
+
                 chosen = choose_best(paths)
                 if not chosen:
                     continue
@@ -573,8 +736,28 @@ class ClassifierService:
                 sha = _compute_sha256(chosen)
                 entry = files_index.get(rel_path)
 
+                skip_sig = getattr(self, '_train_skip_sig', '')
+                pdf_max_pages = getattr(self, '_train_pdf_max_pages', 5)
+                skip_markers = getattr(self, '_train_skip_markers', [])
+
+                # Update status (thread-safe) - add to active files list
+                with self._sync_lock:
+                    self._current_file = chosen.name
+                    self._current_label = label
+                    self._ocr_rotation = None
+                    # Add to active files list (keep last 10 for display)
+                    file_info = {
+                        "file": chosen.name,
+                        "label": label,
+                        "path": str(chosen.relative_to(dataset_dir))
+                    }
+                    self._active_files.append(file_info)
+                    # Keep only last 10 active files to avoid memory issues
+                    if len(self._active_files) > 10:
+                        self._active_files = self._active_files[-10:]
+
                 cache_name = None
-                if isinstance(entry, dict) and entry.get("sha256") == sha and entry.get("text_cache"):
+                if isinstance(entry, dict) and entry.get("sha256") == sha and entry.get("skip_sig") == skip_sig and entry.get("pdf_max_pages") == pdf_max_pages and entry.get("text_cache"):
                     cache_name = str(entry.get("text_cache"))
                     cache_path = self.text_cache_dir / cache_name
                     if cache_path.exists():
@@ -583,9 +766,18 @@ class ClassifierService:
                             used_examples.append((label, text))
                             continue
 
+                # Check cancellation again before expensive OCR
+                if self._cancelled.is_set():
+                    logger.info("Training cancelled, stopping before OCR")
+                    break
+
                 # Need (re-)extract
+                def set_rotation(angle: int):
+                    with self._sync_lock:
+                        self._ocr_rotation = angle
+                
                 try:
-                    text = _extract_text(chosen)
+                    text = _extract_text(chosen, skip_markers=skip_markers, pdf_max_pages=pdf_max_pages, set_rotation_callback=set_rotation)
                 except Exception as e:
                     logger.warning(f"Skipping training file (extract failed): {chosen} ({e})")
                     continue
@@ -593,16 +785,32 @@ class ClassifierService:
                 if not text.strip():
                     continue
 
-                cache_name = f"{sha}.txt"
+                cache_name = f"{sha}.{skip_sig}.p{pdf_max_pages}.txt"
                 cache_path = self.text_cache_dir / cache_name
                 with open(cache_path, "w", encoding="utf-8") as f:
                     f.write(text)
 
-                if not isinstance(entry, dict) or entry.get("sha256") != sha or entry.get("label") != label:
+                if not isinstance(entry, dict) or entry.get("sha256") != sha or entry.get("skip_sig") != skip_sig or entry.get("pdf_max_pages") != pdf_max_pages or entry.get("label") != label:
                     new_or_changed += 1
 
-                files_index[rel_path] = {"sha256": sha, "label": label, "text_cache": cache_name, "updated_at": _utc_now_iso()}
+                files_index[rel_path] = {
+                    "sha256": sha,
+                    "label": label,
+                    "text_cache": cache_name,
+                    "skip_sig": skip_sig,
+                    "pdf_max_pages": pdf_max_pages,
+                    "updated_at": _utc_now_iso()
+                }
                 used_examples.append((label, text))
+                
+                # Clear status after processing (thread-safe)
+                with self._sync_lock:
+                    if self._current_file == chosen.name:
+                        self._current_file = None
+                        self._current_label = None
+                        self._ocr_rotation = None
+                    # Remove from active files list
+                    self._active_files = [f for f in self._active_files if f.get("file") != chosen.name]
 
         # Drop deleted files from index
         for rel_path in list(files_index.keys()):
@@ -618,6 +826,13 @@ class ClassifierService:
         # Reset in-memory cache
         self._classifier = None
         self._classifier_mtime = None
+        
+        # Clear status
+        with self._sync_lock:
+            self._current_file = None
+            self._current_label = None
+            self._ocr_rotation = None
+            self._active_files = []
 
         return {
             "ok": True,

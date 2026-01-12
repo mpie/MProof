@@ -40,10 +40,14 @@ class Settings(BaseSettings):
     tesseract_config: str = "--psm 6"
     
     # ELA (Error Level Analysis) Configuration
+    ela_enabled: bool = False  # Enable ELA analysis (default: disabled, often noise)
     ela_min_size: int = 150  # Minimum image size (width/height) to analyze
     ela_allow_non_jpeg: bool = False  # Allow ELA on non-JPEG formats (PNG, etc.)
     ela_scale_for_heatmap: int = 77  # Scale factor for heatmap visualization
     ela_quality: int = 95  # JPEG quality for re-saving
+    
+    # EXIF Configuration
+    exif_enabled: bool = False  # Enable EXIF analysis (default: disabled, often noise)
     
     def get_llm_config(self, provider: str) -> dict:
         """Get LLM configuration for the specified provider."""

@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'next/navigation';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faPlus, faEdit, faTrash, faSave, faTimes, faCog, faExclamationTriangle,
-  faChevronRight, faFileAlt, faListUl, faCode, faInfoCircle, faCheck, faRobot, faGraduationCap, faFolder, faShieldAlt
+  faChevronRight, faFileAlt, faListUl, faCode, faInfoCircle, faCheck, faRobot, faGraduationCap, faFolder, faShieldAlt, faSpinner
 } from '@fortawesome/free-solid-svg-icons';
 import { SignalPolicyEditor } from '@/components/SignalPolicyEditor';
 import {
@@ -23,6 +24,7 @@ import {
   getTrainingDetails,
   TrainingDetails,
   getAvailableModels,
+  generateDocumentTypePrefill,
 } from '@/lib/api';
 import { useModel } from '@/context/ModelContext';
 
@@ -50,13 +52,70 @@ export default function DocumentTypesAdmin() {
   const [selectedType, setSelectedType] = useState<DocumentType | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingType, setEditingType] = useState<DocumentType | null>(null);
+  const [prefillData, setPrefillData] = useState<Partial<DocumentType> | null>(null);
   const [showFieldForm, setShowFieldForm] = useState(false);
   const [editingField, setEditingField] = useState<DocumentTypeField | null>(null);
   const [showPolicyEditor, setShowPolicyEditor] = useState(false);
   const queryClient = useQueryClient();
+  const searchParams = useSearchParams();
   
   // Get selected model from global context
   const { selectedModel } = useModel();
+  
+  const [isGeneratingLLM, setIsGeneratingLLM] = useState(false);
+  
+  // Check for prefill query parameters
+  useEffect(() => {
+    const create = searchParams.get('create');
+    if (create === 'true') {
+      const name = searchParams.get('name');
+      const slug = searchParams.get('slug');
+      const classification_hints = searchParams.get('classification_hints');
+      const description = searchParams.get('description');
+      const extraction_prompt_preamble = searchParams.get('extraction_prompt_preamble');
+      const generateLLM = searchParams.get('generate_llm') === 'true';
+      
+      if (name && slug) {
+        setPrefillData({
+          name: name,
+          slug: slug,
+          classification_hints: classification_hints || undefined,
+          description: description || undefined,
+          extraction_prompt_preamble: extraction_prompt_preamble || undefined,
+        });
+        setShowCreateForm(true);
+        
+        // Generate LLM prefill if requested
+        if (generateLLM && !description && !extraction_prompt_preamble) {
+          setIsGeneratingLLM(true);
+          const generatePrefill = async () => {
+            try {
+              const tokens = classification_hints?.split('\n').map(line => line.replace('kw:', '').trim()).filter(Boolean).join(', ') || '';
+              const data = await generateDocumentTypePrefill({
+                name: name,
+                keywords: tokens,
+              });
+              
+              setPrefillData(prev => ({
+                ...prev,
+                description: data.description || prev?.description,
+                extraction_prompt_preamble: data.extraction_prompt_preamble || prev?.extraction_prompt_preamble,
+              }));
+            } catch (error) {
+              console.warn('Failed to generate LLM prefill:', error);
+            } finally {
+              setIsGeneratingLLM(false);
+            }
+          };
+          
+          generatePrefill();
+        }
+        
+        // Clean up URL
+        window.history.replaceState({}, '', '/document-types');
+      }
+    }
+  }, [searchParams]);
 
   const { data: documentTypes, isLoading } = useQuery({
     queryKey: ['document-types'],
@@ -169,6 +228,7 @@ export default function DocumentTypesAdmin() {
             setShowCreateForm(true);
             setSelectedType(null);
             setEditingType(null);
+            setPrefillData(null); // Clear any prefill data when manually opening form
           }}
           className="flex items-center space-x-2 px-3 sm:px-4 py-2 sm:py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg sm:rounded-xl hover:from-blue-500 hover:to-blue-600 transition-all shadow-lg shadow-blue-500/25 cursor-pointer text-sm sm:text-base self-start sm:self-auto"
         >
@@ -269,9 +329,27 @@ export default function DocumentTypesAdmin() {
           {/* Create Form */}
           {showCreateForm && (
             <div className="glass-card p-4 sm:p-6">
+              {isGeneratingLLM && (
+                <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center gap-3">
+                  <FontAwesomeIcon icon={faSpinner} className="w-5 h-5 text-blue-400 animate-spin" />
+                  <div>
+                    <div className="text-blue-300 font-medium text-sm">LLM wordt geraadpleegd...</div>
+                    <div className="text-blue-400/70 text-xs mt-1">Beschrijving en extractie instructies worden gegenereerd</div>
+                  </div>
+                </div>
+              )}
               <DocumentTypeForm
-                onSubmit={(data) => createMutation.mutate(data)}
-                onCancel={() => setShowCreateForm(false)}
+                initialData={prefillData || undefined}
+                isGeneratingLLM={isGeneratingLLM}
+                onSubmit={(data) => {
+                  createMutation.mutate(data);
+                  setPrefillData(null); // Clear prefill after submission
+                }}
+                onCancel={() => {
+                  setShowCreateForm(false);
+                  setPrefillData(null); // Clear prefill on cancel
+                  setIsGeneratingLLM(false);
+                }}
                 isLoading={createMutation.isPending}
               />
             </div>
@@ -731,9 +809,10 @@ interface DocumentTypeFormProps {
   onSubmit: (data: any) => void;
   onCancel: () => void;
   isLoading: boolean;
+  isGeneratingLLM?: boolean;
 }
 
-function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading }: DocumentTypeFormProps) {
+function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading, isGeneratingLLM = false }: DocumentTypeFormProps) {
   const [formData, setFormData] = useState({
     name: initialData?.name || '',
     slug: initialData?.slug || '',
@@ -741,6 +820,17 @@ function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading }: Docume
     classification_hints: initialData?.classification_hints || '',
     extraction_prompt_preamble: initialData?.extraction_prompt_preamble || '',
   });
+  
+  // Update formData when initialData changes (for LLM prefill updates)
+  useEffect(() => {
+    if (initialData) {
+      setFormData(prev => ({
+        ...prev,
+        description: initialData.description || prev.description,
+        extraction_prompt_preamble: initialData.extraction_prompt_preamble || prev.extraction_prompt_preamble,
+      }));
+    }
+  }, [initialData?.description, initialData?.extraction_prompt_preamble]);
   const [nameError, setNameError] = useState<string | null>(null);
   const [slugError, setSlugError] = useState<string | null>(null);
 
@@ -847,14 +937,28 @@ function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading }: Docume
       </div>
 
       <div>
-        <label className="block text-white/80 text-sm font-medium mb-2">Beschrijving</label>
-        <textarea
-          value={formData.description}
-          onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-          rows={2}
-          className="w-full px-4 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:ring-2 focus:ring-blue-400 focus:border-transparent"
-          placeholder="Korte beschrijving van dit document type..."
-        />
+        <label className="block text-white/80 text-sm font-medium mb-2">
+          Omschrijving
+          <span className="text-white/40 font-normal ml-2">(korte beschrijving van dit document type)</span>
+        </label>
+        <div className="relative">
+          {isGeneratingLLM && !formData.description && (
+            <div className="absolute inset-0 bg-white/5 rounded-xl flex items-center justify-center z-10">
+              <div className="flex items-center gap-2 text-blue-400">
+                <FontAwesomeIcon icon={faSpinner} className="w-4 h-4 animate-spin" />
+                <span className="text-sm">Wordt gegenereerd...</span>
+              </div>
+            </div>
+          )}
+          <textarea
+            value={formData.description}
+            onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+            rows={2}
+            disabled={isGeneratingLLM && !formData.description}
+            className="w-full px-4 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:ring-2 focus:ring-blue-400 focus:border-transparent text-sm disabled:opacity-50"
+            placeholder="Korte beschrijving van dit document type..."
+          />
+        </div>
       </div>
 
       <div>
@@ -876,13 +980,24 @@ function DocumentTypeForm({ initialData, onSubmit, onCancel, isLoading }: Docume
           Extractie Prompt Preamble
           <span className="text-white/40 font-normal ml-2">(extra context voor LLM)</span>
         </label>
-        <textarea
-          value={formData.extraction_prompt_preamble}
-          onChange={(e) => setFormData(prev => ({ ...prev, extraction_prompt_preamble: e.target.value }))}
-          rows={3}
-          className="w-full px-4 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono text-sm"
-          placeholder="Extra instructies voor metadata extractie..."
-        />
+        <div className="relative">
+          {isGeneratingLLM && !formData.extraction_prompt_preamble && (
+            <div className="absolute inset-0 bg-white/5 rounded-xl flex items-center justify-center z-10">
+              <div className="flex items-center gap-2 text-blue-400">
+                <FontAwesomeIcon icon={faSpinner} className="w-4 h-4 animate-spin" />
+                <span className="text-sm">Wordt gegenereerd...</span>
+              </div>
+            </div>
+          )}
+          <textarea
+            value={formData.extraction_prompt_preamble}
+            onChange={(e) => setFormData(prev => ({ ...prev, extraction_prompt_preamble: e.target.value }))}
+            rows={3}
+            disabled={isGeneratingLLM && !formData.extraction_prompt_preamble}
+            className="w-full px-4 py-2.5 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:ring-2 focus:ring-blue-400 focus:border-transparent font-mono text-sm disabled:opacity-50"
+            placeholder="Extra instructies voor metadata extractie..."
+          />
+        </div>
       </div>
 
       <div className="flex space-x-3 pt-2">

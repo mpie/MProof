@@ -71,7 +71,10 @@ async def get_classifier_status():
 
 
 @router.post("/classifier/train")
-async def train_classifier(model_name: Optional[str] = Query(None, description="Name of model folder to train")):
+async def train_classifier(
+    model_name: Optional[str] = Query(None, description="Name of model folder to train"),
+    incremental: bool = Query(False, description="Incremental training (only new/changed files)")
+):
     """Train the classifier. Optionally specify a model folder name."""
     if model_name:
         # Set environment variable for this training session
@@ -81,6 +84,7 @@ async def train_classifier(model_name: Optional[str] = Query(None, description="
         os.environ["MPROOF_TRAINING_DATA_DIR"] = str(model_dir)
         os.environ["MPROOF_ACTIVE_MODEL"] = model_name
     
+    # Incremental flag is handled by cache logic (only new/changed files are processed)
     return await classifier_service().train()
 
 
@@ -181,7 +185,8 @@ async def get_bert_status(model_name: Optional[str] = Query(None)):
 @router.post("/classifier/bert/train")
 async def train_bert_classifier(
     model_name: Optional[str] = Query(None, description="Name of model folder to train"),
-    threshold: float = Query(0.7, description="Minimum similarity threshold (0.0-1.0)")
+    threshold: float = Query(0.7, description="Minimum similarity threshold (0.0-1.0)"),
+    incremental: bool = Query(False, description="Incremental training (only new/changed files)")
 ):
     """Train the BERT classifier on documents."""
     if model_name:
@@ -193,6 +198,7 @@ async def train_bert_classifier(
     else:
         dataset_dir = None
     
+    # Incremental flag is handled by cache logic (only new/changed files are processed)
     return await bert_classifier_service().train(
         model_name=model_name,
         threshold=threshold,

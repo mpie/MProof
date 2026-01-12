@@ -3,10 +3,16 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
-from datetime import datetime
+from datetime import datetime, timezone
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/skip-markers", tags=["skip-markers"])
+
+# Regex compile cache
+_regex_cache: dict[str, re.Pattern] = {}
 
 
 class SkipMarkerBase(BaseModel):
@@ -57,8 +63,8 @@ async def list_skip_markers(active_only: bool = False):
                 description=row[2],
                 is_regex=bool(row[3]),
                 is_active=bool(row[4]),
-                created_at=row[5] if row[5] else datetime.utcnow(),
-                updated_at=row[6] if row[6] else datetime.utcnow()
+                created_at=row[5] if row[5] else datetime.now(timezone.utc),
+                updated_at=row[6] if row[6] else datetime.now(timezone.utc)
             )
             for row in rows
         ]
@@ -72,12 +78,14 @@ async def create_skip_marker(marker: SkipMarkerCreate):
     # Validate regex if applicable
     if marker.is_regex:
         try:
-            re.compile(marker.pattern)
+            if marker.pattern not in _regex_cache:
+                _regex_cache[marker.pattern] = re.compile(marker.pattern)
         except re.error as e:
+            logger.debug(f"Invalid regex pattern: {marker.pattern} - {e}")
             raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
     
     async with async_session_maker() as db:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         result = await db.execute(
             text("""
                 INSERT INTO skip_markers (pattern, description, is_regex, is_active, created_at, updated_at)
@@ -128,8 +136,10 @@ async def update_skip_marker(marker_id: int, update: SkipMarkerUpdate):
             is_regex = update.is_regex if update.is_regex is not None else row[3]
             if is_regex:
                 try:
-                    re.compile(pattern)
+                    if pattern not in _regex_cache:
+                        _regex_cache[pattern] = re.compile(pattern)
                 except re.error as e:
+                    logger.debug(f"Invalid regex pattern: {pattern} - {e}")
                     raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {e}")
         
         # Build update query
@@ -169,8 +179,8 @@ async def update_skip_marker(marker_id: int, update: SkipMarkerUpdate):
             description=row[2],
             is_regex=bool(row[3]),
             is_active=bool(row[4]),
-            created_at=row[5] if row[5] else datetime.utcnow(),
-            updated_at=row[6] if row[6] else datetime.utcnow()
+            created_at=row[5] if row[5] else datetime.now(timezone.utc),
+            updated_at=row[6] if row[6] else datetime.now(timezone.utc)
         )
 
 

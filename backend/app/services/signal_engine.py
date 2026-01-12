@@ -143,9 +143,13 @@ def compute_regex_set_signal(text: str, config: dict) -> bool:
 
     def matches(pattern: str) -> bool:
         try:
-            return bool(re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
-        except re.error:
-            logger.warning(f"Invalid regex pattern: {pattern}")
+            # Use compile cache
+            if pattern not in _regex_cache:
+                _regex_cache[pattern] = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+            compiled = _regex_cache[pattern]
+            return bool(compiled.search(text))
+        except re.error as e:
+            logger.debug(f"Invalid regex pattern: {pattern} - {e}")
             return False
 
     if match_mode == "all":
@@ -176,6 +180,9 @@ def compute_signal(signal: Signal, text: str, lines: list[str]) -> Union[bool, i
         return False if signal.signal_type == "boolean" else 0
 
 
+# Regex compile cache
+_regex_cache: dict[str, re.Pattern] = {}
+
 def compute_all_signals(text: str, signals: list[Signal]) -> ComputedSignals:
     """
     Compute all signal values for a document.
@@ -193,6 +200,9 @@ def compute_all_signals(text: str, signals: list[Signal]) -> ComputedSignals:
             text_length=0,
             line_count=0,
         )
+
+    # Truncate text for regex matching to prevent CPU issues
+    text = text[:200_000]
 
     # Normalize whitespace but keep line breaks
     normalized = re.sub(r"[^\S\n]+", " ", text)

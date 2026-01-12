@@ -55,10 +55,11 @@ MProof analyzes documents using multiple AI methods:
 ### Classification
 | Priority | Method | Description | Speed |
 |----------|--------|-------------|-------|
-| 1 | Naive Bayes | Word frequency classifier | ~1ms |
-| 1 | BERT | Semantic embeddings (runs in parallel) | ~100ms |
-| 2 | Deterministic | Keywords/regex matching | <1ms |
-| 3 | LLM | Ollama/vLLM AI classification | ~2-5s |
+| 1 | Deterministic (STRONG) | Keywords/regex - ALL kw: rules must match | <1ms |
+| 2 | Naive Bayes | Word frequency classifier | ~1ms |
+| 2 | BERT | Semantic embeddings (runs in parallel, wins if significantly better) | ~100ms |
+| 3 | Deterministic (Fallback) | Keywords/regex matching (when trained models fail or low confidence) | <1ms |
+| 4 | LLM | Ollama/vLLM AI classification | ~2-5s |
 
 **Multi-Model Support:**
 - Train separate NB and BERT models per use case (e.g., `backoffice`, `mdoc`)

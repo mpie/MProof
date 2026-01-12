@@ -133,11 +133,11 @@ async def load_all_signals_from_db() -> list[Signal]:
         result = await session.execute(
             text("""
                 SELECT key, label, description, signal_type, 
-                       COALESCE(compute_method, 'builtin') as compute_kind,
-                       CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END as source,
+                       COALESCE(compute_kind, 'builtin') as compute_kind,
+                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
                        config_json
                 FROM classification_signals
-                ORDER BY is_system DESC, key ASC
+                ORDER BY source DESC, key ASC
             """)
         )
         rows = result.fetchall()
@@ -178,10 +178,11 @@ async def list_signals():
         result = await session.execute(
             text("""
                 SELECT id, key, label, description, signal_type, 
-                       COALESCE(compute_method, 'builtin') as compute_method,
-                       is_system, config_json, created_at, updated_at
+                       COALESCE(compute_kind, 'builtin') as compute_kind,
+                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
+                       config_json, created_at, updated_at
                 FROM classification_signals
-                ORDER BY is_system DESC, key ASC
+                ORDER BY source DESC, key ASC
             """)
         )
         rows = result.fetchall()
@@ -191,8 +192,8 @@ async def list_signals():
         user_count = 0
 
         for row in rows:
-            is_system = bool(row.is_system) if row.is_system is not None else False
-            if is_system:
+            source = row.source if hasattr(row, 'source') else ("builtin" if getattr(row, 'is_system', False) else "user")
+            if source == "builtin":
                 builtin_count += 1
             else:
                 user_count += 1
@@ -211,8 +212,8 @@ async def list_signals():
                 label=row.label,
                 description=row.description,
                 signal_type=row.signal_type,
-                source="builtin" if is_system else "user",
-                compute_kind=row.compute_method or "builtin",
+                source=source,
+                compute_kind=row.compute_kind if hasattr(row, 'compute_kind') else (getattr(row, 'compute_method', None) or "builtin"),
                 config_json=config,
                 created_at=_format_datetime(row.created_at),
                 updated_at=_format_datetime(row.updated_at),
@@ -234,8 +235,9 @@ async def get_signal(key: str):
         result = await session.execute(
             text("""
                 SELECT id, key, label, description, signal_type,
-                       COALESCE(compute_method, 'builtin') as compute_method,
-                       is_system, config_json, created_at, updated_at
+                       COALESCE(compute_kind, 'builtin') as compute_kind,
+                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
+                       config_json, created_at, updated_at
                 FROM classification_signals
                 WHERE key = :key
             """),
@@ -246,7 +248,7 @@ async def get_signal(key: str):
         if not row:
             raise HTTPException(status_code=404, detail=f"Signal '{key}' not found")
 
-        is_system = bool(row.is_system) if row.is_system is not None else False
+        source = row.source if hasattr(row, 'source') else ("builtin" if getattr(row, 'is_system', False) else "user")
         
         config = row.config_json
         if isinstance(config, str):
@@ -261,8 +263,8 @@ async def get_signal(key: str):
             label=row.label,
             description=row.description,
             signal_type=row.signal_type,
-            source="builtin" if is_system else "user",
-            compute_kind=row.compute_method or "builtin",
+            source=source,
+            compute_kind=row.compute_kind if hasattr(row, 'compute_kind') else (getattr(row, 'compute_method', None) or "builtin"),
             config_json=config,
             created_at=_format_datetime(row.created_at),
             updated_at=_format_datetime(row.updated_at),
@@ -300,13 +302,13 @@ async def create_signal(signal: SignalCreate):
                 detail=f"Signal with key '{signal.key}' already exists"
             )
 
-        # Insert (using old schema column names for compatibility)
+        # Insert using new schema column names
         config_str = json_module.dumps(signal.config_json)
         await session.execute(
             text("""
                 INSERT INTO classification_signals
-                (key, label, description, signal_type, compute_method, config_json, is_system, created_at, updated_at)
-                VALUES (:key, :label, :description, :signal_type, :compute_kind, :config_json, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (key, label, description, signal_type, compute_kind, source, config_json, created_at, updated_at)
+                VALUES (:key, :label, :description, :signal_type, :compute_kind, 'user', :config_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """),
             {
                 "key": signal.key,
@@ -323,8 +325,9 @@ async def create_signal(signal: SignalCreate):
         result = await session.execute(
             text("""
                 SELECT id, key, label, description, signal_type,
-                       COALESCE(compute_method, 'builtin') as compute_method,
-                       is_system, config_json, created_at, updated_at
+                       COALESCE(compute_kind, 'builtin') as compute_kind,
+                       COALESCE(source, 'user') as source,
+                       config_json, created_at, updated_at
                 FROM classification_signals
                 WHERE key = :key
             """),
@@ -345,8 +348,8 @@ async def create_signal(signal: SignalCreate):
             label=row.label,
             description=row.description,
             signal_type=row.signal_type,
-            source="user",
-            compute_kind=row.compute_method or "builtin",
+            source=row.source,
+            compute_kind=row.compute_kind,
             config_json=config,
             created_at=_format_datetime(row.created_at),
             updated_at=_format_datetime(row.updated_at),
@@ -361,7 +364,7 @@ async def update_signal(key: str, update: SignalUpdate):
     async with async_session_maker() as session:
         # Check if exists and is user signal
         result = await session.execute(
-            text("SELECT id, is_system, compute_method FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source, COALESCE(compute_kind, compute_method, 'builtin') as compute_kind FROM classification_signals WHERE key = :key"),
             {"key": key}
         )
         row = result.fetchone()
@@ -369,7 +372,7 @@ async def update_signal(key: str, update: SignalUpdate):
         if not row:
             raise HTTPException(status_code=404, detail=f"Signal '{key}' not found")
 
-        if row.is_system:
+        if row.source == "builtin":
             raise HTTPException(
                 status_code=403,
                 detail="Built-in signals cannot be modified"
@@ -389,7 +392,7 @@ async def update_signal(key: str, update: SignalUpdate):
 
         if update.config_json is not None:
             # Validate config
-            compute_kind = row.compute_method or "keyword_set"
+            compute_kind = row.compute_kind or "keyword_set"
             if compute_kind == "keyword_set" and "keywords" not in update.config_json:
                 raise HTTPException(
                     status_code=400,
@@ -419,8 +422,9 @@ async def update_signal(key: str, update: SignalUpdate):
         result = await session.execute(
             text("""
                 SELECT id, key, label, description, signal_type,
-                       COALESCE(compute_method, 'builtin') as compute_method,
-                       is_system, config_json, created_at, updated_at
+                       COALESCE(compute_kind, 'builtin') as compute_kind,
+                       COALESCE(source, 'user') as source,
+                       config_json, created_at, updated_at
                 FROM classification_signals
                 WHERE key = :key
             """),
@@ -441,8 +445,8 @@ async def update_signal(key: str, update: SignalUpdate):
             label=row.label,
             description=row.description,
             signal_type=row.signal_type,
-            source="user",
-            compute_kind=row.compute_method or "builtin",
+            source=row.source,
+            compute_kind=row.compute_kind,
             config_json=config,
             created_at=_format_datetime(row.created_at),
             updated_at=_format_datetime(row.updated_at),
@@ -456,7 +460,7 @@ async def delete_signal(key: str):
 
     async with async_session_maker() as session:
         result = await session.execute(
-            text("SELECT id, is_system FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source FROM classification_signals WHERE key = :key"),
             {"key": key}
         )
         row = result.fetchone()
@@ -464,7 +468,7 @@ async def delete_signal(key: str):
         if not row:
             raise HTTPException(status_code=404, detail=f"Signal '{key}' not found")
 
-        if row.is_system:
+        if row.source == "builtin":
             raise HTTPException(
                 status_code=403,
                 detail="Built-in signals cannot be deleted"

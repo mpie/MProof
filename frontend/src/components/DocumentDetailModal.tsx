@@ -692,58 +692,163 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                   <div className="flex justify-between"><span className="text-white/60">Confidence:</span><span className="text-white">{Math.round(document.doc_type_confidence * 100)}%</span></div>
                 )}
               </div>
+              {/* Show explanation if document is "unknown" and there's a rejection reason */}
+              {document.doc_type_slug === 'unknown' && document.metadata_validation_json?.classification_scores && (
+                (document.metadata_validation_json.classification_scores.naive_bayes?.rejection_reason || 
+                 document.metadata_validation_json.classification_scores.bert?.rejection_reason) && (
+                  <div className="mt-3 pt-3 border-t border-white/10">
+                    <div className="bg-green-500/10 border border-green-500/20 rounded p-2">
+                      <div className="text-green-300 text-[10px] italic">
+                        ✓ Dit is correct gedrag - het systeem voorkomt verkeerde classificaties door deze regel te respecteren
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
               
-              {/* Classification Scores - Always show if available */}
+              {/* Classification Scores - Always show if available, including failures */}
               {document.metadata_validation_json?.classification_scores && (
                 <div className="mt-3 pt-3 border-t border-white/10">
                   <div className="text-white/50 text-xs mb-1.5">Classifier Scores:</div>
                   <div className="grid grid-cols-2 gap-2">
                     {document.metadata_validation_json.classification_scores.naive_bayes && (
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2">
-                        <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
-                        <div className="text-white text-xs">
-                          {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                      document.metadata_validation_json.classification_scores.naive_bayes.status === 'failed' || 
+                      document.metadata_validation_json.classification_scores.naive_bayes.status === 'no_result' ? (
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-60">
+                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
+                          <div className="text-white/60 text-xs">
+                            {document.metadata_validation_json.classification_scores.naive_bayes.status === 'failed' 
+                              ? `Fout: ${document.metadata_validation_json.classification_scores.naive_bayes.error?.substring(0, 50) || 'Onbekende fout'}...`
+                              : document.metadata_validation_json.classification_scores.naive_bayes.reason || 'Geen resultaat'}
+                          </div>
                         </div>
-                        <div className="text-purple-400 text-[10px] mt-0.5">
-                          {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
+                      ) : document.metadata_validation_json.classification_scores.naive_bayes.status === 'rejected' ? (
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
+                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
+                          <div className="text-white/80 text-xs font-medium">
+                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                          </div>
+                          <div className="text-purple-400 text-[10px] mt-0.5">
+                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
+                            {document.metadata_validation_json.classification_scores.naive_bayes.threshold && (
+                              <span className="text-white/40 ml-1">(threshold: {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.threshold * 100)}%)</span>
+                            )}
+                          </div>
+                          <div className="text-red-400 text-[10px] mt-1">
+                            ❌ Afgewezen: {document.metadata_validation_json.classification_scores.naive_bayes.rejection_reason || 'Onbekende reden'}
+                          </div>
                         </div>
-                      </div>
+                      ) : document.metadata_validation_json.classification_scores.naive_bayes.status === 'below_threshold' ? (
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
+                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
+                          <div className="text-white/80 text-xs font-medium">
+                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                          </div>
+                          <div className="text-purple-400 text-[10px] mt-0.5">
+                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
+                          </div>
+                          <div className="text-yellow-400 text-[10px] mt-1">
+                            ⚠️ Onder threshold ({Math.round((document.metadata_validation_json.classification_scores.naive_bayes.threshold || 0) * 100)}%)
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2">
+                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
+                          <div className="text-white text-xs">
+                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                          </div>
+                          <div className="text-purple-400 text-[10px] mt-0.5">
+                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
+                            {document.metadata_validation_json.classification_scores.naive_bayes.threshold && (
+                              <span className="text-white/40 ml-1">(threshold: {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.threshold * 100)}%)</span>
+                            )}
+                          </div>
+                        </div>
+                      )
                     )}
                     {document.metadata_validation_json.classification_scores.bert && (
-                      <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
-                        <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
-                        <div className="text-white text-xs">
-                          {document.metadata_validation_json.classification_scores.bert.label}
+                      document.metadata_validation_json.classification_scores.bert.status === 'failed' || 
+                      document.metadata_validation_json.classification_scores.bert.status === 'no_result' ? (
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-60">
+                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-white/60 text-xs">
+                            {document.metadata_validation_json.classification_scores.bert.status === 'failed' 
+                              ? `Fout: ${document.metadata_validation_json.classification_scores.bert.error?.substring(0, 50) || 'Onbekende fout'}...`
+                              : document.metadata_validation_json.classification_scores.bert.reason || 'Geen resultaat'}
+                          </div>
                         </div>
-                        <div className="text-blue-400 text-[10px] mt-0.5">
-                          {Math.round(document.metadata_validation_json.classification_scores.bert.confidence * 100)}% confidence
+                      ) : document.metadata_validation_json.classification_scores.bert.status === 'rejected' ? (
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-75">
+                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-white/80 text-xs font-medium">
+                            {document.metadata_validation_json.classification_scores.bert.label}
+                          </div>
+                          <div className="text-blue-400 text-[10px] mt-0.5">
+                            {Math.round(document.metadata_validation_json.classification_scores.bert.confidence * 100)}% confidence
+                          </div>
+                          <div className="text-red-400 text-[10px] mt-1">
+                            ❌ Afgewezen: {document.metadata_validation_json.classification_scores.bert.rejection_reason || 'Onbekende reden'}
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
+                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-white text-xs">
+                            {document.metadata_validation_json.classification_scores.bert.label}
+                          </div>
+                          <div className="text-blue-400 text-[10px] mt-0.5">
+                            {Math.round(document.metadata_validation_json.classification_scores.bert.confidence * 100)}% confidence
+                          </div>
+                        </div>
+                      )
                     )}
                   </div>
                 </div>
               )}
               
-              {document.doc_type_rationale && (
+              {document.doc_type_rationale ? (
                 <div className="mt-3 pt-3 border-t border-white/10">
                   <div className="text-white/50 text-xs mb-1.5">Classificatie methode:</div>
                   <div className="flex flex-wrap gap-1.5 mb-2">
-                    {document.doc_type_rationale.includes('Deterministic') && (
+                    {document.doc_type_rationale.includes('STRONG keyword match') || document.doc_type_rationale.includes('STRONG') ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                        ✅ 100% Keyword match
+                      </span>
+                    ) : document.doc_type_rationale.includes('Deterministic') ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/20 border border-yellow-500/30 text-yellow-200 text-[10px]">
                         ⚠️ Keyword/regex match
                       </span>
-                    )}
-                    {document.doc_type_rationale.includes('Local classifier') && (
+                    ) : null}
+                    {document.doc_type_rationale.includes('Local classifier') || document.doc_type_rationale.includes('NAIVE_BAYES') || document.doc_type_rationale.includes('BERT') ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/20 border border-blue-500/30 text-blue-200 text-[10px]">
                         🤖 Getraind model
                       </span>
-                    )}
-                    {document.doc_type_rationale.includes('LLM') && (
+                    ) : null}
+                    {document.doc_type_rationale.includes('LLM') && !document.doc_type_rationale.includes('STRONG') ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px]">
                         🧠 AI classificatie
                       </span>
-                    )}
+                    ) : null}
                   </div>
+                  {/* Show matched keywords for strong deterministic matches */}
+                  {document.doc_type_rationale.includes('STRONG keyword match') && document.doc_type_rationale.includes('matched keywords:') && (
+                    <div className="mt-2 bg-green-500/10 border border-green-500/20 rounded p-2">
+                      <div className="text-green-300 text-xs font-medium mb-1">Gematchte keywords:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {document.doc_type_rationale
+                          .split('matched keywords:')[1]
+                          ?.split('|')[0]
+                          ?.split(',')
+                          ?.map((kw: string) => kw.trim())
+                          ?.filter(Boolean)
+                          ?.map((keyword: string, i: number) => (
+                            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                              {keyword}
+                            </span>
+                          ))}
+                      </div>
+                    </div>
+                  )}
                   
                   {/* Skip Marker Info */}
                   {document.skip_marker_used && (
@@ -769,7 +874,16 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                     </div>
                   )}
                 </div>
-              )}
+              ) : document.doc_type_slug === 'unknown' ? (
+                <div className="mt-3 pt-3 border-t border-white/10">
+                  <div className="text-white/50 text-xs mb-1.5">Classificatie methode:</div>
+                  <div className="bg-gray-500/10 border border-gray-500/20 rounded p-2">
+                    <div className="text-gray-300 text-[10px]">
+                      Voor Onbekend document type wordt geen field matching uitgevoerd
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               
               {/* Skip Marker Info - Show even if no rationale */}
               {!document.doc_type_rationale && document.skip_marker_used && (
@@ -793,14 +907,14 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
             </div>
           )}
 
-          {/* Risk & Forensics */}
-          {(document.risk_score !== null || (fraudReport && fraudReport.signals.filter(s => s.risk_level?.toLowerCase() !== 'low').length > 0)) && (
+          {/* Risk & Forensics - Always show, even if no signals */}
+          {document.status === 'done' && (
             <div className="bg-red-500/10 rounded-lg p-4 border border-red-500/20">
               <h3 className="text-white font-medium mb-3 flex items-center space-x-2">
                 <FontAwesomeIcon icon={faShieldAlt} className="text-red-400 w-4 h-4" />
                 <span>Risk & Forensics</span>
               </h3>
-              {document.risk_score !== null && (
+              {document.risk_score !== null && document.risk_score !== undefined ? (
                 <div className="flex items-center space-x-3 mb-3">
                   <span className={`text-2xl font-bold ${(document.risk_score ?? 0) >= 70 ? 'text-red-400' : (document.risk_score ?? 0) >= 40 ? 'text-yellow-400' : 'text-green-400'}`}>
                     {document.risk_score ?? 0}
@@ -808,6 +922,10 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                   <div className="flex-1 bg-white/20 rounded-full h-2">
                     <div className={`h-2 rounded-full ${getRiskColor(document.risk_score ?? 0)}`} style={{ width: `${document.risk_score ?? 0}%` }} />
                   </div>
+                </div>
+              ) : (
+                <div className="mb-3 text-white/60 text-xs">
+                  Risk score niet beschikbaar
                 </div>
               )}
               
@@ -850,7 +968,7 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                 );
               })()}
               
-              {(document.risk_signals_json?.length ?? 0) > 0 && (
+              {(document.risk_signals_json?.length ?? 0) > 0 ? (
                 <div className="space-y-2 mt-3">
                   <div className="text-xs text-white/60 mb-2">
                     {document.risk_signals_json.length} fraude detectie{document.risk_signals_json.length !== 1 ? 's' : ''} gevonden:
@@ -972,6 +1090,10 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                       </div>
                     );
                   })}
+                </div>
+              ) : (
+                <div className="mt-3 text-white/60 text-xs">
+                  Geen fraude detecties gevonden. Document lijkt schoon.
                 </div>
               )}
             </div>
@@ -1106,6 +1228,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
         result: await safeJson<Record<string, any>>('llm/extraction_result.json'),
         error: await safeText('llm/extraction_error.txt'),
         timing: await safeJson<Record<string, any>>('llm/extraction_timing.json'),
+        skipped: await safeJson<Record<string, any>>('llm/extraction_skipped.json'),
       };
       return { classification, extraction };
     },
@@ -1166,7 +1289,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     );
   }
 
-  const hasData = data?.classification.prompt || data?.classification.result || data?.classification.deterministic || data?.classification.local || data?.extraction.prompt || data?.extraction.result;
+  const hasData = data?.classification.prompt || data?.classification.result || data?.classification.deterministic || data?.classification.local || data?.extraction.prompt || data?.extraction.result || data?.extraction.skipped;
 
   if (!hasData) {
     return (
@@ -1323,12 +1446,42 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                 description={data.classification.result.doc_type_slug === 'unknown' ? "Gevalidateerd resultaat (afgewezen)" : "Gevalidateerd JSON resultaat"}
               />
             )}
+            
+            {/* Show local classification info (NB/BERT scores, deterministic matches) */}
+            {data.classification.local && (
+              <>
+                {data.classification.local.method === 'deterministic_strong' && data.classification.local.matched_keywords && (
+                  <div className="bg-green-500/10 border border-green-500/20 rounded p-3 mt-3">
+                    <div className="text-green-300 text-xs font-medium mb-2 flex items-center gap-2">
+                      <span>✅</span>
+                      <span>STRONG Keyword Match (100% confidence)</span>
+                    </div>
+                    <div className="text-white/80 text-xs mb-1">Gematchte keywords:</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {data.classification.local.matched_keywords.map((keyword: string, i: number) => (
+                        <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <CollapsibleBlock 
+                  id="class-local" 
+                  title="Local Classification (NB/BERT)" 
+                  content={JSON.stringify(data.classification.local, null, 2)} 
+                  downloadPath="llm/classification_local.json" 
+                  downloadName="classification_local.json"
+                  description="Naive Bayes en BERT scores, deterministic matches"
+                />
+              </>
+            )}
           </div>
         </div>
       )}
 
       {/* Extraction */}
-      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error) && (
+      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.skipped) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-white font-medium text-sm flex items-center space-x-2">
@@ -1346,6 +1499,21 @@ function LLMTab({ documentId, document, downloadArtifact }: {
             )}
           </div>
 
+          {/* Show message if extraction was skipped */}
+          {data.extraction.skipped && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
+              <strong>Extractie overgeslagen:</strong> {data.extraction.skipped.reason || 'Onbekende reden'}
+              {data.extraction.skipped.doc_type_slug && (
+                <div className="mt-1 text-yellow-200/80">
+                  Document type: <span className="font-mono">{data.extraction.skipped.doc_type_slug}</span>
+                </div>
+              )}
+              <div className="mt-1 text-yellow-200/60 text-[10px]">
+                Voeg fields toe aan dit document type om extractie mogelijk te maken.
+              </div>
+            </div>
+          )}
+
           {data.extraction.error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded p-2 text-xs text-red-300">
               <strong>Error:</strong> {data.extraction.error.substring(0, 200)}...
@@ -1353,7 +1521,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
           )}
 
           {/* Show message if extraction failed (no result but has prompt) */}
-          {!data.extraction.result && !data.extraction.error && data.extraction.prompt && (
+          {!data.extraction.result && !data.extraction.error && !data.extraction.skipped && data.extraction.prompt && (
             <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
               <strong>Let op:</strong> Extractie is niet gelukt. Er is wel een prompt verzonden, maar geen resultaat ontvangen.
             </div>

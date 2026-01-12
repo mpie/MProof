@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import List
+from pydantic import BaseModel
 from app.models.schemas import (
     DocumentTypeResponse, DocumentTypeCreate, DocumentTypeUpdate,
     DocumentTypeFieldResponse, DocumentTypeFieldCreate, DocumentTypeFieldUpdate
@@ -10,6 +11,16 @@ from app.models.schemas import (
 from app.services.policy_loader import validate_policy_json
 
 router = APIRouter()
+
+
+class PrefillRequest(BaseModel):
+    name: str
+    keywords: str
+
+
+class PrefillResponse(BaseModel):
+    description: str
+    extraction_prompt_preamble: str
 
 
 @router.get("/document-types", response_model=List[DocumentTypeResponse])
@@ -447,3 +458,57 @@ async def delete_document_type_field(
         await session.commit()
 
         return {"ok": True, "message": "Field deleted"}
+
+
+@router.post("/document-types/generate-prefill", response_model=PrefillResponse)
+async def generate_prefill(request: PrefillRequest):
+    """Generate description and extraction prompt preamble using LLM."""
+    from app.services.llm_client import LLMClient
+    from app.models.database import AppSetting
+    from app.main import async_session_maker
+    from sqlalchemy import select
+    
+    try:
+        # Get active LLM provider
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(AppSetting).where(AppSetting.key == "llm_provider")
+            )
+            setting = result.scalar_one_or_none()
+            provider = setting.value if setting else "ollama"
+        
+        llm_client = LLMClient(provider=provider)
+        
+        # Create prompt for LLM
+        prompt = f"""Je bent een assistent die helpt bij het opstellen van document type definities.
+
+Document type naam: {request.name}
+Belangrijke keywords: {request.keywords}
+
+Genereer:
+1. Een korte, professionele beschrijving (1-2 zinnen) van wat dit document type is
+2. Een extractie prompt preamble die instructies geeft aan een LLM voor het extraheren van metadata uit dit type document
+
+Antwoord in JSON formaat:
+{{
+  "description": "korte beschrijving hier",
+  "extraction_prompt_preamble": "instructies voor metadata extractie hier"
+}}
+
+De extraction_prompt_preamble moet specifieke instructies bevatten over welke velden belangrijk zijn voor dit document type en hoe ze geëxtraheerd moeten worden."""
+        
+        response = await llm_client.generate_json(prompt)
+        
+        return PrefillResponse(
+            description=response.get("description", ""),
+            extraction_prompt_preamble=response.get("extraction_prompt_preamble", "")
+        )
+    except Exception as e:
+        # Return empty strings if LLM fails
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to generate prefill via LLM: {e}")
+        return PrefillResponse(
+            description="",
+            extraction_prompt_preamble=""
+        )

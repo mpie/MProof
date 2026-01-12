@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -126,9 +126,46 @@ class FraudDetector:
                  ela_quality: Optional[int] = None):
         self.llm_client = llm_client
         from app.config import settings
+        self.settings = settings
         self.ela_min_size = ela_min_size if ela_min_size is not None else settings.ela_min_size
         self.ela_allow_non_jpeg = ela_allow_non_jpeg if ela_allow_non_jpeg is not None else settings.ela_allow_non_jpeg
         self.ela_scale_for_heatmap = ela_scale_for_heatmap if ela_scale_for_heatmap is not None else settings.ela_scale_for_heatmap
+    
+    async def _get_ela_enabled(self) -> bool:
+        """Get ELA enabled setting, checking database first."""
+        try:
+            from app.main import async_session_maker
+            from sqlalchemy import select
+            from app.models.database import AppSetting
+            
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    select(AppSetting).where(AppSetting.key == 'ela_enabled')
+                )
+                setting = result.scalar_one_or_none()
+                if setting:
+                    return setting.value.lower() in ('true', '1', 'yes', 'on')
+        except Exception:
+            pass
+        return self.settings.ela_enabled
+    
+    async def _get_exif_enabled(self) -> bool:
+        """Get EXIF enabled setting, checking database first."""
+        try:
+            from app.main import async_session_maker
+            from sqlalchemy import select
+            from app.models.database import AppSetting
+            
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    select(AppSetting).where(AppSetting.key == 'exif_enabled')
+                )
+                setting = result.scalar_one_or_none()
+                if setting:
+                    return setting.value.lower() in ('true', '1', 'yes', 'on')
+        except Exception:
+            pass
+        return self.settings.exif_enabled
         self.ela_quality = ela_quality if ela_quality is not None else settings.ela_quality
     
     async def analyze_document(
@@ -175,85 +212,125 @@ class FraudDetector:
             pdf_signals = self._analyze_pdf_metadata(file_bytes)
             signals.extend(pdf_signals)
         
-        # 2. Image Forensics (ELA)
-        ela_heatmap_path = None
-        if document_dir:
-            ela_heatmap_path = document_dir / "risk" / "ela_heatmap.png"
-            logger.info(f"ELA heatmap will be saved to: {ela_heatmap_path}")
-        
-        if is_image and file_bytes:
-            image_signals = self._analyze_image_forensics(file_bytes, filename, ela_heatmap_path)
-            signals.extend(image_signals)
+        # 2. Image Forensics (ELA) - only if enabled
+        ela_enabled = await self._get_ela_enabled()
+        if ela_enabled:
+            ela_heatmap_path = None
+            if document_dir:
+                ela_heatmap_path = document_dir / "risk" / "ela_heatmap.png"
+                logger.info(f"ELA heatmap will be saved to: {ela_heatmap_path}")
             
-            # If we have ELA signals but no heatmap was saved, try to regenerate
-            ela_signals = [s for s in image_signals if s.name == "ela_manipulation_detected"]
-            if ela_signals and ela_heatmap_path and not ela_heatmap_path.exists():
-                logger.warning("ELA signal detected but heatmap not saved, attempting to regenerate...")
-                try:
-                    img = Image.open(io.BytesIO(file_bytes))
-                    original_format = img.format or "UNKNOWN"
-                    _, heatmap = self._perform_ela(
-                        img,
-                        original_format=original_format,
-                        save_heatmap_path=ela_heatmap_path,
-                        allow_non_jpeg=self.ela_allow_non_jpeg
-                    )
-                    if heatmap:
-                        logger.info("Regenerated ELA heatmap after signal detection for image")
-                except Exception as e:
-                    logger.warning(f"Failed to regenerate ELA heatmap: {e}")
-        
-        # 3. Extract images from PDF for analysis
-        if is_pdf and file_bytes:
-            pdf_image_signals = self._analyze_pdf_images(file_bytes, ela_heatmap_path)
-            signals.extend(pdf_image_signals)
+            if is_image and file_bytes:
+                image_signals = await self._analyze_image_forensics(file_bytes, filename, ela_heatmap_path)
+                # Force LOW risk and cap confidence
+                for sig in image_signals:
+                    sig.risk_level = RiskLevel.LOW
+                    sig.confidence = min(sig.confidence, 0.4)
+                signals.extend(image_signals)
             
-            # If we have ELA signals but no heatmap was saved, try to generate one
-            # Note: _analyze_pdf_images already handles heatmap generation, so this is a fallback
-            ela_signals = [s for s in pdf_image_signals if s.name == "ela_manipulation_detected"]
-            if ela_signals and ela_heatmap_path and not ela_heatmap_path.exists():
-                logger.warning("ELA signal detected but heatmap not saved, attempting to regenerate...")
-                try:
-                    doc = fitz.open(stream=file_bytes, filetype="pdf")
-                    for page_num in range(min(5, len(doc))):
-                        page = doc[page_num]
-                        image_list = page.get_images()
-                        if image_list:
-                            xref = image_list[0][0]
-                            base_image = doc.extract_image(xref)
-                            image_bytes = base_image["image"]
-                            pil_img = Image.open(io.BytesIO(image_bytes))
-                            original_format = pil_img.format or base_image.get("ext", "UNKNOWN").lstrip('.').upper()
-                            _, heatmap = self._perform_ela(
-                                pil_img,
-                                original_format=original_format,
-                                save_heatmap_path=ela_heatmap_path,
-                                allow_non_jpeg=self.ela_allow_non_jpeg
-                            )
-                            if heatmap:
-                                logger.info("Regenerated ELA heatmap after signal detection for PDF")
-                                break
-                    doc.close()
-                except Exception as e:
-                    logger.warning(f"Failed to regenerate ELA heatmap: {e}")
+            # 3. Extract images from PDF for analysis
+            if is_pdf and file_bytes:
+                pdf_image_signals = await self._analyze_pdf_images(file_bytes, ela_heatmap_path)
+                # Force LOW risk and cap confidence
+                for sig in pdf_image_signals:
+                    sig.risk_level = RiskLevel.LOW
+                    sig.confidence = min(sig.confidence, 0.4)
+                signals.extend(pdf_image_signals)
         
         # 4. Text Anomaly Detection
         if extracted_text:
-            text_signals = self._analyze_text_anomalies(extracted_text)
+            # Check for additional indicators to determine severity
+            has_missing_verified = False
+            if document_dir:
+                validation_path = document_dir / "metadata" / "validation.json"
+                if validation_path.exists():
+                    try:
+                        validation_data = json.loads(validation_path.read_text())
+                        validation_errors = validation_data.get("errors", [])
+                        has_missing_verified = any(e.startswith("missing_verified_required_field:") for e in validation_errors)
+                    except Exception:
+                        pass
+            
+            has_low_confidence = classification_confidence is not None and classification_confidence < 0.6
+            
+            text_signals = self._analyze_text_anomalies(extracted_text, has_missing_verified=has_missing_verified, has_low_confidence=has_low_confidence)
             signals.extend(text_signals)
         
-        # 5. Classification Confidence Analysis - DISABLED
-        # Low classification confidence is not considered a fraud indicator
-        # if classification_confidence is not None:
-        #     conf_signals = self._analyze_classification_confidence(classification_confidence)
-        #     signals.extend(conf_signals)
+        # 5. Classification Confidence Analysis
+        if classification_confidence is not None:
+            conf_signals = self._analyze_classification_confidence(classification_confidence)
+            signals.extend(conf_signals)
         
         # 6. Include existing signals from document processing
         if existing_signals:
             proc_signals = self._parse_existing_signals(existing_signals)
             signals.extend(proc_signals)
         
-        # 7. Enhance signals with LLM-generated user-friendly descriptions
+        # 7. Check verified.json and validation.json for metadata issues
+        if document_dir:
+            verified_path = document_dir / "metadata" / "verified.json"
+            validation_path = document_dir / "metadata" / "validation.json"
+            result_path = document_dir / "metadata" / "result.json"
+            
+            if verified_path.exists() and validation_path.exists():
+                try:
+                    verified = json.loads(verified_path.read_text())
+                    validation_data = json.loads(validation_path.read_text())
+                    validation_errors = validation_data.get("errors", [])
+                    result_data = {}
+                    if result_path.exists():
+                        result_data = json.loads(result_path.read_text())
+                    
+                    # Check for invalid IBAN
+                    invalid_iban_errors = [e for e in validation_errors if e.startswith("invalid_iban:")]
+                    if invalid_iban_errors:
+                        signals.append(FraudSignal(
+                            name="invalid_iban",
+                            description=f"Ongeldig IBAN nummer gedetecteerd ({len(invalid_iban_errors)} velden)",
+                            risk_level=RiskLevel.MEDIUM,
+                            confidence=0.7,
+                            details={"errors": invalid_iban_errors},
+                            evidence=[f"Ongeldig IBAN in: {', '.join(e.split(':')[1] for e in invalid_iban_errors)}"],
+                        ))
+                    
+                    # Check for missing verified required fields
+                    missing_verified_errors = [e for e in validation_errors if e.startswith("missing_verified_required_field:")]
+                    if missing_verified_errors:
+                        signals.append(FraudSignal(
+                            name="missing_verified_required_fields",
+                            description=f"Verplichte velden zonder bewijs ({len(missing_verified_errors)} velden)",
+                            risk_level=RiskLevel.MEDIUM,
+                            confidence=0.6,
+                            details={"errors": missing_verified_errors},
+                            evidence=[f"Geen bewijs voor: {', '.join(e.split(':')[1] for e in missing_verified_errors)}"],
+                        ))
+                    
+                    # Check for amount inconsistency
+                    total_amount = result_data.get("total_amount") or result_data.get("totaal_bedrag")
+                    subtotal_amount = result_data.get("subtotal_amount") or result_data.get("subtotaal")
+                    vat_amount = result_data.get("vat_amount") or result_data.get("btw_bedrag")
+                    
+                    if total_amount is not None and subtotal_amount is not None and vat_amount is not None:
+                        try:
+                            total = float(str(total_amount).replace(',', '.').replace('€', '').strip())
+                            subtotal = float(str(subtotal_amount).replace(',', '.').replace('€', '').strip())
+                            vat = float(str(vat_amount).replace(',', '.').replace('€', '').strip())
+                            diff = abs(total - (subtotal + vat))
+                            if diff > 0.02:
+                                signals.append(FraudSignal(
+                                    name="amount_inconsistency",
+                                    description=f"Bedragen kloppen niet: totaal ({total}) ≠ subtotaal ({subtotal}) + BTW ({vat})",
+                                    risk_level=RiskLevel.MEDIUM,
+                                    confidence=0.6,
+                                    details={"total": total, "subtotal": subtotal, "vat": vat, "difference": diff},
+                                    evidence=[f"Verschil: €{diff:.2f}"],
+                                ))
+                        except (ValueError, TypeError):
+                            pass
+                except Exception as e:
+                    logger.warning(f"Failed to read verified/validation files: {e}")
+        
+        # 8. Enhance signals with LLM-generated user-friendly descriptions
         if self.llm_client and signals:
             try:
                 signals = await self._enhance_signals_with_llm(signals, extracted_text or "")
@@ -273,7 +350,7 @@ class FraudDetector:
             risk_score=risk_score,
             signals=signals,
             summary=summary,
-            analyzed_at=datetime.utcnow().isoformat(),
+                analyzed_at=datetime.now(timezone.utc).isoformat(),
         )
     
     def _analyze_pdf_metadata(self, pdf_bytes: bytes) -> List[FraudSignal]:
@@ -344,7 +421,7 @@ class FraudDetector:
         
         return signals
     
-    def _analyze_image_forensics(self, image_bytes: bytes, filename: str, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
+    async def _analyze_image_forensics(self, image_bytes: bytes, filename: str, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
         """Perform Error Level Analysis (ELA) on images."""
         signals = []
         
@@ -365,7 +442,7 @@ class FraudDetector:
                 signals.append(ela_result)
             
             # Check EXIF data
-            exif_signals = self._analyze_exif(img)
+            exif_signals = await self._analyze_exif(img)
             signals.extend(exif_signals)
             
         except Exception as e:
@@ -630,9 +707,13 @@ class FraudDetector:
         except Exception as e:
             logger.warning(f"Failed to create placeholder heatmap: {e}")
     
-    def _analyze_exif(self, img: Image.Image) -> List[FraudSignal]:
+    async def _analyze_exif(self, img: Image.Image) -> List[FraudSignal]:
         """Analyze EXIF metadata for suspicious indicators."""
         signals = []
+        
+        exif_enabled = await self._get_exif_enabled()
+        if not exif_enabled:
+            return signals
         
         try:
             exif = img._getexif()
@@ -648,8 +729,8 @@ class FraudDetector:
                         signals.append(FraudSignal(
                             name="image_editing_software",
                             description=f"Afbeelding bewerkt met: {exif[tag]}",
-                            risk_level=RiskLevel.MEDIUM,
-                            confidence=0.7,
+                            risk_level=RiskLevel.LOW,
+                            confidence=min(0.4, 0.7),
                             details={"software": exif[tag]},
                             evidence=[f"Bewerkt met: {exif[tag]}"],
                         ))
@@ -659,7 +740,7 @@ class FraudDetector:
         
         return signals
     
-    def _analyze_pdf_images(self, pdf_bytes: bytes, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
+    async def _analyze_pdf_images(self, pdf_bytes: bytes, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
         """
         Extract and analyze images embedded in PDF.
         
@@ -763,9 +844,17 @@ class FraudDetector:
         
         return signals
     
-    def _analyze_text_anomalies(self, text: str) -> List[FraudSignal]:
+    def _analyze_text_anomalies(self, text: str, has_missing_verified: bool = False, has_low_confidence: bool = False) -> List[FraudSignal]:
         """Detect suspicious text patterns and unicode anomalies."""
         signals = []
+        
+        # Determine severity based on other indicators
+        if has_missing_verified or has_low_confidence:
+            default_risk = RiskLevel.MEDIUM
+            default_confidence = 0.6
+        else:
+            default_risk = RiskLevel.LOW
+            default_confidence = 0.4
         
         # Check for suspicious unicode characters
         suspicious_chars = []
@@ -779,8 +868,8 @@ class FraudDetector:
             signals.append(FraudSignal(
                 name="unicode_anomalies",
                 description=f"Verdachte unicode karakters gedetecteerd ({len(suspicious_chars)} stuks)",
-                risk_level=RiskLevel.HIGH if len(suspicious_chars) > 5 else RiskLevel.MEDIUM,
-                confidence=0.85,
+                risk_level=default_risk,
+                confidence=default_confidence,
                 details={
                     "count": len(suspicious_chars),
                     "types": list(unique_types),
@@ -807,8 +896,8 @@ class FraudDetector:
                 signals.append(FraudSignal(
                     name="text_repetition",
                     description="Onnatuurlijke tekstherhaling gedetecteerd",
-                    risk_level=RiskLevel.MEDIUM,
-                    confidence=0.6,
+                    risk_level=default_risk,
+                    confidence=default_confidence,
                     details={
                         "repeated_words": suspicious_repeats[:10],
                         "total_words": total_words,
@@ -822,7 +911,7 @@ class FraudDetector:
         """Analyze classification confidence as fraud indicator."""
         signals = []
         
-        if confidence < 0.5:
+        if confidence < 0.6:
             signals.append(FraudSignal(
                 name="low_classification_confidence",
                 description="Document past niet bij bekende document types",

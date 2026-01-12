@@ -75,34 +75,38 @@ class SSEService:
 
     async def _publish_event(self, document_id: int, event_data: dict) -> None:
         """Publish event to all subscribers of a document."""
+        # Get subscribers under lock
         async with self._lock:
             if document_id not in self._connections:
                 return
+            subscribers = list(self._connections[document_id])
 
-            # Convert to SSE format
-            event_lines = [
-                "event: document-update",
-                f"data: {json.dumps(event_data)}",
-                ""  # Empty line to end the event
-            ]
-            # Important: SSE events must end with a blank line (\n\n)
-            message = "\n".join(event_lines) + "\n"
+        # Convert to SSE format
+        event_lines = [
+            "event: document-update",
+            f"data: {json.dumps(event_data)}",
+            ""  # Empty line to end the event
+        ]
+        # Important: SSE events must end with a blank line (\n\n)
+        message = "\n".join(event_lines) + "\n"
 
-            # Send to all subscribers
-            disconnected = set()
-            for send_func in self._connections[document_id]:
-                try:
-                    await send_func(message)
-                except Exception as e:
-                    logger.warning(f"Failed to send SSE to subscriber: {e}")
-                    disconnected.add(send_func)
+        # Send to all subscribers outside lock
+        disconnected = set()
+        for send_func in subscribers:
+            try:
+                await send_func(message)
+            except Exception as e:
+                logger.warning(f"Failed to send SSE to subscriber: {e}")
+                disconnected.add(send_func)
 
-            # Remove disconnected subscribers
-            for send_func in disconnected:
-                self._connections[document_id].discard(send_func)
+        # Remove disconnected subscribers under lock
+        async with self._lock:
+            if document_id in self._connections:
+                for send_func in disconnected:
+                    self._connections[document_id].discard(send_func)
 
-            if not self._connections[document_id]:
-                del self._connections[document_id]
+                if not self._connections[document_id]:
+                    del self._connections[document_id]
 
     async def get_active_connections_count(self, document_id: int) -> int:
         """Get number of active connections for a document."""

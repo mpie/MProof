@@ -26,6 +26,15 @@ body {
   margin: 0;
 }
 
+/* Button cursor styling - all buttons get pointer cursor on hover */
+button:not(:disabled):hover {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
 /* Glassmorphism utilities */
 .glass-card {
   background: rgba(255, 255, 255, 0.08);

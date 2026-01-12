@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, JSON, Enum
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 import enum
 
@@ -41,8 +41,8 @@ class Subject(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     name_normalized: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     context: Mapped[ContextEnum] = mapped_column(Enum(ContextEnum), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     documents: Mapped[List["Document"]] = relationship("Document", back_populates="subject")
 
@@ -57,8 +57,8 @@ class DocumentType(Base):
     classification_hints: Mapped[Optional[str]] = mapped_column(Text)
     extraction_prompt_preamble: Mapped[Optional[str]] = mapped_column(Text)
     classification_policy_json: Mapped[Optional[dict]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     fields: Mapped[List["DocumentTypeField"]] = relationship("DocumentTypeField", back_populates="document_type")
 
@@ -76,8 +76,8 @@ class DocumentTypeField(Base):
     regex: Mapped[Optional[str]] = mapped_column(String(500))
     description: Mapped[Optional[str]] = mapped_column(Text)
     examples: Mapped[Optional[list]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     document_type: Mapped["DocumentType"] = relationship("DocumentType", back_populates="fields")
 
@@ -107,8 +107,8 @@ class Document(Base):
     ocr_quality: Mapped[Optional[str]] = mapped_column(String(20))
     skip_marker_used: Mapped[Optional[str]] = mapped_column(String(500))  # Pattern that matched
     skip_marker_position: Mapped[Optional[int]] = mapped_column(Integer)  # Position where text was truncated
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     subject: Mapped["Subject"] = relationship("Subject", back_populates="documents")
 
@@ -124,8 +124,8 @@ class ApiKey(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class SkipMarker(Base):
@@ -137,8 +137,8 @@ class SkipMarker(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_regex: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class SignalTypeEnum(str, enum.Enum):
@@ -169,8 +169,8 @@ class ClassificationSignal(Base):
     source: Mapped[str] = mapped_column(String(20), nullable=False)  # 'builtin' or 'user'
     compute_kind: Mapped[str] = mapped_column(String(20), nullable=False)  # 'builtin', 'keyword_set', 'regex_set'
     config_json: Mapped[Optional[dict]] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AppSetting(Base):
@@ -181,5 +181,5 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True, index=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

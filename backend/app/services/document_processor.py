@@ -32,6 +32,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Global semaphore for heavy OCR/PDF operations
+OCR_SEMAPHORE = asyncio.Semaphore(2)
+
 
 class TextPrepareResult(NamedTuple):
     """Result of text preparation with skip marker info."""
@@ -109,19 +112,52 @@ class DocumentProcessor:
                 doc_type_confidence=classification.confidence
             )
 
-            # Stage 4: Metadata Extraction (60-85%)
+            # Stage 4: Metadata Extraction (60-85%) and Stage 5: Risk Analysis (85-100%) - run in parallel
+            logger.info(f"Document {document.id}: Classification result - doc_type_slug='{classification.doc_type_slug}', confidence={classification.confidence:.2f}, rationale='{classification.rationale}'")
+            
+            # Start risk analysis in parallel (it can work with just ocr_result, extraction_result is optional)
+            risk_analysis_task = asyncio.create_task(
+                self._stage_risk_analysis(document, document_dir, ocr_result, None)
+            )
+            await self._update_progress(document_id, 60, "risk_signals", progress_callback)
+            
+            # Start metadata extraction
+            extraction_result = None
             if classification.doc_type_slug not in ["other", "unknown"]:
+                logger.info(f"Document {document.id}: Starting LLM metadata extraction for type '{classification.doc_type_slug}'")
                 extraction_result = await self._stage_metadata_extraction(
                     document, document_dir, classification, ocr_result, progress_callback
                 )
+                if extraction_result:
+                    logger.info(f"Document {document.id}: LLM metadata extraction completed successfully")
+                else:
+                    logger.warning(f"Document {document.id}: LLM metadata extraction returned None (may have been skipped - check extraction_skipped.json)")
             else:
-                extraction_result = None
-                logger.info(f"Document {document.id}: Skipping metadata extraction for type '{classification.doc_type_slug}'")
-            await self._update_progress(document_id, 85, "completed", progress_callback)
-            await self._update_progress(document_id, 85, "risk_signals", progress_callback)
-
-            # Stage 5: Risk Analysis (85-100%)
-            risk_analysis = await self._stage_risk_analysis(document, document_dir, ocr_result, extraction_result)
+                logger.info(f"Document {document.id}: Skipping metadata extraction for type '{classification.doc_type_slug}' (other/unknown)")
+            
+            await self._update_progress(document_id, 85, "extracting_metadata", progress_callback)
+            
+            # Wait for risk analysis to complete, then add consistency check if extraction_result is available
+            risk_analysis = await risk_analysis_task
+            
+            # If we have extraction_result, add consistency check to risk analysis
+            if extraction_result:
+                consistency_errors = self._check_consistency(extraction_result.data)
+                if consistency_errors:
+                    from app.models.schemas import RiskSignal
+                    risk_analysis.signals.append(RiskSignal(
+                        code="CONSISTENCY_CHECK_FAILED",
+                        severity="medium",
+                        message="Inconsistent extracted data",
+                        evidence="; ".join(consistency_errors)
+                    ))
+                    risk_analysis.risk_score = min(100, risk_analysis.risk_score + 20)
+                    # Save updated risk analysis
+                    risk_dir = document_dir / "risk"
+                    risk_dir.mkdir(exist_ok=True)
+                    with open(risk_dir / "result.json", "w") as f:
+                        json.dump(risk_analysis.dict(), f, indent=2)
+            
             await self._update_progress(document_id, 100, "completed", progress_callback)
 
             # Final update
@@ -219,8 +255,10 @@ class DocumentProcessor:
 
         return result
 
-    def _ocr_with_rotation_detection(self, img: Image.Image) -> str:
+    async def _ocr_with_rotation_detection(self, img: Image.Image) -> str:
         """Perform OCR on image, trying different rotations (0, 90, 180, 270) and return best result.
+        
+        Optimized: First tries 0°, only tries other rotations if 0° doesn't produce good results.
         
         Args:
             img: PIL Image to perform OCR on
@@ -230,17 +268,47 @@ class DocumentProcessor:
         """
         results = []
         
-        # Try all rotations: 0, 90, 180, 270 degrees
-        for angle in [0, 90, 180, 270]:
+        # First try 0° (no rotation) - most common case
+        try:
+            async with OCR_SEMAPHORE:
+                text_0 = await asyncio.to_thread(
+                    pytesseract.image_to_string, img, config=settings.tesseract_config
+                )
+            
+            alnum_count_0 = sum(1 for c in text_0 if c.isalnum())
+            word_count_0 = len(text_0.split())
+            score_0 = alnum_count_0 * 2 + word_count_0
+            
+            results.append({
+                'angle': 0,
+                'text': text_0,
+                'score': score_0,
+                'alnum_count': alnum_count_0,
+                'word_count': word_count_0
+            })
+            
+            logger.debug(f"OCR rotation 0°: {alnum_count_0} alnum chars, {word_count_0} words, score: {score_0}")
+            
+            # If 0° produces good results (reasonable amount of text), skip other rotations
+            # Threshold: at least 50 alphanumeric characters and 10 words indicates readable text
+            if alnum_count_0 >= 50 and word_count_0 >= 10:
+                logger.debug(f"OCR 0° produces good results ({alnum_count_0} alnum, {word_count_0} words), skipping other rotations")
+                return text_0
+                
+        except Exception as e:
+            logger.warning(f"OCR failed for rotation 0°: {e}")
+        
+        # If 0° didn't produce good results, try other rotations
+        for angle in [90, 180, 270]:
             try:
                 # Rotate image
-                if angle == 0:
-                    rotated_img = img
-                else:
-                    rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
+                rotated_img = img.rotate(-angle, expand=True)  # Negative for counter-clockwise
                 
-                # Perform OCR
-                text = pytesseract.image_to_string(rotated_img, config=settings.tesseract_config)
+                # Perform OCR (wrapped in semaphore + to_thread)
+                async with OCR_SEMAPHORE:
+                    text = await asyncio.to_thread(
+                        pytesseract.image_to_string, rotated_img, config=settings.tesseract_config
+                    )
                 
                 # Score the result: count alphanumeric characters and words
                 alnum_count = sum(1 for c in text if c.isalnum())
@@ -366,9 +434,12 @@ class DocumentProcessor:
                     else:
                         reason = "garbage text"
                     logger.info(f"Page {page_num}: All extractors failed ({reason}, len={len(text.strip())}, garbage={is_garbage}), using OCR")
-                    pix = page.get_pixmap(dpi=250)
+                    async def render_page():
+                        async with OCR_SEMAPHORE:
+                            return await asyncio.to_thread(page.get_pixmap, dpi=250)
+                    pix = await render_page()
                     img = Image.open(BytesIO(pix.tobytes("png")))
-                    text = self._ocr_with_rotation_detection(img)
+                    text = await self._ocr_with_rotation_detection(img)
                     source = "ocr"
                     ocr_used = True
 
@@ -392,9 +463,12 @@ class DocumentProcessor:
                 doc = fitz.open(str(file_path))
                 for page_num in range(len(doc)):
                     page = doc.load_page(page_num)
-                    pix = page.get_pixmap(dpi=250)
+                    async def render_page():
+                        async with OCR_SEMAPHORE:
+                            return await asyncio.to_thread(page.get_pixmap, dpi=250)
+                    pix = await render_page()
                     img = Image.open(BytesIO(pix.tobytes("png")))
-                    text = self._ocr_with_rotation_detection(img)
+                    text = await self._ocr_with_rotation_detection(img)
 
                     pages.append({
                         "page": page_num,
@@ -414,7 +488,7 @@ class DocumentProcessor:
     async def _extract_image_text(self, file_path: Path) -> Tuple[List[Dict[str, Any]], str, bool]:
         """Extract text from image using OCR with rotation detection."""
         img = Image.open(file_path)
-        text = self._ocr_with_rotation_detection(img)
+        text = await self._ocr_with_rotation_detection(img)
 
         pages = [{
             "page": 0,
@@ -568,7 +642,7 @@ class DocumentProcessor:
         else:
             return "high"
 
-    async def classify_deterministic_strong(self, text: str, available_types: List[Tuple[str, str]]) -> Optional[str]:
+    async def classify_deterministic_strong(self, text: str, available_types: List[Tuple[str, str]]) -> Tuple[Optional[str], Optional[List[str]]]:
         """Check for STRONG deterministic matches where ALL kw: rules match.
         
         This runs BEFORE trained models to ensure explicit keyword rules have priority.
@@ -579,7 +653,7 @@ class DocumentProcessor:
             available_types: List of (slug, classification_hints) tuples
             
         Returns:
-            Document type slug if ALL kw: rules match, None otherwise
+            Tuple of (document type slug if ALL kw: rules match, list of matched keywords), or (None, None)
         """
         text_lower = text.lower()
         strong_matches = []
@@ -615,33 +689,35 @@ class DocumentProcessor:
                 
             # Strong match = has kw: rules AND ALL matched
             if required_keywords and len(matched_keywords) == len(required_keywords):
-                strong_matches.append((slug, len(required_keywords)))
+                strong_matches.append((slug, len(required_keywords), matched_keywords))
                 logger.info(f"Strong deterministic match: '{slug}' - all {len(required_keywords)} kw: rules matched: {matched_keywords}")
         
         if not strong_matches:
-            return None
+            return None, None
             
         # If multiple strong matches, pick the one with most keywords
         strong_matches.sort(key=lambda x: x[1], reverse=True)
-        best_match = strong_matches[0][0]
+        best_match, _, matched_keywords = strong_matches[0]
         
         if len(strong_matches) > 1:
             logger.warning(f"Multiple strong matches found: {[s[0] for s in strong_matches]}, using '{best_match}' (most keywords)")
         
-        return best_match
+        return best_match, matched_keywords
 
     async def _validate_classification_against_not_rules(
-        self, predicted_slug: str, text: str, available_types: List[Tuple[str, str]]
-    ) -> bool:
-        """Validate that a classification doesn't violate any not: rules AND has required kw: matches.
+        self, predicted_slug: str, text: str, available_types: List[Tuple[str, str]], check_keywords: bool = True
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate that a classification doesn't violate any not: rules AND optionally has required kw: matches.
         
         Args:
             predicted_slug: The predicted document type slug
             text: Document text to check
             available_types: List of (slug, classification_hints) tuples
+            check_keywords: If True, also check that at least one kw: rule matches (for Naive Bayes).
+                          If False, only check not: rules (for BERT, which is semantic and doesn't need keywords).
             
         Returns:
-            True if classification is valid, False if it violates a not: rule or lacks required keywords
+            Tuple of (is_valid, reason) where reason explains why it was rejected (if not valid)
         """
         text_lower = text.lower()
         
@@ -653,10 +729,11 @@ class DocumentProcessor:
                 break
         
         if not hints:
-            return True  # No hints = no rules to check
+            return True, None  # No hints = no rules to check
         
         required_keywords = []
         matched_keywords = []
+        violated_not_rule = None
         
         # Check all rules
         for hint_line in hints.strip().split('\n'):
@@ -668,8 +745,9 @@ class DocumentProcessor:
                 # not: rules - if found, reject
                 negative_word = hint_line[4:].strip().lower()
                 if negative_word in text_lower:
+                    violated_not_rule = negative_word
                     logger.info(f"Classification '{predicted_slug}' rejected: not: rule '{negative_word}' found in text")
-                    return False
+                    return False, f"not: rule '{negative_word}' gevonden in tekst (dit is de bedoeling - deze regel voorkomt verkeerde classificatie)"
             elif hint_line.startswith('kw:'):
                 # kw: rules - track required keywords
                 keyword = hint_line[3:].strip().lower()
@@ -677,12 +755,14 @@ class DocumentProcessor:
                 if keyword in text_lower:
                     matched_keywords.append(keyword)
         
-        # If there are required keywords, at least one must match for NB/BERT to be valid
-        if required_keywords and len(matched_keywords) == 0:
-            logger.info(f"Classification '{predicted_slug}' rejected: no kw: rules matched (required: {required_keywords})")
-            return False
+        # If there are required keywords, at least one must match for Naive Bayes to be valid
+        # BERT is semantic and doesn't need keyword matching, so we skip this check for BERT
+        if check_keywords and required_keywords and len(matched_keywords) == 0:
+            reason = f"geen kw: regels gematcht (vereist: {', '.join(required_keywords)}) - dit is de bedoeling om verkeerde classificaties te voorkomen"
+            logger.info(f"Classification '{predicted_slug}' rejected: {reason}")
+            return False, reason
         
-        return True
+        return True, None
 
     async def classify_deterministic(self, text: str, available_types: List[Tuple[str, str]]) -> Optional[str]:
         """Deterministic pre-classifier that only returns a type if there's strong evidence.
@@ -1449,7 +1529,7 @@ Respond with JSON:
 
         # Step 0: Check for STRONG deterministic matches first (all kw: rules match)
         # This ensures explicit keyword rules have priority over trained models
-        strong_deterministic_result = await self.classify_deterministic_strong(sample_text, available_types)
+        strong_deterministic_result, strong_matched_keywords = await self.classify_deterministic_strong(sample_text, available_types)
         
         nb_pred = None
         bert_pred = None
@@ -1457,32 +1537,46 @@ Respond with JSON:
         best_method = None
         
         if strong_deterministic_result:
-            logger.info(f"Document {document.id} classified as '{strong_deterministic_result}' via STRONG deterministic match (all kw: rules matched)")
+            logger.info(f"Document {document.id} classified as '{strong_deterministic_result}' via STRONG deterministic match (all kw: rules matched: {strong_matched_keywords})")
             # Create a fake prediction with 100% confidence
             from dataclasses import dataclass
             @dataclass
             class StrongMatch:
                 label: str
                 confidence: float
-            best_pred = StrongMatch(label=strong_deterministic_result, confidence=1.0)
+                matched_keywords: Optional[List[str]] = None
+            best_pred = StrongMatch(label=strong_deterministic_result, confidence=1.0, matched_keywords=strong_matched_keywords)
             best_method = "deterministic_strong"
 
         # Step 1: Local (trained) Naive Bayes classifier
+        nb_error = None
+        nb_below_threshold = None
+        nb_threshold = None
         try:
             from app.services.doc_type_classifier import classifier_service
-            pred = classifier_service().predict(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
+            pred, threshold, raw_pred = classifier_service().predict_with_threshold_info(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
+            nb_threshold = threshold
             if pred:
                 nb_pred = pred
                 # Only use NB if no strong deterministic match
                 if not strong_deterministic_result:
                     best_pred = pred
                     best_method = "naive_bayes"
-                logger.info(f"Document {document.id} NB classification: '{pred.label}' (p={pred.confidence:.2f})")
+                logger.info(f"Document {document.id} NB classification: '{pred.label}' (p={pred.confidence:.2f}, threshold={threshold:.2f})")
+            elif raw_pred:
+                # Prediction exists but below threshold
+                nb_below_threshold = raw_pred
+                logger.info(f"Document {document.id} NB classification: '{raw_pred.label}' (p={raw_pred.confidence:.2f}) BELOW threshold ({threshold:.2f})")
+            else:
+                logger.info(f"Document {document.id} NB classification: No result (no model or no prediction)")
         except Exception as e:
+            nb_error = str(e)
             logger.warning(f"Naive Bayes classifier failed or unavailable: {e}")
 
         # Step 1.5: Try BERT classifier (always run to get score, even if NB is good)
         # Try selected model first, then fallback to other available models
+        bert_error = None
+        bert_models_tried = []
         try:
             from app.services.bert_classifier import bert_classifier_service
             bert_svc = bert_classifier_service()
@@ -1506,6 +1600,7 @@ Respond with JSON:
             bert_used_model = None
             
             for model_name in models_to_try:
+                bert_models_tried.append(model_name)
                 try:
                     result = bert_svc.predict(sample_text, model_name=model_name, allowed_labels=allowed_slugs)
                     if result:
@@ -1519,11 +1614,26 @@ Respond with JSON:
             
             if bert_result:
                 bert_pred = bert_result
-                # Use BERT if: no strong deterministic AND (no NB result or BERT is significantly better)
-                if not strong_deterministic_result and (not best_pred or bert_result.confidence > best_pred.confidence + 0.1):
-                    best_pred = bert_result
-                    best_method = "bert"
-                    if bert_used_model != self.model_name:
+                # Use BERT if: no strong deterministic AND (no NB result OR BERT is significantly better)
+                # BUT: Only use BERT if confidence is high enough (>= 0.5), otherwise return unknown
+                MIN_CONFIDENCE_FOR_BERT = 0.5  # Minimum confidence to use BERT when NB has no result
+                if not strong_deterministic_result:
+                    if not best_pred:
+                        # No NB result - use BERT only if confidence is high enough
+                        if bert_result.confidence >= MIN_CONFIDENCE_FOR_BERT:
+                            best_pred = bert_result
+                            best_method = "bert"
+                            logger.info(f"Document {document.id}: Using BERT result (NB had no result, confidence={bert_result.confidence:.2f})")
+                        else:
+                            logger.info(f"Document {document.id}: BERT result rejected (confidence {bert_result.confidence:.2f} < {MIN_CONFIDENCE_FOR_BERT}, will use unknown)")
+                            bert_pred = None  # Don't use this result
+                    elif bert_result.confidence > best_pred.confidence + 0.1:
+                        # BERT is significantly better than NB
+                        best_pred = bert_result
+                        best_method = "bert"
+                        logger.info(f"Document {document.id}: Using BERT result (better than NB: {bert_result.confidence:.2f} vs {best_pred.confidence:.2f})")
+                    # If BERT is not significantly better, keep NB result
+                    if best_method == "bert" and bert_used_model != self.model_name:
                         logger.info(f"Document {document.id}: Used BERT model '{bert_used_model}' (fallback from '{self.model_name or 'default'}')")
             else:
                 # Log why BERT didn't return a result
@@ -1541,22 +1651,65 @@ Respond with JSON:
                 else:
                     logger.info(f"Document {document.id}: BERT returned None for all {len(models_to_try)} available models")
         except Exception as e:
+            bert_error = str(e)
             logger.warning(f"BERT classifier error: {e}")
 
         # Step 1.9: Validate NB/BERT result against not: rules
+        # Only use BERT if confidence is high enough (>= 0.5) when NB has no result
+        # If confidence is too low, reject and use unknown instead
+        nb_validation_reason = None
+        bert_validation_reason = None
         if best_pred and best_method in ("naive_bayes", "bert"):
             # Check if the predicted type has not: rules that are violated
-            is_valid = await self._validate_classification_against_not_rules(
-                best_pred.label, sample_text, available_types
+            # For Naive Bayes: check both not: and kw: rules
+            # For BERT: only check not: rules (BERT is semantic and doesn't need keywords)
+            check_keywords = (best_method == "naive_bayes")
+            is_valid, reason = await self._validate_classification_against_not_rules(
+                best_pred.label, sample_text, available_types, check_keywords=check_keywords
             )
             if not is_valid:
-                logger.warning(f"Document {document.id}: {best_method} result '{best_pred.label}' rejected due to not: rule violation")
+                # Reject if not: rules are violated (don't force a match)
+                validation_reason = reason or "not: rule violation"
+                if best_method == "naive_bayes":
+                    nb_validation_reason = validation_reason
+                else:
+                    bert_validation_reason = validation_reason
+                logger.warning(f"Document {document.id}: {best_method} result '{best_pred.label}' rejected: {validation_reason}")
                 best_pred = None
                 best_method = None
+            elif best_method == "bert" and best_pred.confidence < 0.5:
+                # Reject BERT if confidence is too low (even if not: rules pass)
+                bert_validation_reason = f"confidence {best_pred.confidence:.2f} < 0.5"
+                logger.info(f"Document {document.id}: BERT result '{best_pred.label}' rejected ({bert_validation_reason}, will use unknown)")
+                best_pred = None
+                best_method = None
+        
+        # Also validate NB and BERT separately to show why they were rejected
+        if nb_pred and not best_pred:
+            # NB had a result but was rejected - check why (check keywords for NB)
+            is_valid, reason = await self._validate_classification_against_not_rules(
+                nb_pred.label, sample_text, available_types, check_keywords=True
+            )
+            if not is_valid:
+                nb_validation_reason = reason or "not: rule violation"
+        
+        if bert_pred and not best_pred:
+            # BERT had a result but was rejected - check why (don't check keywords for BERT)
+            is_valid, reason = await self._validate_classification_against_not_rules(
+                bert_pred.label, sample_text, available_types, check_keywords=False
+            )
+            if not is_valid:
+                bert_validation_reason = reason or "not: rule violation"
 
         if best_pred:
             # Build rationale with both scores if available
-            rationale_parts = [f"{best_method.upper()} classifier (p={best_pred.confidence:.2f})"]
+            if best_method == "deterministic_strong":
+                # For strong deterministic matches, show matched keywords
+                keywords_str = ", ".join(getattr(best_pred, 'matched_keywords', []) or [])
+                rationale_parts = [f"STRONG keyword match (100% confidence) - matched keywords: {keywords_str}"]
+            else:
+                rationale_parts = [f"{best_method.upper()} classifier (p={best_pred.confidence:.2f})"]
+            
             if nb_pred and bert_pred:
                 rationale_parts.append(f"NB: {nb_pred.label} ({nb_pred.confidence:.2f}), BERT: {bert_pred.label} ({bert_pred.confidence:.2f})")
             elif nb_pred:
@@ -1564,6 +1717,7 @@ Respond with JSON:
             elif bert_pred:
                 rationale_parts.append(f"BERT: {bert_pred.label} ({bert_pred.confidence:.2f})")
             
+            logger.info(f"Document {document.id}: Creating classification with doc_type_slug='{best_pred.label}' from {best_method}")
             classification = ClassificationResult(
                 doc_type_slug=best_pred.label,
                 confidence=float(best_pred.confidence),
@@ -1574,26 +1728,70 @@ Respond with JSON:
             llm_dir = document_dir / "llm"
             llm_dir.mkdir(exist_ok=True)
             
-            # Save both scores
+            # Save both scores (always save NB and BERT attempts, even if they failed)
             classification_data = {
                 "method": best_method,
                 "doc_type_slug": best_pred.label,
                 "confidence": float(best_pred.confidence),
             }
             
-            # Add both classifier scores
+            # Add matched keywords for strong deterministic matches
+            if best_method == "deterministic_strong" and hasattr(best_pred, 'matched_keywords'):
+                classification_data["matched_keywords"] = getattr(best_pred, 'matched_keywords', []) or []
+            
+            # Add both classifier scores (or error info if they failed)
             if nb_pred:
-                classification_data["naive_bayes"] = {
+                nb_data = {
                     "label": nb_pred.label,
-                    "confidence": float(nb_pred.confidence)
+                    "confidence": float(nb_pred.confidence),
+                    "threshold": float(nb_threshold) if nb_threshold else None
                 }
+                if nb_validation_reason:
+                    nb_data["status"] = "rejected"
+                    nb_data["rejection_reason"] = nb_validation_reason
+                classification_data["naive_bayes"] = nb_data
+            elif nb_below_threshold:
+                classification_data["naive_bayes"] = {
+                    "status": "below_threshold",
+                    "label": nb_below_threshold.label,
+                    "confidence": float(nb_below_threshold.confidence),
+                    "threshold": float(nb_threshold) if nb_threshold else None,
+                    "reason": f"Confidence {nb_below_threshold.confidence:.2f} < threshold {nb_threshold:.2f}"
+                }
+            elif nb_error:
+                classification_data["naive_bayes"] = {
+                    "error": nb_error,
+                    "status": "failed"
+                }
+            else:
+                classification_data["naive_bayes"] = {
+                    "status": "no_result",
+                    "reason": "No model available or no prediction generated"
+                }
+            
             if bert_pred:
-                classification_data["bert"] = {
+                bert_data = {
                     "label": bert_pred.label,
                     "confidence": float(bert_pred.confidence)
                 }
                 if bert_used_model:
-                    classification_data["bert"]["model_used"] = bert_used_model
+                    bert_data["model_used"] = bert_used_model
+                if bert_validation_reason:
+                    bert_data["status"] = "rejected"
+                    bert_data["rejection_reason"] = bert_validation_reason
+                classification_data["bert"] = bert_data
+            elif bert_error:
+                classification_data["bert"] = {
+                    "error": bert_error,
+                    "status": "failed",
+                    "models_tried": bert_models_tried
+                }
+            else:
+                classification_data["bert"] = {
+                    "status": "no_result",
+                    "reason": "Below threshold or no model available",
+                    "models_tried": bert_models_tried
+                }
             
             with open(llm_dir / "classification_local.json", "w") as f:
                 json.dump(classification_data, f, indent=2)
@@ -1601,6 +1799,73 @@ Respond with JSON:
             logger.info(f"Document {document.id} classified as '{best_pred.label}' via {best_method} (p={best_pred.confidence:.2f})")
             return classification
 
+        # Save classification attempts even if no best_pred was found
+        if not best_pred:
+            llm_dir = document_dir / "llm"
+            llm_dir.mkdir(exist_ok=True)
+            classification_data = {
+                "method": None,
+                "doc_type_slug": None,
+                "confidence": 0.0,
+            }
+            
+            # Add both classifier scores (or error info if they failed)
+            if nb_pred:
+                nb_data = {
+                    "label": nb_pred.label,
+                    "confidence": float(nb_pred.confidence),
+                    "threshold": float(nb_threshold) if nb_threshold else None
+                }
+                if nb_validation_reason:
+                    nb_data["status"] = "rejected"
+                    nb_data["rejection_reason"] = nb_validation_reason
+                classification_data["naive_bayes"] = nb_data
+            elif nb_below_threshold:
+                classification_data["naive_bayes"] = {
+                    "status": "below_threshold",
+                    "label": nb_below_threshold.label,
+                    "confidence": float(nb_below_threshold.confidence),
+                    "threshold": float(nb_threshold) if nb_threshold else None,
+                    "reason": f"Confidence {nb_below_threshold.confidence:.2f} < threshold {nb_threshold:.2f}"
+                }
+            elif nb_error:
+                classification_data["naive_bayes"] = {
+                    "error": nb_error,
+                    "status": "failed"
+                }
+            else:
+                classification_data["naive_bayes"] = {
+                    "status": "no_result",
+                    "reason": "No model available or no prediction generated"
+                }
+            
+            if bert_pred:
+                bert_data = {
+                    "label": bert_pred.label,
+                    "confidence": float(bert_pred.confidence)
+                }
+                if bert_used_model:
+                    bert_data["model_used"] = bert_used_model
+                if bert_validation_reason:
+                    bert_data["status"] = "rejected"
+                    bert_data["rejection_reason"] = bert_validation_reason
+                classification_data["bert"] = bert_data
+            elif bert_error:
+                classification_data["bert"] = {
+                    "error": bert_error,
+                    "status": "failed",
+                    "models_tried": bert_models_tried
+                }
+            else:
+                classification_data["bert"] = {
+                    "status": "no_result",
+                    "reason": "Below threshold or no model available",
+                    "models_tried": bert_models_tried
+                }
+            
+            with open(llm_dir / "classification_local.json", "w") as f:
+                json.dump(classification_data, f, indent=2)
+        
         # Step 2: Deterministic classification (fallback when trained models don't match)
         # Only use deterministic if trained models had low confidence (< 0.7) or no result
         use_deterministic = not best_pred or (best_pred and best_pred.confidence < 0.7)
@@ -1681,6 +1946,8 @@ Respond with JSON:
         return llm_result
 
     def _prepare_text_sample(self, text: str, max_chars: int = 6000, skip_markers: List[Tuple[str, bool]] = None) -> TextPrepareResult:
+        # Truncate text for regex matching to prevent CPU issues
+        text = text[:200_000]
         """Prepare text sample for classification by normalizing whitespace, applying skip markers, and including header.
         
         Args:
@@ -1702,10 +1969,15 @@ Respond with JSON:
         if skip_markers:
             earliest_skip_pos = len(normalized)
             
+            # Regex compile cache
+            _skip_regex_cache: dict[str, re.Pattern] = {}
             for pattern, is_regex in skip_markers:
                 try:
                     if is_regex:
-                        match = re.search(pattern, normalized, re.IGNORECASE)
+                        if pattern not in _skip_regex_cache:
+                            _skip_regex_cache[pattern] = re.compile(pattern, re.IGNORECASE)
+                        compiled = _skip_regex_cache[pattern]
+                        match = compiled.search(normalized)
                         if match and match.start() < earliest_skip_pos:
                             earliest_skip_pos = match.start()
                             matched_marker = pattern
@@ -1716,7 +1988,7 @@ Respond with JSON:
                             earliest_skip_pos = pos
                             matched_marker = pattern
                 except re.error as e:
-                    logger.warning(f"Invalid skip marker regex '{pattern}': {e}")
+                    logger.debug(f"Invalid skip marker regex '{pattern}': {e}")
             
             if matched_marker and earliest_skip_pos < len(normalized):
                 logger.info(f"Skip marker '{matched_marker}' found at position {earliest_skip_pos}, truncating text (was {len(normalized)} chars)")
@@ -1999,12 +2271,15 @@ Respond with JSON only:
                                        ocr_result: OCRResult,
                                        progress_callback: callable = None) -> Optional[ExtractionEvidence]:
         """Stage 4: Extract metadata using LLM based on document type schema."""
+        logger.info(f"Starting metadata extraction for document {document.id}, doc_type: {classification.doc_type_slug}")
+        
         # Get document type fields and preamble
         result = await self.db.execute(
             text("SELECT key, label, field_type, required, enum_values, regex FROM document_type_fields WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug)"),
             {"slug": classification.doc_type_slug}
         )
         fields = result.fetchall()
+        logger.info(f"Found {len(fields)} fields for document type {classification.doc_type_slug}")
 
         # Get preamble
         preamble_result = await self.db.execute(
@@ -2015,6 +2290,7 @@ Respond with JSON only:
         preamble = preamble_row[0] if preamble_row else ""
 
         if not fields:
+            logger.info(f"Skipping LLM extraction for document {document.id}: No fields configured for type '{classification.doc_type_slug}'")
             llm_dir = document_dir / "llm"
             llm_dir.mkdir(exist_ok=True)
             with open(llm_dir / "extraction_skipped.json", "w") as f:
@@ -2275,6 +2551,89 @@ Respond with JSON only:
         normalized_result = self._normalize_extraction_data(result)
         evidence_data = ExtractionEvidence(**normalized_result)
         validation_errors = self._validate_evidence(evidence_data, ocr_result.pages)
+        
+        # Build verified.json
+        verified = {}
+        for key in evidence_data.data.keys():
+            value = evidence_data.data.get(key)
+            evidence_spans = evidence_data.evidence.get(key, [])
+            
+            if value is not None and evidence_spans:
+                # Validate first span
+                first_span = evidence_spans[0]
+                if first_span.page < len(ocr_result.pages):
+                    page_text = ocr_result.pages[first_span.page]["text"]
+                    if first_span.start < len(page_text) and first_span.end <= len(page_text):
+                        snippet = page_text[first_span.start:first_span.end]
+                        verified[key] = {
+                            "verified": True,
+                            "method": "evidence",
+                            "page": first_span.page,
+                            "snippet": snippet
+                        }
+                        continue
+            
+            verified[key] = {
+                "verified": False,
+                "method": "none",
+                "page": None,
+                "snippet": None
+            }
+        
+        # Apply hard validators and add to validation_errors
+        validation_errors.extend(self._validate_hard_validators(evidence_data.data, fields))
+        
+        # Check required fields
+        for key, label, field_type, is_required, enum_values, regex in fields:
+            if is_required:
+                val = evidence_data.data.get(key)
+                if val is None or val == "":
+                    validation_errors.append(f"missing_required_field:{key}")
+                else:
+                    if not verified.get(key, {}).get("verified", False):
+                        validation_errors.append(f"missing_verified_required_field:{key}")
+        
+        # Optional: RobBERT evidence retrieval for unverified required fields
+        if os.getenv("MPROOF_ROBBERT_EVIDENCE") == "1":
+            try:
+                from sentence_transformers import SentenceTransformer, util
+                robbert_model = SentenceTransformer("NetherlandsForensicInstitute/robbert-2022-dutch-sentence-transformers")
+                
+                # Get required fields without evidence
+                unverified_required = [
+                    (key, label, evidence_data.data.get(key))
+                    for key, label, field_type, is_required, enum_values, regex in fields
+                    if is_required and not verified.get(key, {}).get("verified", False) and evidence_data.data.get(key) is not None
+                ]
+                
+                if unverified_required:
+                    # Split filtered_text into candidate sentences
+                    sentences = [s.strip() for s in filtered_text.split('\n') if 20 <= len(s.strip()) <= 300][:500]
+                    
+                    if sentences:
+                        # Embed sentences once
+                        sentence_embeddings = robbert_model.encode(sentences, show_progress_bar=False, convert_to_numpy=True)
+                        
+                        for key, label, value in unverified_required:
+                            if value is None:
+                                continue
+                            
+                            query_text = f"{label or key}: {value}"
+                            query_embedding = robbert_model.encode([query_text], show_progress_bar=False, convert_to_numpy=True)[0]
+                            
+                            # Find best match
+                            scores = util.cos_sim(query_embedding, sentence_embeddings)[0]
+                            best_idx = int(scores.argmax())
+                            best_score = float(scores[best_idx])
+                            
+                            if best_score >= 0.45:
+                                verified[key]["semantic_snippet"] = sentences[best_idx]
+                                verified[key]["semantic_score"] = best_score
+                                logger.debug(f"RobBERT found semantic match for {key}: score={best_score:.3f}")
+            except ImportError:
+                pass  # sentence-transformers not available, skip silently
+            except Exception as e:
+                logger.debug(f"RobBERT evidence retrieval failed: {e}")
 
         # Save results
         await self._update_progress(document.id, 82, f"extracting_metadata_saving{post_stage_suffix}", progress_callback)
@@ -2286,6 +2645,9 @@ Respond with JSON only:
 
         with open(metadata_dir / "validation.json", "w") as f:
             json.dump({"errors": validation_errors}, f, indent=2)
+        
+        with open(metadata_dir / "verified.json", "w") as f:
+            json.dump(verified, f, indent=2)
 
         with open(metadata_dir / "evidence.json", "w") as f:
             json.dump(self._json_serialize(evidence_data.evidence), f, indent=2)
@@ -2564,6 +2926,97 @@ Replace null with extracted values. Keep null if not found."""
         
         return result
 
+    def _validate_iban(self, value: str) -> bool:
+        """Validate IBAN checksum."""
+        if not value:
+            return False
+        # Remove spaces/hyphens
+        iban = re.sub(r'[\s\-]', '', value.upper())
+        if len(iban) < 15 or len(iban) > 34:
+            return False
+        # Basic format check: 2 letters + 2 digits + alphanumeric
+        if not re.match(r'^[A-Z]{2}\d{2}[A-Z0-9]+$', iban):
+            return False
+        # Simple checksum validation (mod 97)
+        try:
+            rearranged = iban[4:] + iban[:4]
+            numeric = ''.join(str(ord(c) - ord('A') + 10) if c.isalpha() else c for c in rearranged)
+            remainder = int(numeric) % 97
+            return remainder == 1
+        except:
+            return False
+    
+    def _parse_date(self, value: Any) -> Optional[str]:
+        """Parse date to YYYY-MM-DD format."""
+        if not value:
+            return None
+        value_str = str(value).strip()
+        # Try common formats
+        patterns = [
+            (r'(\d{4})-(\d{2})-(\d{2})', lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),
+            (r'(\d{2})-(\d{2})-(\d{4})', lambda m: f"{m.group(3)}-{m.group(2)}-{m.group(1)}"),
+            (r'(\d{2})/(\d{2})/(\d{4})', lambda m: f"{m.group(3)}-{m.group(2)}-{m.group(1)}"),
+        ]
+        for pattern, formatter in patterns:
+            match = re.match(pattern, value_str)
+            if match:
+                try:
+                    result = formatter(match)
+                    # Validate it's a real date
+                    from datetime import datetime
+                    datetime.strptime(result, "%Y-%m-%d")
+                    return result
+                except:
+                    pass
+        return None
+    
+    def _parse_amount(self, value: Any) -> Optional[str]:
+        """Parse amount to Decimal string."""
+        if not value:
+            return None
+        value_str = str(value).strip()
+        # Remove currency symbols and spaces
+        value_str = re.sub(r'[€$£\s]', '', value_str)
+        # Replace comma with dot for decimal
+        value_str = value_str.replace(',', '.')
+        # Extract number
+        match = re.search(r'(\d+\.?\d*)', value_str)
+        if match:
+            try:
+                float_val = float(match.group(1))
+                return str(float_val)
+            except:
+                pass
+        return None
+    
+    def _validate_hard_validators(self, data: Dict[str, Any], fields: List[Tuple]) -> List[str]:
+        """Apply hard validators (IBAN, date, amount) and return errors."""
+        errors = []
+        for key, label, field_type, is_required, enum_values, regex in fields:
+            value = data.get(key)
+            if value is None:
+                continue
+            
+            key_lower = key.lower()
+            label_lower = label.lower()
+            
+            # IBAN validation
+            if "iban" in key_lower or field_type == "iban":
+                if not self._validate_iban(str(value)):
+                    errors.append(f"invalid_iban:{key}")
+            
+            # Date validation
+            if "date" in key_lower or field_type == "date":
+                if not self._parse_date(value):
+                    errors.append(f"invalid_date:{key}")
+            
+            # Amount validation
+            if "amount" in key_lower or field_type in ("money", "currency"):
+                if not self._parse_amount(value):
+                    errors.append(f"invalid_amount:{key}")
+        
+        return errors
+    
     def _validate_evidence(self, evidence: ExtractionEvidence, pages: List[Dict[str, Any]]) -> List[str]:
         """Validate that evidence spans match the actual text."""
         errors = []
@@ -2720,6 +3173,12 @@ Replace null with extracted values. Keep null if not found."""
         risk_score = min(100, risk_score)
 
         analysis = RiskAnalysis(risk_score=risk_score, signals=signals)
+        
+        # Log risk analysis summary
+        if signals:
+            logger.info(f"Document {document.id} risk analysis: score={risk_score}, {len(signals)} signal(s) found")
+        else:
+            logger.info(f"Document {document.id} risk analysis: score={risk_score}, no signals found (document appears clean)")
 
         # Save artifact
         risk_dir = document_dir / "risk"

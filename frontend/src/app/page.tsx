@@ -107,7 +107,7 @@ export default function Dashboard() {
     queryFn: getClassifierStatus,
     refetchInterval: (query) => {
       const status = query.state.data as ClassifierStatus | undefined;
-      return status?.running ? 1500 : 15000;
+      return status?.running ? 1000 : 15000;
     },
   });
 
@@ -462,10 +462,23 @@ export default function Dashboard() {
                   <div className="bg-white/10 rounded-full h-1.5 overflow-hidden">
                     <div className="h-1.5 bg-gradient-to-r from-blue-500 via-purple-500 to-blue-500 rounded-full animate-[shimmer_2s_ease-in-out_infinite]" style={{ width: '100%', backgroundSize: '200% 100%' }} />
                   </div>
-                  <div className="mt-1 text-white/50 text-[10px]">
+                  <div className="mt-1 text-white/50 text-[10px] space-y-0.5">
                     {classifierStatus?.started_at 
                       ? `Gestart: ${new Date(classifierStatus.started_at).toLocaleTimeString('nl-NL')}`
                       : 'Bezig met laden van documenten...'}
+                    {(classifierStatus?.current_file || classifierStatus?.current_label) && (
+                      <div className="text-blue-200">
+                        {classifierStatus.current_label && (
+                          <span className="mr-2">Type: {classifierStatus.current_label}</span>
+                        )}
+                        {classifierStatus.current_file && (
+                          <span>Bestand: {classifierStatus.current_file}</span>
+                        )}
+                        {classifierStatus.ocr_rotation != null && classifierStatus.ocr_rotation !== 0 && (
+                          <span className="ml-2 text-blue-300">OCR: {classifierStatus.ocr_rotation}°</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

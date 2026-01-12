@@ -77,6 +77,52 @@
             0% { transform: translateY(-100%); }
             100% { transform: translateY(100%); }
         }
+        
+        .animate-slide-in {
+            animation: slideIn 0.8s ease-out forwards;
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        
+        @keyframes slideIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .animate-scale-in {
+            animation: scaleIn 0.6s ease-out forwards;
+            opacity: 0;
+            transform: scale(0.9);
+        }
+        
+        @keyframes scaleIn {
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        
+        .animate-glow-pulse {
+            animation: glowPulse 2s ease-in-out infinite;
+        }
+        
+        @keyframes glowPulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(102, 126, 234, 0.3); }
+            50% { box-shadow: 0 0 40px rgba(102, 126, 234, 0.6); }
+        }
+        
+        .progress-bar {
+            background: linear-gradient(90deg, #667eea, #764ba2, #f093fb);
+            background-size: 200% 100%;
+            animation: progressFlow 2s linear infinite;
+        }
+        
+        @keyframes progressFlow {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
     </style>
 </head>
 <body class="bg-slate-950 text-white antialiased">
@@ -129,19 +175,19 @@
             
             <!-- Stats -->
             <div class="grid grid-cols-2 md:grid-cols-4 gap-8 max-w-4xl mx-auto">
-                <div class="text-center">
+                <div class="text-center animate-slide-in" style="animation-delay: 0.1s;">
                     <div class="text-4xl font-bold gradient-text mb-2">&lt;1ms</div>
                     <div class="text-slate-400 text-sm">NB Classificatie</div>
                 </div>
-                <div class="text-center">
+                <div class="text-center animate-slide-in" style="animation-delay: 0.2s;">
                     <div class="text-4xl font-bold gradient-text mb-2">100ms</div>
                     <div class="text-slate-400 text-sm">BERT Analyse</div>
                 </div>
-                <div class="text-center">
+                <div class="text-center animate-slide-in" style="animation-delay: 0.3s;">
                     <div class="text-4xl font-bold gradient-text mb-2">5+</div>
                     <div class="text-slate-400 text-sm">Fraud Signals</div>
                 </div>
-                <div class="text-center">
+                <div class="text-center animate-slide-in" style="animation-delay: 0.4s;">
                     <div class="text-4xl font-bold gradient-text mb-2">∞</div>
                     <div class="text-slate-400 text-sm">Document Types</div>
                 </div>
@@ -263,9 +309,9 @@
                         <i class="fas fa-shield-halved text-red-400"></i>
                         <span class="text-red-400 text-sm font-medium">Fraud Detection</span>
                     </div>
-                    <h2 class="text-4xl md:text-5xl font-bold mb-6">
+                    <h2 class="text-4xl md:text-5xl font-bold mb-6 animate-slide-in">
                         Detecteer Fraude
-                        <span class="gradient-text">Voordat Het Te Laat Is</span>
+                        <span class="gradient-text animate-glow-pulse inline-block">Voordat Het Te Laat Is</span>
                     </h2>
                     <p class="text-slate-400 text-lg mb-8">
                         MProof analyseert documenten op meerdere niveaus om manipulatie en vervalsing te detecteren.
@@ -647,6 +693,296 @@
         </div>
     </section>
 
+    <!-- Incremental Training Section -->
+    <section class="py-24 px-4 relative bg-gradient-to-b from-slate-950 via-purple-950/10 to-slate-950">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-16">
+                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 mb-4">
+                    <i class="fas fa-sync-alt text-purple-400"></i>
+                    <span class="text-purple-400 text-sm font-medium">Smart Training</span>
+                </div>
+                <h2 class="text-4xl md:text-5xl font-bold mb-4 animate-slide-in">
+                    <span class="gradient-text">Incrementeel Trainen</span>
+                    <br>Alleen Wat Nodig Is
+                </h2>
+                <p class="text-slate-400 text-lg max-w-2xl mx-auto">
+                    Train modellen alleen op nieuwe of gewijzigde documenten. Snel, efficiënt en automatisch.
+                </p>
+            </div>
+            
+            <div class="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+                <div class="p-6 rounded-2xl bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/20 card-hover animate-scale-in">
+                    <div class="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center mb-4">
+                        <i class="fas fa-chart-line text-purple-400 text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Naive Bayes Training</h3>
+                    <p class="text-slate-400 mb-4">Incrementeel trainen met SHA-gebaseerde caching:</p>
+                    <ul class="space-y-2 text-sm text-slate-300">
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-purple-400 mt-1"></i>
+                            <span>Automatische detectie van nieuwe/gewijzigde bestanden</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-purple-400 mt-1"></i>
+                            <span>Text caching voor snelle hertraining</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-purple-400 mt-1"></i>
+                            <span>Real-time progress tracking met OCR rotation info</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-purple-400 mt-1"></i>
+                            <span>Graceful shutdown - training stopt netjes</span>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="p-6 rounded-2xl bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-blue-500/20 card-hover animate-scale-in" style="animation-delay: 0.2s;">
+                    <div class="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center mb-4">
+                        <i class="fas fa-brain text-blue-400 text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">BERT Training</h3>
+                    <p class="text-slate-400 mb-4">Deep learning met intelligente caching:</p>
+                    <ul class="space-y-2 text-sm text-slate-300">
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-blue-400 mt-1"></i>
+                            <span>Incrementeel trainen op nieuwe documenten</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-blue-400 mt-1"></i>
+                            <span>Training summary met model insights</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-blue-400 mt-1"></i>
+                            <span>Multi-model support per use case</span>
+                        </li>
+                        <li class="flex items-start gap-2">
+                            <i class="fas fa-check text-blue-400 mt-1"></i>
+                            <span>RobBERT model voor evidence retrieval</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <!-- Training Progress Visual -->
+            <div class="mt-12 max-w-3xl mx-auto">
+                <div class="gradient-border">
+                    <div class="gradient-border-inner p-8">
+                        <div class="mb-4">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-sm text-slate-300">Training Progress</span>
+                                <span class="text-sm font-semibold text-purple-400">75%</span>
+                            </div>
+                            <div class="h-3 bg-slate-800 rounded-full overflow-hidden">
+                                <div class="h-full w-3/4 progress-bar rounded-full"></div>
+                            </div>
+                        </div>
+                        <div class="space-y-3">
+                            <div class="flex items-center gap-3 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                                <div class="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></div>
+                                <div class="flex-1">
+                                    <div class="text-sm font-medium text-white">Type: factuur</div>
+                                    <div class="text-xs text-slate-400">Bestand: invoice_2024_001.pdf</div>
+                                </div>
+                                <div class="text-xs text-blue-400">OCR: 90°</div>
+                            </div>
+                            <div class="flex items-center gap-3 p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 opacity-50">
+                                <div class="w-2 h-2 rounded-full bg-slate-600"></div>
+                                <div class="flex-1">
+                                    <div class="text-sm text-slate-500">Type: bankafschrift</div>
+                                    <div class="text-xs text-slate-600">Wachtend...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Multi-Model & Skip Markers Section -->
+    <section class="py-24 px-4 relative">
+        <div class="max-w-7xl mx-auto">
+            <div class="grid lg:grid-cols-2 gap-16">
+                <!-- Multi-Model Support -->
+                <div class="animate-slide-in">
+                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 mb-4">
+                        <i class="fas fa-layer-group text-cyan-400"></i>
+                        <span class="text-cyan-400 text-sm font-medium">Multi-Model Architecture</span>
+                    </div>
+                    <h2 class="text-4xl md:text-5xl font-bold mb-6">
+                        Train Verschillende Modellen
+                        <span class="gradient-text">Per Use Case</span>
+                    </h2>
+                    <p class="text-slate-400 text-lg mb-8">
+                        Organiseer training data per model (backoffice, mdoc, etc.) en train gespecialiseerde modellen voor elk gebruik.
+                    </p>
+                    
+                    <div class="space-y-4">
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-cyan-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-folder text-cyan-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Model Folders</h4>
+                                <p class="text-slate-400 text-sm">Organiseer data per model: <code class="text-cyan-400">backoffice/</code>, <code class="text-cyan-400">mdoc/</code></p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-sitemap text-green-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Automatic Fallback</h4>
+                                <p class="text-slate-400 text-sm">Als een model niet bestaat, valt terug op default model</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-trophy text-purple-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Best Model Selection</h4>
+                                <p class="text-slate-400 text-sm">BERT probeert alle modellen en kiest de beste confidence</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Skip Markers -->
+                <div class="animate-slide-in" style="animation-delay: 0.2s;">
+                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-yellow-500/10 border border-yellow-500/20 mb-4">
+                        <i class="fas fa-filter text-yellow-400"></i>
+                        <span class="text-yellow-400 text-sm font-medium">Skip Markers</span>
+                    </div>
+                    <h2 class="text-4xl md:text-5xl font-bold mb-6">
+                        Filter Onnodige Tekst
+                        <span class="gradient-text">Automatisch</span>
+                    </h2>
+                    <p class="text-slate-400 text-lg mb-8">
+                        Skip markers stoppen tekst extractie bij disclaimers, footers, of andere irrelevante secties.
+                    </p>
+                    
+                    <div class="space-y-4">
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-gavel text-yellow-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Disclaimers & Legal Text</h4>
+                                <p class="text-slate-400 text-sm">Stop automatisch bij juridische teksten</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-orange-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-file-signature text-orange-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Signatures & Footers</h4>
+                                <p class="text-slate-400 text-sm">Filter herhaalde page footers en handtekeningen</p>
+                            </div>
+                        </div>
+                        
+                        <div class="flex items-start gap-4 p-4 rounded-xl bg-white/5 border border-white/10">
+                            <div class="w-10 h-10 rounded-lg bg-red-500/20 flex items-center justify-center flex-shrink-0">
+                                <i class="fas fa-code text-red-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-1">Regex Support</h4>
+                                <p class="text-slate-400 text-sm">Gebruik regex patterns voor complexe matching</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Skip Marker Example -->
+                    <div class="mt-6 p-4 rounded-xl bg-slate-900 border border-slate-700">
+                        <div class="text-xs text-slate-400 mb-2">Voorbeeld:</div>
+                        <div class="text-sm text-slate-300 font-mono">
+                            <div class="text-green-400">✓ Tekst voor marker...</div>
+                            <div class="text-red-400 line-through">✗ "Getekend te Amsterdam" → Stop hier</div>
+                            <div class="text-slate-600">✗ Footer tekst wordt genegeerd</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Evidence-Based Verification Section -->
+    <section class="py-24 px-4 relative bg-gradient-to-b from-slate-950 via-green-950/10 to-slate-950">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-16">
+                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/10 border border-green-500/20 mb-4">
+                    <i class="fas fa-check-circle text-green-400"></i>
+                    <span class="text-green-400 text-sm font-medium">Evidence-Based Verification</span>
+                </div>
+                <h2 class="text-4xl md:text-5xl font-bold mb-4 animate-slide-in">
+                    <span class="gradient-text">Verifieer Metadata</span>
+                    <br>Met Bewijs
+                </h2>
+                <p class="text-slate-400 text-lg max-w-2xl mx-auto">
+                    MProof verifieert geëxtraheerde velden met quote evidence en detecteert ontbrekende of inconsistente data.
+                </p>
+            </div>
+            
+            <div class="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
+                <div class="p-6 rounded-2xl bg-gradient-to-br from-green-500/10 to-emerald-500/10 border border-green-500/20 card-hover animate-scale-in">
+                    <div class="w-12 h-12 rounded-xl bg-green-500/20 flex items-center justify-center mb-4">
+                        <i class="fas fa-quote-left text-green-400 text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Quote Evidence</h3>
+                    <p class="text-slate-400 text-sm mb-4">Elk geëxtraheerd veld heeft een quote uit het document als bewijs.</p>
+                    <div class="p-3 rounded-lg bg-slate-900 border border-slate-700">
+                        <div class="text-xs text-green-400 mb-1">IBAN:</div>
+                        <div class="text-sm text-slate-300 font-mono">NL91 ABNA 0417 1643 00</div>
+                        <div class="text-xs text-slate-500 mt-2">Quote: "...rekeningnummer NL91 ABNA 0417 1643 00..."</div>
+                    </div>
+                </div>
+                
+                <div class="p-6 rounded-2xl bg-gradient-to-br from-yellow-500/10 to-orange-500/10 border border-yellow-500/20 card-hover animate-scale-in" style="animation-delay: 0.2s;">
+                    <div class="w-12 h-12 rounded-xl bg-yellow-500/20 flex items-center justify-center mb-4">
+                        <i class="fas fa-exclamation-triangle text-yellow-400 text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Missing Fields</h3>
+                    <p class="text-slate-400 text-sm mb-4">Detecteert ontbrekende verplichte velden met RobBERT evidence retrieval.</p>
+                    <div class="space-y-2">
+                        <div class="flex items-center gap-2 text-sm">
+                            <i class="fas fa-check text-green-400"></i>
+                            <span class="text-slate-300">IBAN: ✓ Gevonden</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-sm">
+                            <i class="fas fa-times text-red-400"></i>
+                            <span class="text-slate-300">Bedrag: ✗ Ontbreekt</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-sm">
+                            <i class="fas fa-search text-blue-400"></i>
+                            <span class="text-slate-300">RobBERT zoekt in document...</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="p-6 rounded-2xl bg-gradient-to-br from-red-500/10 to-pink-500/10 border border-red-500/20 card-hover animate-scale-in" style="animation-delay: 0.4s;">
+                    <div class="w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center mb-4">
+                        <i class="fas fa-balance-scale text-red-400 text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3">Amount Inconsistency</h3>
+                    <p class="text-slate-400 text-sm mb-4">Vergelijkt bedragen in verschillende delen van het document.</p>
+                    <div class="p-3 rounded-lg bg-slate-900 border border-red-500/30">
+                        <div class="text-xs text-red-400 mb-2">⚠ Inconsistentie gedetecteerd:</div>
+                        <div class="text-sm text-slate-300 space-y-1">
+                            <div>Factuurtotaal: €1.250,00</div>
+                            <div>Regel totaal: €1.200,00</div>
+                            <div class="text-red-400 font-semibold">Verschil: €50,00</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <!-- MCP Integration Section -->
     <section class="py-24 px-4 relative">
         <div class="max-w-7xl mx-auto">
@@ -724,11 +1060,18 @@
                             <i class="fas fa-rocket text-4xl"></i>
                         </div>
                     </div>
-                    <h2 class="text-3xl md:text-4xl font-bold mb-4">
+                    <h2 class="text-3xl md:text-4xl font-bold mb-4 animate-slide-in">
                         Ready to Transform Your Document Workflow?
                     </h2>
-                    <p class="text-slate-400 text-lg mb-8 max-w-2xl mx-auto">
+                    <p class="text-slate-400 text-lg mb-8 max-w-2xl mx-auto animate-slide-in" style="animation-delay: 0.2s;">
                         MProof combineert de kracht van machine learning, deep learning, en LLMs voor de ultieme document intelligence oplossing.
+                        <br><br>
+                        <span class="text-purple-400 font-semibold">✨ Nieuwe Features:</span>
+                        <br>• Incrementeel trainen voor snellere updates
+                        <br>• Multi-model support per use case
+                        <br>• Skip markers voor automatische tekst filtering
+                        <br>• Evidence-based verification met RobBERT
+                        <br>• Configurable fraud detection (ELA/EXIF)
                     </p>
                     <div class="flex flex-col sm:flex-row gap-4 justify-center">
                         <button class="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl font-semibold text-lg hover:opacity-90 transition-all">
@@ -780,6 +1123,13 @@
                 if (entry.isIntersecting) {
                     entry.target.classList.add('opacity-100', 'translate-y-0');
                     entry.target.classList.remove('opacity-0', 'translate-y-10');
+                    // Trigger custom animations
+                    if (entry.target.classList.contains('animate-slide-in')) {
+                        entry.target.style.animationPlayState = 'running';
+                    }
+                    if (entry.target.classList.contains('animate-scale-in')) {
+                        entry.target.style.animationPlayState = 'running';
+                    }
                 }
             });
         }, { threshold: 0.1 });
@@ -787,6 +1137,12 @@
         document.querySelectorAll('.card-hover').forEach(card => {
             card.classList.add('opacity-0', 'translate-y-10', 'transition-all', 'duration-700');
             observer.observe(card);
+        });
+        
+        // Observe animated elements
+        document.querySelectorAll('.animate-slide-in, .animate-scale-in').forEach(el => {
+            el.style.animationPlayState = 'paused';
+            observer.observe(el);
         });
     </script>
 </body>

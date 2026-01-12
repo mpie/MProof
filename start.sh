@@ -132,5 +132,24 @@ echo "   Backend:  lsof -ti:8000 | xargs kill -9  (or: pkill -f 'uvicorn app.mai
 echo "   Frontend: lsof -ti:3000 | xargs kill -9  (or: pkill -f 'next dev')"
 
 # Wait for user interrupt
-trap "echo; echo 'Stopping services...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT
+cleanup() {
+    echo
+    echo "Stopping services gracefully..."
+    # Send SIGTERM first for graceful shutdown (allows lifespan shutdown handler to run)
+    kill -TERM $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
+    # Wait up to 5 seconds for graceful shutdown (training tasks need time to cancel)
+    echo "Waiting for graceful shutdown (max 5 seconds)..."
+    for i in {1..5}; do
+        if ! kill -0 $BACKEND_PID 2>/dev/null && ! kill -0 $FRONTEND_PID 2>/dev/null; then
+            echo "✓ Services stopped gracefully"
+            exit 0
+        fi
+        sleep 1
+    done
+    # Force kill if still running
+    echo "Force killing remaining processes..."
+    kill -9 $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
+    exit
+}
+trap cleanup INT TERM
 wait

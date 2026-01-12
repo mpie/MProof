@@ -145,7 +145,7 @@ async def analyze_document(
             raise HTTPException(status_code=404, detail="Document not found")
 
         # Reset document status for re-analysis
-        from datetime import datetime
+        from datetime import datetime, timezone
         await session.execute(
             text("""UPDATE documents SET
                    status = 'queued', progress = 0, stage = NULL,
@@ -155,7 +155,7 @@ async def analyze_document(
                    metadata_evidence_json = NULL, risk_score = NULL,
                    risk_signals_json = NULL, updated_at = :updated_at
                    WHERE id = :document_id"""),
-            {"document_id": document_id, "updated_at": datetime.now()}
+            {"document_id": document_id, "updated_at": datetime.now(timezone.utc)}
         )
         await session.commit()
         

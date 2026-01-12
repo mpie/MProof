@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import pickle
+import threading
 import unicodedata
 import re
 from dataclasses import dataclass
@@ -33,6 +34,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Set environment variables to prevent oversubscription on macOS
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 # Lazy load sentence-transformers to avoid slow startup
 _model = None
@@ -114,6 +120,8 @@ class BertClassifierService:
         self._finished_at: Optional[str] = None
         self._last_error: Optional[str] = None
         self._last_summary: Optional[Dict[str, Any]] = None
+        self._train_task: Optional[asyncio.Task] = None
+        self._cancelled = threading.Event()  # Cancellation flag for sync thread
         
         # Cached classifiers per model
         self._classifiers: Dict[str, Dict[str, Any]] = {}
@@ -178,6 +186,7 @@ class BertClassifierService:
             "embedding_dim": classifier.get("embedding_dim"),
             "threshold": classifier.get("threshold", 0.7),
             "bert_model": _model_name,
+            "total_documents": sum(classifier.get("samples_per_label", {}).values()),
         }
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2)
@@ -186,6 +195,19 @@ class BertClassifierService:
         """Get the status of the BERT classifier."""
         classifier = self._load_classifier(model_name)
         
+        # If we have a classifier but no last_summary, create one from the classifier
+        last_summary = self._last_summary
+        if not last_summary and classifier:
+            last_summary = {
+                "success": True,
+                "model_name": model_name,
+                "labels": classifier.get("labels", []),
+                "samples_per_label": classifier.get("samples_per_label", {}),
+                "total_documents": sum(classifier.get("samples_per_label", {}).values()),
+                "embedding_dim": classifier.get("embedding_dim"),
+                "threshold": classifier.get("threshold", 0.7),
+            }
+        
         return {
             "running": self._running,
             "model_exists": classifier is not None,
@@ -193,7 +215,7 @@ class BertClassifierService:
             "started_at": self._started_at,
             "finished_at": self._finished_at,
             "last_error": self._last_error,
-            "last_summary": self._last_summary,
+            "last_summary": last_summary,
             "model_name": model_name,
             "bert_model": _model_name,
             "labels": classifier.get("labels", []) if classifier else [],
@@ -224,16 +246,48 @@ class BertClassifierService:
             self._running = True
             self._started_at = _utc_now_iso()
             self._last_error = None
+            self._cancelled.clear()  # Reset cancellation flag
             logger.info(f"Starting BERT training for model: {model_name or 'default'}")
         
         try:
+            # Load skip markers and compute signature before thread
+            from app.main import async_session_maker
+            from sqlalchemy import text
+            import hashlib
+            import json
+            
+            pdf_max_pages = int(os.getenv("MPROOF_TRAIN_PDF_MAX_PAGES", "5"))
+            skip_markers = []
+            
+            async with async_session_maker() as session:
+                result = await session.execute(
+                    text("SELECT pattern, is_regex FROM skip_markers WHERE is_active = 1 ORDER BY pattern ASC, is_regex ASC")
+                )
+                rows = result.fetchall()
+                skip_markers = [(row.pattern, bool(row.is_regex)) for row in rows]
+            
+            # Force sort for determinism
+            skip_markers = sorted(skip_markers, key=lambda x: (x[0], int(x[1])))
+            skip_sig = hashlib.sha256(json.dumps(skip_markers, sort_keys=True).encode()).hexdigest()[:8]
+            
+            # Store for training thread
+            self._train_skip_markers = skip_markers
+            self._train_skip_sig = skip_sig
+            self._train_pdf_max_pages = pdf_max_pages
+            
             logger.info("BERT training: Starting synchronous training in thread")
+            # Store reference to current task for cancellation
+            self._train_task = asyncio.current_task()
             result = await asyncio.to_thread(
                 self._train_sync, model_name, threshold, dataset_dir
             )
             logger.info(f"BERT training completed successfully: {result.get('labels', [])}")
             self._last_summary = result
             return result
+        except asyncio.CancelledError:
+            logger.info("BERT training task cancelled")
+            self._last_error = "Training cancelled"
+            raise
         except Exception as e:
             self._last_error = str(e)
             logger.exception(f"BERT training failed: {e}")
@@ -241,6 +295,7 @@ class BertClassifierService:
         finally:
             self._running = False
             self._finished_at = _utc_now_iso()
+            self._train_task = None
             logger.info("BERT training: Marked as finished")
     
     def _train_sync(
@@ -251,8 +306,9 @@ class BertClassifierService:
     ) -> Dict[str, Any]:
         """Synchronous training implementation."""
         from app.services.doc_type_classifier import (
-            _project_root, _default_dataset_dir, _extract_text
+            _project_root, _default_dataset_dir, _extract_text, _compute_sha256
         )
+        import hashlib
         
         # Determine dataset directory
         if dataset_dir is None:
@@ -263,6 +319,15 @@ class BertClassifierService:
         
         if not dataset_dir.exists():
             raise ValueError(f"Dataset directory not found: {dataset_dir}")
+        
+        # Get training params from instance
+        skip_markers = getattr(self, '_train_skip_markers', [])
+        skip_sig = getattr(self, '_train_skip_sig', '')
+        pdf_max_pages = getattr(self, '_train_pdf_max_pages', 5)
+        
+        # Create cache directory
+        cache_dir = self._model_dir / "bert_text_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Collect training data
         label_texts: Dict[str, List[str]] = {}
@@ -276,12 +341,34 @@ class BertClassifierService:
             texts = []
             
             for file_path in subdir.rglob("*"):
+                # Check cancellation flag
+                if self._cancelled.is_set():
+                    logger.info("BERT training cancelled, stopping file processing")
+                    break
+                
                 if file_path.is_file() and file_path.suffix.lower() in {'.pdf', '.docx', '.doc', '.txt'}:
                     try:
-                        text = _extract_text(file_path)
+                        # Check cache (incremental: only re-extract if cache missing or file changed)
+                        sha = _compute_sha256(file_path)
+                        cache_path = cache_dir / f"{sha}.{skip_sig}.p{pdf_max_pages}.txt"
+                        
+                        if cache_path.exists():
+                            # Cache hit - use cached text (incremental behavior)
+                            text = cache_path.read_text(encoding='utf-8', errors='ignore')
+                        else:
+                            # Check cancellation before expensive extraction
+                            if self._cancelled.is_set():
+                                logger.info("BERT training cancelled, stopping before extraction")
+                                break
+                            # Cache miss - extract and cache (new or changed file)
+                            text = _extract_text(file_path, skip_markers=skip_markers, pdf_max_pages=pdf_max_pages)
+                            if text:
+                                # Truncate to first 5000 chars for efficiency
+                                text = text[:5000]
+                                cache_path.write_text(text, encoding='utf-8')
+                        
                         if text and len(text.strip()) > 50:
-                            # Truncate to first 5000 chars for efficiency
-                            texts.append(text[:5000])
+                            texts.append(text)
                             file_count += 1
                     except Exception as e:
                         logger.warning(f"Failed to extract text from {file_path}: {e}")
