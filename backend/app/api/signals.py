@@ -93,15 +93,9 @@ def _format_datetime(dt) -> str:
 
 
 def _db_row_to_response(row) -> SignalResponse:
-    """Convert a database row to SignalResponse, handling schema differences."""
-    # Handle both old schema (is_system, compute_method) and new schema (source, compute_kind)
-    source = "builtin" if getattr(row, 'is_system', False) else "user"
-    if hasattr(row, 'source'):
-        source = row.source
-    
-    compute_kind = getattr(row, 'compute_method', 'builtin')
-    if hasattr(row, 'compute_kind'):
-        compute_kind = row.compute_kind
+    """Convert a database row to SignalResponse."""
+    source = getattr(row, 'source', 'user') or 'user'
+    compute_kind = getattr(row, 'compute_kind', 'builtin') or 'builtin'
     
     # Parse config_json if it's a string
     config = row.config_json
@@ -134,7 +128,7 @@ async def load_all_signals_from_db() -> list[Signal]:
             text("""
                 SELECT key, label, description, signal_type, 
                        COALESCE(compute_kind, 'builtin') as compute_kind,
-                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
+                       COALESCE(source, 'user') as source,
                        config_json
                 FROM classification_signals
                 ORDER BY source DESC, key ASC
@@ -179,7 +173,7 @@ async def list_signals():
             text("""
                 SELECT id, key, label, description, signal_type, 
                        COALESCE(compute_kind, 'builtin') as compute_kind,
-                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
+                       COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
                 ORDER BY source DESC, key ASC
@@ -192,7 +186,7 @@ async def list_signals():
         user_count = 0
 
         for row in rows:
-            source = row.source if hasattr(row, 'source') else ("builtin" if getattr(row, 'is_system', False) else "user")
+            source = row.source or 'user'
             if source == "builtin":
                 builtin_count += 1
             else:
@@ -213,7 +207,7 @@ async def list_signals():
                 description=row.description,
                 signal_type=row.signal_type,
                 source=source,
-                compute_kind=row.compute_kind if hasattr(row, 'compute_kind') else (getattr(row, 'compute_method', None) or "builtin"),
+                compute_kind=row.compute_kind or "builtin",
                 config_json=config,
                 created_at=_format_datetime(row.created_at),
                 updated_at=_format_datetime(row.updated_at),
@@ -236,7 +230,7 @@ async def get_signal(key: str):
             text("""
                 SELECT id, key, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
-                       COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source,
+                       COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
                 WHERE key = :key
@@ -248,7 +242,7 @@ async def get_signal(key: str):
         if not row:
             raise HTTPException(status_code=404, detail=f"Signal '{key}' not found")
 
-        source = row.source if hasattr(row, 'source') else ("builtin" if getattr(row, 'is_system', False) else "user")
+        source = row.source
         
         config = row.config_json
         if isinstance(config, str):
@@ -364,7 +358,7 @@ async def update_signal(key: str, update: SignalUpdate):
     async with async_session_maker() as session:
         # Check if exists and is user signal
         result = await session.execute(
-            text("SELECT id, COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source, COALESCE(compute_kind, compute_method, 'builtin') as compute_kind FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, 'user') as source, COALESCE(compute_kind, 'builtin') as compute_kind FROM classification_signals WHERE key = :key"),
             {"key": key}
         )
         row = result.fetchone()
@@ -460,7 +454,7 @@ async def delete_signal(key: str):
 
     async with async_session_maker() as session:
         result = await session.execute(
-            text("SELECT id, COALESCE(source, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END) as source FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, 'user') as source FROM classification_signals WHERE key = :key"),
             {"key": key}
         )
         row = result.fetchone()

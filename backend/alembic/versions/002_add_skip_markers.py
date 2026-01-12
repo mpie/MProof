@@ -8,6 +8,11 @@ Create Date: 2026-01-10
 from alembic import op
 import sqlalchemy as sa
 
+revision = '002_skip_markers'
+down_revision = '001_initial'
+branch_labels = None
+depends_on = None
+
 
 def upgrade() -> None:
     # Create skip_markers table

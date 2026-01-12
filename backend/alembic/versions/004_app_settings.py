@@ -15,23 +15,29 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        'app_settings',
-        sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('key', sa.String(100), nullable=False),
-        sa.Column('value', sa.Text(), nullable=False),
-        sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('created_at', sa.DateTime(), nullable=True),
-        sa.Column('updated_at', sa.DateTime(), nullable=True),
-        sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index(op.f('ix_app_settings_key'), 'app_settings', ['key'], unique=True)
+    # Check if table already exists
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
     
-    # Insert default LLM provider setting
-    op.execute(
-        "INSERT INTO app_settings (key, value, description, created_at, updated_at) "
-        "VALUES ('llm_provider', 'ollama', 'Active LLM provider (ollama or vllm)', datetime('now'), datetime('now'))"
-    )
+    if 'app_settings' not in tables:
+        op.create_table(
+            'app_settings',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('key', sa.String(100), nullable=False),
+            sa.Column('value', sa.Text(), nullable=False),
+            sa.Column('description', sa.Text(), nullable=True),
+            sa.Column('created_at', sa.DateTime(), nullable=True),
+            sa.Column('updated_at', sa.DateTime(), nullable=True),
+            sa.PrimaryKeyConstraint('id')
+        )
+        op.create_index(op.f('ix_app_settings_key'), 'app_settings', ['key'], unique=True)
+        
+        # Insert default LLM provider setting
+        op.execute(
+            "INSERT INTO app_settings (key, value, description, created_at, updated_at) "
+            "VALUES ('llm_provider', 'ollama', 'Active LLM provider (ollama or vllm)', datetime('now'), datetime('now'))"
+        )
 
 
 def downgrade() -> None:
