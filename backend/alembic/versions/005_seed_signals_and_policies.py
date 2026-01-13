@@ -48,8 +48,8 @@ def upgrade() -> None:
                 config_str = f"'{json.dumps(config_json).replace(chr(39), chr(39)+chr(39))}'"
             
             op.execute(f"""
-                INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json)
-                VALUES ('{key}', '{label_escaped}', '{desc_escaped}', '{signal_type}', '{source}', '{compute_kind}', {config_str})
+                INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json, created_at, updated_at)
+                VALUES ('{key}', '{label_escaped}', '{desc_escaped}', '{signal_type}', '{source}', '{compute_kind}', {config_str}, datetime('now'), datetime('now'))
             """)
     
     # Check if user signals already exist (idempotent)
