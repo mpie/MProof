@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, Suspense } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -122,15 +122,108 @@ function DocumentTypesAdminContent() {
     queryFn: () => listDocumentTypes(),
   });
 
-  const { data: trainingDetails } = useQuery({
-    queryKey: ['training-details'],
-    queryFn: () => getTrainingDetails(),
-  });
-
   const { data: availableModels } = useQuery({
     queryKey: ['available-models'],
     queryFn: () => getAvailableModels(),
   });
+
+  // Fetch training details for all models when "Standaard" is selected
+  const allModelTrainingQueries = useQueries({
+    queries: !selectedModel && availableModels?.models 
+      ? availableModels.models.map(model => ({
+          queryKey: ['training-details', model.name],
+          queryFn: () => getTrainingDetails(model.name),
+        }))
+      : [],
+  });
+
+  // Get training details for selected model, or aggregate for "Standaard"
+  const { data: trainingDetails } = useQuery({
+    queryKey: ['training-details', selectedModel],
+    queryFn: () => getTrainingDetails(selectedModel),
+    enabled: !!selectedModel, // Only fetch when a specific model is selected
+  });
+
+  // Aggregate training details when "Standaard" is selected
+  const aggregatedTrainingDetails = useMemo(() => {
+    if (selectedModel || !availableModels?.models || availableModels.models.length === 0) {
+      return null;
+    }
+
+    // Check if at least one model exists
+    const hasAnyModel = allModelTrainingQueries.some(query => query.data?.model_exists);
+    
+    // Aggregate training files and tokens across all models
+    const allTrainingFiles: Record<string, Array<{ path: string; sha256: string; updated_at: string; }>> = {};
+    const allTokens: Record<string, Array<{ token: string; count: number }>> = {};
+    const allDocCounts: Record<string, number> = {};
+    let latestModel: any = null;
+
+    allModelTrainingQueries.forEach((query, index) => {
+      const details = query.data;
+      if (details?.model_exists && details.model) {
+        // Use the most recently updated model as the "main" model for stats
+        if (!latestModel || (details.model.updated_at && details.model.updated_at > latestModel.updated_at)) {
+          latestModel = details.model;
+        }
+
+        // Aggregate training files
+        if (details.training_files_by_label) {
+          Object.entries(details.training_files_by_label).forEach(([label, files]) => {
+            if (!allTrainingFiles[label]) {
+              allTrainingFiles[label] = [];
+            }
+            // Merge files, avoiding duplicates
+            const existingPaths = new Set(allTrainingFiles[label].map(f => f.path));
+            files.forEach((file: any) => {
+              if (!existingPaths.has(file.path)) {
+                allTrainingFiles[label].push(file);
+              }
+            });
+          });
+        }
+
+        // Aggregate tokens
+        if (details.important_tokens_by_label) {
+          Object.entries(details.important_tokens_by_label).forEach(([label, tokens]) => {
+            if (!allTokens[label]) {
+              allTokens[label] = [];
+            }
+            // Merge tokens, summing counts
+            const tokenMap = new Map(allTokens[label].map((t: any) => [t.token, t.count]));
+            tokens.forEach((tokenInfo: any) => {
+              const existing = tokenMap.get(tokenInfo.token) || 0;
+              tokenMap.set(tokenInfo.token, existing + tokenInfo.count);
+            });
+            allTokens[label] = Array.from(tokenMap.entries())
+              .map(([token, count]) => ({ token, count }))
+              .sort((a, b) => b.count - a.count)
+              .slice(0, 50); // Keep top 50
+          });
+        }
+
+        // Aggregate doc counts
+        if (details.model.class_doc_counts) {
+          Object.entries(details.model.class_doc_counts).forEach(([label, count]) => {
+            allDocCounts[label] = (allDocCounts[label] || 0) + (count as number);
+          });
+        }
+      }
+    });
+
+    return {
+      model_exists: hasAnyModel,
+      model: latestModel ? {
+        ...latestModel,
+        class_doc_counts: allDocCounts,
+      } : null,
+      training_files_by_label: allTrainingFiles,
+      important_tokens_by_label: allTokens,
+    };
+  }, [selectedModel, availableModels, allModelTrainingQueries]);
+
+  // Use aggregated details when "Standaard" is selected, otherwise use single model details
+  const effectiveTrainingDetails = selectedModel ? trainingDetails : aggregatedTrainingDetails;
 
   // Get the selected model's details
   const selectedModelDetails = useMemo(() => {
@@ -683,7 +776,7 @@ function DocumentTypesAdminContent() {
                   )}
 
                   {/* Trained Model Info */}
-                  {trainingDetails.model_exists && trainingDetails.model && (
+                  {effectiveTrainingDetails?.model_exists && effectiveTrainingDetails?.model && (
                     <div className="space-y-4">
                       {/* Model Stats */}
                       <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
@@ -694,47 +787,47 @@ function DocumentTypesAdminContent() {
                         <div className="grid grid-cols-2 gap-3 text-xs">
                           <div>
                             <span className="text-white/60">Getraind op:</span>
-                            <span className="text-white ml-2">{new Date(trainingDetails.model.updated_at).toLocaleDateString('nl-NL')}</span>
+                            <span className="text-white ml-2">{new Date(effectiveTrainingDetails.model.updated_at).toLocaleDateString('nl-NL')}</span>
                           </div>
                           <div>
                             <span className="text-white/60">Threshold:</span>
-                            <span className="text-white ml-2">{(trainingDetails.model.threshold * 100).toFixed(0)}%</span>
+                            <span className="text-white ml-2">{(effectiveTrainingDetails.model.threshold * 100).toFixed(0)}%</span>
                           </div>
                           <div>
                             <span className="text-white/60">Vocabulaire:</span>
-                            <span className="text-white ml-2">{trainingDetails.model.vocab_size.toLocaleString()} tokens</span>
+                            <span className="text-white ml-2">{effectiveTrainingDetails.model.vocab_size.toLocaleString()} tokens</span>
                           </div>
                           <div>
                             <span className="text-white/60">Labels:</span>
-                            <span className="text-white ml-2">{trainingDetails.model.labels.length}</span>
+                            <span className="text-white ml-2">{effectiveTrainingDetails.model.labels.length}</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Training Data for this Document Type */}
-                      {trainingDetails.training_files_by_label[currentType.slug] && (
+                      {effectiveTrainingDetails.training_files_by_label[currentType.slug] && (
                         <div className="p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
                           <h4 className="text-white font-medium text-sm mb-2 flex items-center gap-2">
                             <FontAwesomeIcon icon={faFileAlt} className="w-3 h-3 text-green-400" />
                             Training Data
                           </h4>
                           <div className="text-xs text-white/70 mb-2">
-                            <span className="font-semibold">{trainingDetails.training_files_by_label[currentType.slug].length}</span> documenten gebruikt voor training
-                            {trainingDetails.model?.class_doc_counts[currentType.slug] && (
+                            <span className="font-semibold">{effectiveTrainingDetails.training_files_by_label[currentType.slug].length}</span> documenten gebruikt voor training
+                            {effectiveTrainingDetails.model?.class_doc_counts[currentType.slug] && (
                               <span className="ml-2">
-                                ({trainingDetails.model.class_doc_counts[currentType.slug]} documenten in model)
+                                ({effectiveTrainingDetails.model.class_doc_counts[currentType.slug]} documenten in model)
                               </span>
                             )}
                           </div>
                           <div className="max-h-32 overflow-y-auto space-y-1">
-                            {trainingDetails.training_files_by_label[currentType.slug].slice(0, 10).map((file, idx) => (
+                            {effectiveTrainingDetails.training_files_by_label[currentType.slug].slice(0, 10).map((file, idx) => (
                               <div key={idx} className="text-xs text-white/50 font-mono bg-black/20 p-1.5 rounded truncate">
                                 {file.path.split('/').pop()}
                               </div>
                             ))}
-                            {trainingDetails.training_files_by_label[currentType.slug].length > 10 && (
+                            {effectiveTrainingDetails.training_files_by_label[currentType.slug].length > 10 && (
                               <div className="text-xs text-white/40 italic">
-                                +{trainingDetails.training_files_by_label[currentType.slug].length - 10} meer...
+                                +{effectiveTrainingDetails.training_files_by_label[currentType.slug].length - 10} meer...
                               </div>
                             )}
                           </div>
@@ -742,7 +835,7 @@ function DocumentTypesAdminContent() {
                       )}
 
                       {/* Important Tokens */}
-                      {trainingDetails.important_tokens_by_label[currentType.slug] && (
+                      {effectiveTrainingDetails.important_tokens_by_label[currentType.slug] && (
                         <div className="p-4 bg-purple-500/10 border border-purple-500/20 rounded-lg">
                           <h4 className="text-white font-medium text-sm mb-2 flex items-center gap-2">
                             <FontAwesomeIcon icon={faCode} className="w-3 h-3 text-purple-400" />
@@ -752,7 +845,7 @@ function DocumentTypesAdminContent() {
                             Deze woorden/tokens zijn het meest kenmerkend voor dit document type volgens het getrainde model.
                           </p>
                           <div className="flex flex-wrap gap-1.5">
-                            {trainingDetails.important_tokens_by_label[currentType.slug].slice(0, 20).map((tokenInfo, idx) => (
+                            {effectiveTrainingDetails.important_tokens_by_label[currentType.slug].slice(0, 20).map((tokenInfo, idx) => (
                               <div
                                 key={idx}
                                 className="px-2 py-1 bg-purple-500/20 border border-purple-500/30 rounded text-xs text-purple-200 font-mono"
@@ -766,7 +859,7 @@ function DocumentTypesAdminContent() {
                       )}
 
                       {/* No Training Data */}
-                      {!trainingDetails.training_files_by_label[currentType.slug] && (
+                      {!effectiveTrainingDetails.training_files_by_label[currentType.slug] && (
                         <div className="p-4 bg-white/5 border border-white/10 rounded-lg text-center">
                           <p className="text-white/50 text-sm">Geen training data beschikbaar voor dit document type</p>
                           <p className="text-white/40 text-xs mt-1">Plaats documenten in data/{currentType.slug}/ en train het model</p>
@@ -776,7 +869,7 @@ function DocumentTypesAdminContent() {
                   )}
 
                   {/* No Model */}
-                  {!trainingDetails.model_exists && (
+                  {!effectiveTrainingDetails.model_exists && (
                     <div className="p-4 bg-white/5 border border-white/10 rounded-lg text-center">
                       <p className="text-white/50 text-sm">Geen getraind model beschikbaar</p>
                       <p className="text-white/40 text-xs mt-1">Train het model om classificatie details te zien</p>
