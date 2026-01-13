@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Suspense } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -48,7 +48,7 @@ const fieldTypeColors: Record<string, string> = {
   enum: 'bg-pink-500/20 text-pink-400',
 };
 
-export default function DocumentTypesAdmin() {
+function DocumentTypesAdminContent() {
   const [selectedType, setSelectedType] = useState<DocumentType | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingType, setEditingType] = useState<DocumentType | null>(null);
@@ -800,6 +800,14 @@ export default function DocumentTypesAdmin() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DocumentTypesAdmin() {
+  return (
+    <Suspense fallback={<div className="text-white">Loading...</div>}>
+      <DocumentTypesAdminContent />
+    </Suspense>
   );
 }
 

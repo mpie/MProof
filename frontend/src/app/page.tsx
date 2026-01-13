@@ -72,16 +72,19 @@ export default function Dashboard() {
     queryFn: () => listDocuments(undefined, undefined, 5, 0),
     refetchInterval: 5000,
     structuralSharing: (
-      oldData: DocumentListResponse | undefined,
-      newData: DocumentListResponse
-    ) => {
-      if (!oldData) return newData;
+      oldData: unknown,
+      newData: unknown
+    ): unknown => {
+      const old = oldData as DocumentListResponse | undefined;
+      const new_ = newData as DocumentListResponse;
+      
+      if (!old) return new_;
 
-      const oldMap = new Map(oldData.documents.map(doc => [doc.id, doc]));
+      const oldMap = new Map(old.documents.map(doc => [doc.id, doc]));
 
       return {
-        ...newData,
-        documents: newData.documents.map((doc) => {
+        ...new_,
+        documents: new_.documents.map((doc) => {
           const oldDoc = oldMap.get(doc.id);
           if (!oldDoc) return doc;
 
@@ -1037,7 +1040,7 @@ function ForensicsBadge({ documentId }: { documentId: number }) {
     queryFn: () => getFraudAnalysis(documentId),
     enabled: !!documentId,
     staleTime: Infinity,
-    cacheTime: Infinity,
+    gcTime: Infinity,
   });
 
   if (!fraudReport || fraudReport.signals.length === 0) {
@@ -1071,7 +1074,7 @@ function ForensicsBadgeMobile({ documentId }: { documentId: number }) {
     queryFn: () => getFraudAnalysis(documentId),
     enabled: !!documentId,
     staleTime: Infinity,
-    cacheTime: Infinity,
+    gcTime: Infinity,
   });
 
   if (!fraudReport || fraudReport.signals.length === 0) {

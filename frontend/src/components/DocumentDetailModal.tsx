@@ -616,7 +616,7 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
     queryFn: () => getFraudAnalysis(documentId!),
     enabled: !!documentId && document?.status === 'done',
     staleTime: Infinity,
-    cacheTime: Infinity,
+    gcTime: Infinity,
   });
   return (
     <div className="p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-y-auto">
@@ -694,8 +694,8 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               </div>
               {/* Show explanation if document is "unknown" and there's a rejection reason */}
               {document.doc_type_slug === 'unknown' && document.metadata_validation_json?.classification_scores && (
-                (document.metadata_validation_json.classification_scores.naive_bayes?.rejection_reason || 
-                 document.metadata_validation_json.classification_scores.bert?.rejection_reason) && (
+                ((document.metadata_validation_json.classification_scores as any)?.naive_bayes?.rejection_reason || 
+                 (document.metadata_validation_json.classification_scores as any)?.bert?.rejection_reason) && (
                   <div className="mt-3 pt-3 border-t border-white/10">
                     <div className="bg-green-500/10 border border-green-500/20 rounded p-2">
                       <div className="text-green-300 text-[10px] italic">
@@ -711,93 +711,93 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                 <div className="mt-3 pt-3 border-t border-white/10">
                   <div className="text-white/50 text-xs mb-1.5">Classifier Scores:</div>
                   <div className="grid grid-cols-2 gap-2">
-                    {document.metadata_validation_json.classification_scores.naive_bayes && (
-                      document.metadata_validation_json.classification_scores.naive_bayes.status === 'failed' || 
-                      document.metadata_validation_json.classification_scores.naive_bayes.status === 'no_result' ? (
+                    {(document.metadata_validation_json.classification_scores as any)?.naive_bayes && (
+                      (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ||
+                      (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'no_result' ? (
                         <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-60">
                           <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
                           <div className="text-white/60 text-xs">
-                            {document.metadata_validation_json.classification_scores.naive_bayes.status === 'failed' 
-                              ? `Fout: ${document.metadata_validation_json.classification_scores.naive_bayes.error?.substring(0, 50) || 'Onbekende fout'}...`
-                              : document.metadata_validation_json.classification_scores.naive_bayes.reason || 'Geen resultaat'}
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' 
+                              ? `Fout: ${(document.metadata_validation_json.classification_scores as any).naive_bayes.error?.substring(0, 50) || 'Onbekende fout'}...`
+                              : (document.metadata_validation_json.classification_scores as any).naive_bayes.reason || 'Geen resultaat'}
                           </div>
                         </div>
-                      ) : document.metadata_validation_json.classification_scores.naive_bayes.status === 'rejected' ? (
+                      ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'rejected' ? (
                         <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
                           <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
                           <div className="text-white/80 text-xs font-medium">
-                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
                           </div>
                           <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
-                            {document.metadata_validation_json.classification_scores.naive_bayes.threshold && (
-                              <span className="text-white/40 ml-1">(threshold: {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.threshold * 100)}%)</span>
+                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.threshold && (
+                              <span className="text-white/40 ml-1">(threshold: {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold * 100)}%)</span>
                             )}
                           </div>
                           <div className="text-red-400 text-[10px] mt-1">
-                            ❌ Afgewezen: {document.metadata_validation_json.classification_scores.naive_bayes.rejection_reason || 'Onbekende reden'}
+                            ❌ Afgewezen: {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Onbekende reden'}
                           </div>
                         </div>
-                      ) : document.metadata_validation_json.classification_scores.naive_bayes.status === 'below_threshold' ? (
+                      ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'below_threshold' ? (
                         <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
                           <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
                           <div className="text-white/80 text-xs font-medium">
-                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
                           </div>
                           <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
+                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
                           </div>
                           <div className="text-yellow-400 text-[10px] mt-1">
-                            ⚠️ Onder threshold ({Math.round((document.metadata_validation_json.classification_scores.naive_bayes.threshold || 0) * 100)}%)
+                            ⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)
                           </div>
                         </div>
                       ) : (
                         <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2">
                           <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
                           <div className="text-white text-xs">
-                            {document.metadata_validation_json.classification_scores.naive_bayes.label}
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
                           </div>
                           <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.confidence * 100)}% confidence
-                            {document.metadata_validation_json.classification_scores.naive_bayes.threshold && (
-                              <span className="text-white/40 ml-1">(threshold: {Math.round(document.metadata_validation_json.classification_scores.naive_bayes.threshold * 100)}%)</span>
+                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
+                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.threshold && (
+                              <span className="text-white/40 ml-1">(threshold: {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold * 100)}%)</span>
                             )}
                           </div>
                         </div>
                       )
                     )}
-                    {document.metadata_validation_json.classification_scores.bert && (
-                      document.metadata_validation_json.classification_scores.bert.status === 'failed' || 
-                      document.metadata_validation_json.classification_scores.bert.status === 'no_result' ? (
+                    {(document.metadata_validation_json.classification_scores as any).bert && (
+                      (document.metadata_validation_json.classification_scores as any).bert.status === 'failed' || 
+                      (document.metadata_validation_json.classification_scores as any).bert.status === 'no_result' ? (
                         <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-60">
                           <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
                           <div className="text-white/60 text-xs">
-                            {document.metadata_validation_json.classification_scores.bert.status === 'failed' 
-                              ? `Fout: ${document.metadata_validation_json.classification_scores.bert.error?.substring(0, 50) || 'Onbekende fout'}...`
-                              : document.metadata_validation_json.classification_scores.bert.reason || 'Geen resultaat'}
+                            {(document.metadata_validation_json.classification_scores as any).bert.status === 'failed' 
+                              ? `Fout: ${(document.metadata_validation_json.classification_scores as any).bert.error?.substring(0, 50) || 'Onbekende fout'}...`
+                              : (document.metadata_validation_json.classification_scores as any).bert.reason || 'Geen resultaat'}
                           </div>
                         </div>
-                      ) : document.metadata_validation_json.classification_scores.bert.status === 'rejected' ? (
+                      ) : (document.metadata_validation_json.classification_scores as any).bert.status === 'rejected' ? (
                         <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-75">
                           <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
                           <div className="text-white/80 text-xs font-medium">
-                            {document.metadata_validation_json.classification_scores.bert.label}
+                            {(document.metadata_validation_json.classification_scores as any).bert.label}
                           </div>
                           <div className="text-blue-400 text-[10px] mt-0.5">
-                            {Math.round(document.metadata_validation_json.classification_scores.bert.confidence * 100)}% confidence
+                            {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
                           </div>
                           <div className="text-red-400 text-[10px] mt-1">
-                            ❌ Afgewezen: {document.metadata_validation_json.classification_scores.bert.rejection_reason || 'Onbekende reden'}
+                            ❌ Afgewezen: {(document.metadata_validation_json.classification_scores as any).bert.rejection_reason || 'Onbekende reden'}
                           </div>
                         </div>
                       ) : (
                         <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
                           <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
                           <div className="text-white text-xs">
-                            {document.metadata_validation_json.classification_scores.bert.label}
+                            {(document.metadata_validation_json.classification_scores as any).bert.label}
                           </div>
                           <div className="text-blue-400 text-[10px] mt-0.5">
-                            {Math.round(document.metadata_validation_json.classification_scores.bert.confidence * 100)}% confidence
+                            {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
                           </div>
                         </div>
                       )
@@ -971,7 +971,7 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               {(document.risk_signals_json?.length ?? 0) > 0 ? (
                 <div className="space-y-2 mt-3">
                   <div className="text-xs text-white/60 mb-2">
-                    {document.risk_signals_json.length} fraude detectie{document.risk_signals_json.length !== 1 ? 's' : ''} gevonden:
+                    {document.risk_signals_json?.length || 0} fraude detectie{(document.risk_signals_json?.length || 0) !== 1 ? 's' : ''} gevonden:
                   </div>
                   {document.risk_signals_json?.map((signal: RiskSignal, i: number) => {
                     // Translate risk signal codes to user-friendly explanations
@@ -1014,15 +1014,15 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
 
                     const explanation = getSignalExplanation(signal.code, signal.message, signal.evidence);
                     
-                    const hasExamples = explanation.hasExamples && signal.examples && (
-                      (signal.examples.unicode_examples && signal.examples.unicode_examples.length > 0) ||
-                      (signal.examples.repetition_examples && signal.examples.repetition_examples.length > 0)
+                    const hasExamples = explanation.hasExamples && (signal as any).examples && (
+                      ((signal as any).examples.unicode_examples && (signal as any).examples.unicode_examples.length > 0) ||
+                      ((signal as any).examples.repetition_examples && (signal as any).examples.repetition_examples.length > 0)
                     );
                     
                     return (
                       <div 
                         key={i} 
-                        onClick={hasExamples ? () => onShowExamples(i, signal.examples) : undefined}
+                        onClick={hasExamples ? () => onShowExamples(i, (signal as any).examples) : undefined}
                         className={`bg-white/5 rounded-lg p-3 border transition-all relative ${
                           hasExamples 
                             ? 'cursor-pointer hover:bg-white/10 hover:border-white/20 group' 
@@ -1059,16 +1059,16 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                               {explanation.title}
                               {hasExamples && (
                                 <div className="flex items-center gap-1.5">
-                                  {signal.examples.unicode_examples && signal.examples.unicode_examples.length > 0 && (
-                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${signal.examples.unicode_examples.length} unicode afwijking${signal.examples.unicode_examples.length !== 1 ? 'en' : ''}`}>
+                                  {(signal as any).examples.unicode_examples && (signal as any).examples.unicode_examples.length > 0 && (
+                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${(signal as any).examples.unicode_examples.length} unicode afwijking${(signal as any).examples.unicode_examples.length !== 1 ? 'en' : ''}`}>
                                       <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
-                                      <span>{signal.examples.unicode_examples.length}</span>
+                                      <span>{(signal as any).examples.unicode_examples.length}</span>
                                     </span>
                                   )}
-                                  {signal.examples.repetition_examples && signal.examples.repetition_examples.length > 0 && (
-                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${signal.examples.repetition_examples.length} herhalingspatroon${signal.examples.repetition_examples.length !== 1 ? 'en' : ''}`}>
+                                  {(signal as any).examples.repetition_examples && (signal as any).examples.repetition_examples.length > 0 && (
+                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${(signal as any).examples.repetition_examples.length} herhalingspatroon${(signal as any).examples.repetition_examples.length !== 1 ? 'en' : ''}`}>
                                       <span className="w-1.5 h-1.5 bg-orange-400 rounded-full"></span>
-                                      <span>{signal.examples.repetition_examples.length}</span>
+                                      <span>{(signal as any).examples.repetition_examples.length}</span>
                                     </span>
                                   )}
                                   <span className="text-xs font-normal text-white/50 bg-white/10 px-2 py-0.5 rounded-full border border-white/10">
@@ -1691,7 +1691,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
     queryFn: () => getFraudAnalysis(documentId),
     enabled: !!documentId && document?.status === 'done',
     staleTime: Infinity, // Never refetch - data is static once analyzed
-    cacheTime: Infinity, // Keep in cache forever
+    gcTime: Infinity, // Keep in cache forever
   });
 
   // Filter out LOW risk signals for display
@@ -1998,7 +1998,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     const container = e.currentTarget.parentElement;
                     if (container) {
                       e.currentTarget.style.display = 'none';
-                      const errorMsg = document.createElement('p');
+                      const errorMsg = window.document.createElement('p');
                       errorMsg.className = 'text-red-400 text-xs mt-2';
                       errorMsg.textContent = 'Kon heatmap niet laden. Probeer de pagina te verversen.';
                       if (!container.querySelector('.error-msg')) {

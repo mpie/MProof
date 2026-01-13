@@ -6,7 +6,7 @@ import { getLLMHealth } from '@/lib/api';
 export function LLMStatus() {
   const { data: health, isLoading } = useQuery({
     queryKey: ['llm-health'],
-    queryFn: getLLMHealth,
+    queryFn: () => getLLMHealth(false),
     refetchInterval: 30000, // Refresh every 30 seconds
     staleTime: 10000,
   });

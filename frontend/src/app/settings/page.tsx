@@ -29,7 +29,6 @@ import {
   updateSkipMarker,
   deleteSkipMarker,
   SkipMarker,
-  SkipMarkerCreate,
   getAvailableModels,
   getBertClassifierStatus,
   trainBertClassifier,
@@ -56,7 +55,7 @@ interface TokenInfo {
 interface TrainedLabelsGridProps {
   labels: string[];
   docCounts: Record<string, number>;
-  trainingFilesByLabel: Record<string, string[]>;
+  trainingFilesByLabel: Record<string, Array<{ path: string; sha256: string; updated_at: string; }>>;
   tokensByLabel: Record<string, TokenInfo[]>;
   modelName?: string; // Which model this belongs to
   allModelsData?: Array<{ name: string; document_types: Array<{ slug: string }> }>;
@@ -592,7 +591,7 @@ function ModelTab() {
           // Create unique key with model prefix if needed
           if (!allTokens[label]) {
             allTokens[label] = tokens as Array<{ token: string; count: number }>;
-            allDocCounts[label] = details.model.class_doc_counts?.[label] || 0;
+            allDocCounts[label] = details.model?.class_doc_counts?.[label] || 0;
           }
         });
       }
@@ -1182,7 +1181,7 @@ function ModelTab() {
           // Combine all document types from all models
           const allLabels: string[] = [];
           const allDocCounts: Record<string, number> = {};
-          const allTrainingFiles: Record<string, string[]> = {};
+          const allTrainingFiles: Record<string, Array<{ path: string; sha256: string; updated_at: string; }>> = {};
           const allTokens: Record<string, TokenInfo[]> = {};
           
           // Get all model names to filter them out
@@ -2223,7 +2222,7 @@ function SkipMarkersTab() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: SkipMarkerCreate) => createSkipMarker(data),
+    mutationFn: (data: { pattern: string; description?: string; is_regex?: boolean; is_active?: boolean }) => createSkipMarker(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['skip-markers'] });
       setShowCreateForm(false);
