@@ -44,7 +44,6 @@ def upgrade() -> None:
             desc_escaped = (description or '').replace("'", "''")
             config_str = "NULL"
             if config_json:
-                import json
                 config_str = f"'{json.dumps(config_json).replace(chr(39), chr(39)+chr(39))}'"
             
             op.execute(f"""
