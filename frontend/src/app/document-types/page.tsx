@@ -231,15 +231,23 @@ function DocumentTypesAdminContent() {
     return availableModels.models.find(m => m.name === selectedModel);
   }, [selectedModel, availableModels]);
 
+  // Track which document types have training data in the selected model
+  const modelDocTypeSlugs = useMemo(() => {
+    if (!selectedModel || !selectedModelDetails) return new Set<string>();
+    return new Set(selectedModelDetails.document_types?.map(dt => dt.slug) || []);
+  }, [selectedModel, selectedModelDetails]);
+
   // Filter document types based on selected model
+  // - "Standaard" (no model selected): show ALL document types
+  // - Specific model selected: show ONLY document types that have training data in that model
   const filteredDocumentTypes = useMemo(() => {
     if (!documentTypes) return [];
+    // If no model is selected (Standaard), show all document types
     if (!selectedModel || !selectedModelDetails) return documentTypes;
     
-    // Get doc types that exist in the selected model's training data
-    const modelDocTypeSlugs = new Set(selectedModelDetails.document_types?.map(dt => dt.slug) || []);
+    // If a specific model is selected, only show document types that have training data in that model
     return documentTypes.filter(dt => modelDocTypeSlugs.has(dt.slug));
-  }, [documentTypes, selectedModel, selectedModelDetails]);
+  }, [documentTypes, selectedModel, selectedModelDetails, modelDocTypeSlugs]);
 
   const createMutation = useMutation({
     mutationFn: createDocumentType,
@@ -362,7 +370,7 @@ function DocumentTypesAdminContent() {
               Document Types ({filteredDocumentTypes?.length || 0})
               {selectedModel && documentTypes && filteredDocumentTypes.length < documentTypes.length && (
                 <span className="text-white/40 text-xs font-normal ml-2">
-                  (van {documentTypes.length})
+                  (van {documentTypes.length} totaal)
                 </span>
               )}
             </h2>
@@ -371,7 +379,7 @@ function DocumentTypesAdminContent() {
               <div className="text-center py-8">
                 <FontAwesomeIcon icon={faFileAlt} className="text-white/20 text-3xl mb-2" />
                 <p className="text-white/40 text-sm">
-                  {selectedModel ? `Geen types in model "${selectedModel}"` : 'Geen document types'}
+                  {selectedModel ? `Geen document types met training data in model "${selectedModel}"` : 'Geen document types'}
                 </p>
               </div>
             )}
