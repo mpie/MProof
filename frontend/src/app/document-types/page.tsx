@@ -751,7 +751,7 @@ function DocumentTypesAdminContent() {
               )}
 
               {/* Training Details Card */}
-              {!editingType && currentType && trainingDetails && (
+              {!editingType && currentType && effectiveTrainingDetails && (
                 <div className="glass-card p-6">
                   <h3 className="text-white font-semibold flex items-center mb-4">
                     <FontAwesomeIcon icon={faRobot} className="w-4 h-4 mr-2 text-purple-400" />
@@ -869,7 +869,7 @@ function DocumentTypesAdminContent() {
                   )}
 
                   {/* No Model */}
-                  {!effectiveTrainingDetails.model_exists && (
+                  {!effectiveTrainingDetails?.model_exists && (
                     <div className="p-4 bg-white/5 border border-white/10 rounded-lg text-center">
                       <p className="text-white/50 text-sm">Geen getraind model beschikbaar</p>
                       <p className="text-white/40 text-xs mt-1">Train het model om classificatie details te zien</p>
