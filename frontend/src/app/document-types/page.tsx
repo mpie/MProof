@@ -119,17 +119,17 @@ export default function DocumentTypesAdmin() {
 
   const { data: documentTypes, isLoading } = useQuery({
     queryKey: ['document-types'],
-    queryFn: listDocumentTypes,
+    queryFn: () => listDocumentTypes(),
   });
 
   const { data: trainingDetails } = useQuery({
-    queryKey: ["training-details", modelName],
-    queryFn: ({ queryKey }) => getTrainingDetails(queryKey[1] as string | undefined),
+    queryKey: ['training-details'],
+    queryFn: () => getTrainingDetails(),
   });
 
   const { data: availableModels } = useQuery({
     queryKey: ['available-models'],
-    queryFn: getAvailableModels,
+    queryFn: () => getAvailableModels(),
   });
 
   // Get the selected model's details
