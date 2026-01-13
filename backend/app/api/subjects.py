@@ -76,9 +76,9 @@ async def create_subject(
 
         # Create new subject
         now = datetime.now(timezone.utc)
-        result = await session.execute(
+        await session.execute(
             text("""INSERT INTO subjects (name, name_normalized, context, created_at, updated_at)
-                   VALUES (:name, :name_normalized, :context, :created_at, :updated_at) RETURNING id"""),
+                   VALUES (:name, :name_normalized, :context, :created_at, :updated_at)"""),
             {
                 "name": subject.name,
                 "name_normalized": normalized_name,
@@ -87,13 +87,12 @@ async def create_subject(
                 "updated_at": now
             }
         )
-        subject_id = result.scalar()
         await session.commit()
 
-        # Fetch the created subject
+        # Fetch the created subject using name_normalized and context (unique combination)
         result = await session.execute(
-            text("SELECT * FROM subjects WHERE id = :subject_id"),
-            {"subject_id": subject_id}
+            text("SELECT * FROM subjects WHERE name_normalized = :name_normalized AND context = :context"),
+            {"name_normalized": normalized_name, "context": subject.context.value}
         )
         new_subject = result.fetchone()
 

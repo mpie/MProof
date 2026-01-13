@@ -126,9 +126,9 @@ async def create_document_type(
 
         # Create document type
         now = datetime.now(timezone.utc)
-        result = await session.execute(
+        await session.execute(
             text("""INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, classification_policy_json, created_at, updated_at)
-                   VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, :classification_policy_json, :created_at, :updated_at) RETURNING *"""),
+                   VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, :classification_policy_json, :created_at, :updated_at)"""),
             {
                 "name": doc_type.name,
                 "slug": doc_type.slug,
@@ -140,9 +140,14 @@ async def create_document_type(
                 "updated_at": now
             }
         )
-        new_doc_type = result.fetchone()
         await session.commit()
 
+        # Fetch the created document type using slug (unique)
+        result = await session.execute(
+            text("SELECT * FROM document_types WHERE slug = :slug"),
+            {"slug": doc_type.slug}
+        )
+        new_doc_type = result.fetchone()
         doc_type_dict = dict(new_doc_type._mapping)
         doc_type_dict["fields"] = []
         return DocumentTypeResponse(**doc_type_dict)
@@ -342,10 +347,10 @@ async def create_document_type_field(
 
         # Create field
         now = datetime.now(timezone.utc)
-        result = await session.execute(
+        await session.execute(
             text("""INSERT INTO document_type_fields
                    (document_type_id, key, label, field_type, required, enum_values, regex, description, examples, created_at, updated_at)
-                   VALUES (:document_type_id, :key, :label, :field_type, :required, :enum_values, :regex, :description, :examples, :created_at, :updated_at) RETURNING *"""),
+                   VALUES (:document_type_id, :key, :label, :field_type, :required, :enum_values, :regex, :description, :examples, :created_at, :updated_at)"""),
             {
                 "document_type_id": doc_type.id,
                 "key": field.key,
@@ -360,8 +365,14 @@ async def create_document_type_field(
                 "updated_at": now
             }
         )
-        new_field = result.fetchone()
         await session.commit()
+
+        # Fetch the created field using document_type_id + key (unique combination)
+        result = await session.execute(
+            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id AND key = :key"),
+            {"document_type_id": doc_type.id, "key": field.key}
+        )
+        new_field = result.fetchone()
 
         return DocumentTypeFieldResponse(**new_field._mapping)
 

@@ -100,10 +100,10 @@ async def upload_document(
 
         # Create document record FIRST to get the real ID (atomic)
         now = datetime.now(timezone.utc)
-        result = await session.execute(
+        await session.execute(
             text("""INSERT INTO documents
                    (subject_id, original_filename, mime_type, size_bytes, sha256, status, progress, ocr_used, created_at, updated_at)
-                   VALUES (:subject_id, :filename, :mime_type, :size, :sha256, 'queued', 0, false, :created_at, :updated_at) RETURNING id"""),
+                   VALUES (:subject_id, :filename, :mime_type, :size, :sha256, 'queued', 0, false, :created_at, :updated_at)"""),
             {
                 "subject_id": subject_id,
                 "filename": safe_filename,
@@ -114,8 +114,18 @@ async def upload_document(
                 "updated_at": now
             }
         )
-        inserted_id = result.scalar()
         await session.commit()
+
+        # Fetch the inserted document using sha256 (unique)
+        result = await session.execute(
+            text("SELECT id FROM documents WHERE sha256 = :sha256 AND subject_id = :subject_id ORDER BY id DESC LIMIT 1"),
+            {"sha256": sha256, "subject_id": subject_id}
+        )
+        row = result.fetchone()
+        inserted_id = row.id if row else None
+
+        if not inserted_id:
+            raise HTTPException(status_code=500, detail="Failed to retrieve inserted document ID")
 
         logger.info(f"Document inserted with ID: {inserted_id}")
 
