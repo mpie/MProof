@@ -15,9 +15,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Create skip_markers table
-    op.create_table(
-        'skip_markers',
+    # Check if table already exists
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    tables = inspector.get_table_names()
+    
+    # Create skip_markers table (only if it doesn't exist)
+    if 'skip_markers' not in tables:
+        op.create_table(
+            'skip_markers',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('pattern', sa.String(length=500), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
@@ -26,10 +32,10 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
         sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
         sa.PrimaryKeyConstraint('id')
-    )
+        )
 
-    # Insert default skip markers
-    op.execute("""
+        # Insert default skip markers (only if table was just created)
+        op.execute("""
         INSERT INTO skip_markers (pattern, description, is_regex, is_active)
         VALUES
             ('Algemene Voorwaarden', 'Skip content after general terms section', 0, 1),

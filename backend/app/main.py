@@ -53,14 +53,9 @@ async def lifespan(app: FastAPI):
     # Startup
     global job_queue
 
-    # Create database tables (only if they don't exist)
-    # Note: In production, tables should be created via Alembic migrations
-    # This is a fallback for development environments
-    def create_tables_if_not_exist(sync_conn):
-        Base.metadata.create_all(sync_conn, checkfirst=True)
-    
-    async with engine.begin() as conn:
-        await conn.run_sync(create_tables_if_not_exist)
+    # Note: Database tables are created via Alembic migrations
+    # Run 'alembic upgrade head' to create/update tables
+    # This startup code does NOT create tables - migrations handle that
 
     # Load LLM provider from database
     await load_llm_provider_from_db()
