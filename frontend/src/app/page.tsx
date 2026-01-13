@@ -472,7 +472,13 @@ export default function Dashboard() {
                           <span className="mr-2">Type: {classifierStatus.current_label}</span>
                         )}
                         {classifierStatus.current_file && (
-                          <span>Bestand: {classifierStatus.current_file}</span>
+                          <span>Bestand: {(() => {
+                            const path = classifierStatus.current_file;
+                            if (!path) return '';
+                            // Convert absolute path to relative
+                            const dataIndex = path.indexOf('/data/');
+                            return dataIndex >= 0 ? path.substring(dataIndex + 1) : path.split('/').pop() || path;
+                          })()}</span>
                         )}
                         {classifierStatus.ocr_rotation != null && classifierStatus.ocr_rotation !== 0 && (
                           <span className="ml-2 text-blue-300">OCR: {classifierStatus.ocr_rotation}°</span>

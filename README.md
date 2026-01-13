@@ -174,9 +174,20 @@ cd MProof
 cd backend
 python3 -m venv venv
 source venv/bin/activate
+
+# Install CPU-only PyTorch first (avoids downloading 2GB+ NVIDIA CUDA packages)
+# Skip this step if you have a GPU and want GPU acceleration
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies
 pip install -r requirements.txt
 cp .env.example .env
 ```
+
+> **Note:** 
+> - **CPU-only (recommended for servers without GPU):** Install PyTorch CPU version first to avoid downloading 2GB+ of NVIDIA CUDA packages
+> - **GPU acceleration:** If you have an NVIDIA GPU, skip the `torch` installation step and let `sentence-transformers` install the GPU version automatically
+> - **Already installed GPU version?** To switch to CPU-only: `pip uninstall torch torchvision torchaudio` then reinstall with CPU version
 
 ### 3. Frontend Setup
 
@@ -215,19 +226,37 @@ python -m vllm.entrypoints.openai.api_server \
 
 > **Note:** vLLM supports parallel requests, making it faster for batch processing. Ollama processes requests sequentially. You can switch between providers in the Settings page.
 
-### 5. Install Tesseract
+### 5. Install System Dependencies (Ubuntu/Debian)
+
+**Required for production:**
 
 ```bash
-# macOS
-brew install tesseract
-
-# Ubuntu/Debian
+# Tesseract OCR (required for text extraction from images/PDFs)
 sudo apt install tesseract-ocr
 
-# Add Dutch language pack (optional but recommended)
-brew install tesseract-lang  # macOS
-sudo apt install tesseract-ocr-nld  # Ubuntu
+# Dutch language pack (optional but recommended)
+sudo apt install tesseract-ocr-nld
+
+# Pillow/PIL dependencies (required for image processing)
+sudo apt install libtiff5-dev libjpeg8-dev libopenjp2-7-dev zlib1g-dev \
+    libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev \
+    libfribidi-dev libxcb1-dev
+
+# Build tools (may be needed for some Python packages)
+sudo apt install build-essential python3-dev
 ```
+
+**macOS:**
+
+```bash
+# Tesseract OCR
+brew install tesseract
+
+# Dutch language pack
+brew install tesseract-lang
+```
+
+> **Note:** Pillow dependencies are usually pre-installed on macOS, but if you encounter issues, you may need to install them via Homebrew.
 
 ## Configuration
 

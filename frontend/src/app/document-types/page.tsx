@@ -354,7 +354,11 @@ function DocumentTypesAdminContent() {
             <div className="flex items-center gap-2 text-xs text-white/60">
               <FontAwesomeIcon icon={faFolder} className="w-3 h-3" />
               <span className="font-mono truncate max-w-[200px] sm:max-w-[400px]" title={selectedModelDetails.path}>
-                {selectedModelDetails.path}
+                {selectedModelDetails.path ? (() => {
+                  // Convert absolute path to relative (e.g., /var/www/.../data/backoffice -> data/backoffice)
+                  const dataIndex = selectedModelDetails.path.indexOf('/data/');
+                  return dataIndex >= 0 ? selectedModelDetails.path.substring(dataIndex + 1) : selectedModelDetails.path;
+                })() : 'N/A'}
               </span>
             </div>
           </div>
@@ -776,7 +780,7 @@ function DocumentTypesAdminContent() {
                         <span className="text-xs bg-gray-500/20 px-2 py-0.5 rounded text-gray-400">Secundair</span>
                       </div>
                       <p className="text-white/60 text-xs mb-2">
-                        Deze hints worden alleen gebruikt als het getrainde model geen match vindt. Het trained model heeft nu prioriteit.
+                        Deze hints worden gebruikt als fallback wanneer getrainde modellen (Naive Bayes/BERT) geen match vinden of lage confidence hebben. <strong>Let op:</strong> Als alle <code>kw:</code> keywords matchen (STRONG match), heeft dat wel prioriteit boven getrainde modellen.
                       </p>
                       <pre className="text-white/50 text-xs whitespace-pre-wrap font-mono bg-black/20 p-2 rounded max-h-32 overflow-y-auto">
                         {currentType.classification_hints}

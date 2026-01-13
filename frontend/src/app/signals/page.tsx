@@ -197,37 +197,48 @@ export default function SignalsPage() {
 
       {/* Help Section */}
       {showHelp && (
-        <div className="glass-card p-6 border-l-4 border-amber-500/50">
+        <div className="glass-card p-6 border-l-4 border-amber-500/50 bg-gradient-to-r from-amber-500/5 to-transparent">
           <div className="flex items-start gap-4">
-            <div className="p-3 bg-amber-500/20 rounded-xl">
-              <FontAwesomeIcon icon={faLightbulb} className="text-amber-400 text-xl" />
+            <div className="p-3 bg-amber-500/20 rounded-xl shrink-0">
+              <FontAwesomeIcon icon={faLightbulb} className="text-amber-300 text-xl" />
             </div>
-            <div className="flex-1 space-y-4">
+            <div className="flex-1 space-y-5">
               <div>
-                <h3 className="text-lg font-semibold text-white mb-2">Wat zijn signalen?</h3>
-                <p className="text-white/70">
-                  Signalen zijn eigenschappen die automatisch uit een document worden gehaald. 
-                  Denk aan: &quot;Bevat dit document een IBAN?&quot; of &quot;Hoeveel bedragen staan erin?&quot;
+                <h3 className="text-xl font-bold text-white mb-3">Wat zijn signalen?</h3>
+                <p className="text-white/90 text-base leading-relaxed">
+                  Signalen zijn <strong className="text-amber-300">automatisch berekende eigenschappen</strong> die uit een document worden gehaald. 
+                  Ze beantwoorden vragen zoals: &quot;Bevat dit document een IBAN?&quot; of &quot;Hoeveel bedragen staan erin?&quot;
+                </p>
+                <p className="text-white/70 text-sm mt-2">
+                  Signalen worden gebruikt om te bepalen of een document in aanmerking komt voor een bepaald documenttype.
                 </p>
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold text-white mb-2">Hoe gebruik je ze?</h3>
-                <p className="text-white/70 mb-3">
-                  Bij elk documenttype stel je regels in met signalen. Bijvoorbeeld:
+                <h3 className="text-xl font-bold text-white mb-3">Hoe gebruik je signalen?</h3>
+                <p className="text-white/90 text-base mb-4 leading-relaxed">
+                  Bij elk documenttype stel je <strong className="text-teal-300">vereisten</strong> en <strong className="text-red-300">uitsluitingen</strong> in met signalen:
                 </p>
-                <div className="grid md:grid-cols-2 gap-3">
-                  <div className="p-3 bg-teal-500/10 border border-teal-500/20 rounded-lg">
-                    <div className="text-teal-300 font-medium mb-1">✓ Vereisten</div>
-                    <p className="text-white/60 text-sm">
-                      &quot;Een bankafschrift moet minimaal 5 transactieregels hebben én een IBAN bevatten&quot;
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="p-4 bg-teal-500/20 border-2 border-teal-500/40 rounded-xl">
+                    <div className="text-teal-200 font-bold mb-2 flex items-center gap-2">
+                      <FontAwesomeIcon icon={faCheckCircle} />
+                      Vereisten
+                    </div>
+                    <p className="text-white/90 text-sm leading-relaxed">
+                      &quot;Een bankafschrift moet <strong>minimaal 5 transactieregels</strong> hebben <strong>én</strong> een <strong>IBAN bevatten</strong>&quot;
                     </p>
+                    <p className="text-white/60 text-xs mt-2">✓ Document moet aan ALLE vereisten voldoen</p>
                   </div>
-                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                    <div className="text-red-300 font-medium mb-1">✗ Uitsluitingen</div>
-                    <p className="text-white/60 text-sm">
-                      &quot;Als het document factuurtermen bevat, is het géén bankafschrift&quot;
+                  <div className="p-4 bg-red-500/20 border-2 border-red-500/40 rounded-xl">
+                    <div className="text-red-200 font-bold mb-2 flex items-center gap-2">
+                      <FontAwesomeIcon icon={faTimesCircle} />
+                      Uitsluitingen
+                    </div>
+                    <p className="text-white/90 text-sm leading-relaxed">
+                      &quot;Als het document <strong>factuurtermen bevat</strong>, is het <strong>géén</strong> bankafschrift&quot;
                     </p>
+                    <p className="text-white/60 text-xs mt-2">✗ Document wordt uitgesloten als signaal matcht</p>
                   </div>
                 </div>
               </div>
@@ -235,49 +246,68 @@ export default function SignalsPage() {
               <div>
                 <h3 className="text-lg font-semibold text-white mb-2">Ingebouwde signalen</h3>
                 <p className="text-white/70 mb-3">
-                  Deze signalen zijn standaard beschikbaar en werken voor alle documenten:
+                  Deze signalen zijn standaard beschikbaar en werken automatisch voor alle documenten. Ze worden altijd berekend zonder dat je ze hoeft te configureren.
                 </p>
-                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">IBAN aanwezig</span>
-                    <p className="text-white/50">Ja/nee: bevat IBAN nummer</p>
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
+                  <div className="p-3 bg-cyan-500/20 border border-cyan-500/40 rounded-lg">
+                    <span className="text-cyan-200 font-semibold block mb-1">IBAN aanwezig</span>
+                    <p className="text-white/80 text-xs">Boolean: Detecteert of document een IBAN nummer bevat</p>
                   </div>
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">Aantal datums</span>
-                    <p className="text-white/50">Telt datums (01-01-2025)</p>
+                  <div className="p-3 bg-emerald-500/20 border border-emerald-500/40 rounded-lg">
+                    <span className="text-emerald-200 font-semibold block mb-1">Aantal datums</span>
+                    <p className="text-white/80 text-xs">Count: Telt datums in formaat DD-MM-YYYY</p>
                   </div>
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">Aantal bedragen</span>
-                    <p className="text-white/50">Telt geldbedragen (€1.234,56)</p>
+                  <div className="p-3 bg-amber-500/20 border border-amber-500/40 rounded-lg">
+                    <span className="text-amber-200 font-semibold block mb-1">Aantal bedragen</span>
+                    <p className="text-white/80 text-xs">Count: Telt geldbedragen (€X.XXX,XX formaat)</p>
                   </div>
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">Transactieregels</span>
-                    <p className="text-white/50">Regels met datum + bedrag samen</p>
+                  <div className="p-3 bg-purple-500/20 border border-purple-500/40 rounded-lg">
+                    <span className="text-purple-200 font-semibold block mb-1">Transactieregels</span>
+                    <p className="text-white/80 text-xs">Count: Regels met zowel datum als bedrag</p>
                   </div>
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">Aantal regels</span>
-                    <p className="text-white/50">Totaal niet-lege regels</p>
+                  <div className="p-3 bg-pink-500/20 border border-pink-500/40 rounded-lg">
+                    <span className="text-pink-200 font-semibold block mb-1">Aantal regels</span>
+                    <p className="text-white/80 text-xs">Count: Totaal aantal niet-lege regels</p>
                   </div>
-                  <div className="p-2 bg-blue-500/10 rounded-lg">
-                    <span className="text-blue-300 font-medium">Aantal woorden</span>
-                    <p className="text-white/50">Totaal aantal woorden</p>
+                  <div className="p-3 bg-indigo-500/20 border border-indigo-500/40 rounded-lg">
+                    <span className="text-indigo-200 font-semibold block mb-1">Aantal woorden</span>
+                    <p className="text-white/80 text-xs">Count: Totaal aantal woorden (tokens)</p>
                   </div>
                 </div>
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold text-white mb-2">Eigen signalen maken</h3>
-                <p className="text-white/70">
-                  Maak signalen voor jouw specifieke documenttypes. Bijvoorbeeld een signaal 
-                  &quot;Heeft factuurtermen&quot; dat zoekt naar woorden zoals <em>factuur, BTW, vervaldatum</em>. 
-                  Of &quot;Heeft bankafschrift termen&quot; dat zoekt naar <em>saldo, transactie, rekeningoverzicht</em>.
+                <h3 className="text-xl font-bold text-white mb-3">Eigen signalen maken</h3>
+                <p className="text-white/90 text-base mb-3 leading-relaxed">
+                  Maak aangepaste signalen voor jouw specifieke documenttypes. Je kunt kiezen tussen:
+                </p>
+                <div className="grid md:grid-cols-2 gap-3 mb-3">
+                  <div className="p-3 bg-purple-500/20 border border-purple-500/40 rounded-lg">
+                    <div className="text-purple-200 font-semibold mb-1">Zoekwoorden</div>
+                    <p className="text-white/80 text-sm">
+                      Zoek naar specifieke woorden zoals <code className="bg-black/30 px-1 rounded">factuur</code>, <code className="bg-black/30 px-1 rounded">BTW</code>, <code className="bg-black/30 px-1 rounded">vervaldatum</code>
+                    </p>
+                  </div>
+                  <div className="p-3 bg-orange-500/20 border border-orange-500/40 rounded-lg">
+                    <div className="text-orange-200 font-semibold mb-1">Regex patronen</div>
+                    <p className="text-white/80 text-sm">
+                      Geavanceerde patronen zoals <code className="bg-black/30 px-1 rounded font-mono">NL\d{2}[A-Z]{4}\d{10}</code> voor IBAN detectie
+                    </p>
+                  </div>
+                </div>
+                <p className="text-white/70 text-sm">
+                  <strong>Voorbeeld:</strong> Maak een signaal &quot;Heeft factuurtermen&quot; met zoekwoorden: <em>factuur, BTW, vervaldatum, factuurnummer</em>. 
+                  Of &quot;Heeft bankafschrift termen&quot; met: <em>saldo, transactie, rekeningoverzicht, bij- en afschrijvingen</em>.
                 </p>
               </div>
 
-              <div className="pt-2 border-t border-white/10">
-                <p className="text-white/50 text-sm flex items-center gap-2">
-                  <FontAwesomeIcon icon={faFlask} />
-                  Tip: Gebruik de &quot;Testen&quot; knop om te zien welke signalen in een voorbeelddocument worden herkend.
+              <div className="pt-4 border-t-2 border-white/20 bg-white/5 p-4 rounded-lg">
+                <p className="text-white/90 text-sm flex items-start gap-3">
+                  <FontAwesomeIcon icon={faFlask} className="text-purple-300 text-lg shrink-0 mt-0.5" />
+                  <span>
+                    <strong className="text-purple-200">Tip:</strong> Gebruik de &quot;Testen&quot; knop om te zien welke signalen in een voorbeelddocument worden herkend. 
+                    Plak voorbeeldtekst en zie direct welke signalen matchen!
+                  </span>
                 </p>
               </div>
             </div>
@@ -287,11 +317,16 @@ export default function SignalsPage() {
 
       {/* Test Panel */}
       {showTestPanel && (
-        <div className="glass-card p-6">
-          <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-            <FontAwesomeIcon icon={faFlask} className="text-purple-400" />
-            Signalen Testen
-          </h2>
+        <div className="glass-card p-6 border-l-4 border-purple-500/50">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 bg-purple-500/20 rounded-lg">
+              <FontAwesomeIcon icon={faFlask} className="text-purple-300 text-lg" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-white">Signalen Testen</h2>
+              <p className="text-white/70 text-sm mt-1">Plak voorbeeldtekst om te zien welke signalen worden herkend</p>
+            </div>
+          </div>
           <div className="space-y-4">
             <textarea
               value={testText}
@@ -314,28 +349,42 @@ export default function SignalsPage() {
               )}
             </div>
             {testResult && (
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {Object.entries(testResult.signals).map(([key, value]) => {
-                  const signal = signals.find(s => s.key === key);
-                  const isTrue = value === true || (typeof value === 'number' && value > 0);
-                  return (
-                    <div
-                      key={key}
-                      className={`p-3 rounded-lg border ${
-                        isTrue
-                          ? 'bg-green-500/10 border-green-500/30'
-                          : 'bg-white/5 border-white/10'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-white text-sm font-medium">{signal?.label || key}</span>
-                        <span className={`font-mono text-sm ${isTrue ? 'text-green-400' : 'text-white/50'}`}>
-                          {String(value)}
-                        </span>
+              <div className="space-y-3">
+                <div className="text-sm text-white/70 mb-2">
+                  Resultaten: {Object.entries(testResult.signals).filter(([_, v]) => v === true || (typeof v === 'number' && v > 0)).length} van {Object.keys(testResult.signals).length} signalen gematcht
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {Object.entries(testResult.signals).map(([key, value]) => {
+                    const signal = signals.find(s => s.key === key);
+                    const isTrue = value === true || (typeof value === 'number' && value > 0);
+                    return (
+                      <div
+                        key={key}
+                        className={`p-4 rounded-xl border-2 transition-all ${
+                          isTrue
+                            ? 'bg-green-500/20 border-green-500/50 shadow-lg'
+                            : 'bg-white/10 border-white/20'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`text-sm font-semibold ${isTrue ? 'text-green-200' : 'text-white/70'}`}>
+                            {signal?.label || key}
+                          </span>
+                          <span className={`font-mono text-base font-bold px-2 py-1 rounded ${
+                            isTrue 
+                              ? 'bg-green-500/30 text-green-200 border border-green-500/50' 
+                              : 'bg-white/10 text-white/50 border border-white/20'
+                          }`}>
+                            {String(value)}
+                          </span>
+                        </div>
+                        {signal?.description && (
+                          <p className="text-xs text-white/60 mt-1">{signal.description}</p>
+                        )}
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -531,111 +580,142 @@ export default function SignalsPage() {
       )}
 
       {/* Built-in Signals */}
-      <div className="glass-card p-6">
-        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <FontAwesomeIcon icon={faCog} className="text-blue-400" />
-          Ingebouwde Signalen
-          <span className="text-sm font-normal text-white/50">({builtinSignals.length})</span>
-        </h2>
-        <p className="text-white/60 text-sm mb-4">
-          Generieke signalen die automatisch worden berekend. Kunnen niet worden aangepast of verwijderd.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {builtinSignals.map((signal) => (
-            <div
-              key={signal.key}
-              className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl"
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-blue-300 font-medium">{signal.label}</span>
-                <span className={`text-xs px-2 py-0.5 rounded ${
-                  signal.signal_type === 'boolean'
-                    ? 'bg-purple-500/20 text-purple-300'
-                    : 'bg-amber-500/20 text-amber-300'
-                }`}>
-                  {signal.signal_type}
-                </span>
+      <div className="glass-card p-6 border-l-4 border-cyan-500/50">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="p-2 bg-cyan-500/20 rounded-lg">
+            <FontAwesomeIcon icon={faCog} className="text-cyan-300 text-lg" />
+          </div>
+          <div className="flex-1">
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              Ingebouwde Signalen
+              <span className="text-sm font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded">({builtinSignals.length})</span>
+            </h2>
+            <p className="text-white/70 text-sm mt-1">
+              Generieke signalen die automatisch worden berekend voor elk document. Deze kunnen niet worden aangepast of verwijderd.
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+          {builtinSignals.map((signal, idx) => {
+            const colors = [
+              { bg: 'bg-cyan-500/20', border: 'border-cyan-500/40', text: 'text-cyan-200' },
+              { bg: 'bg-emerald-500/20', border: 'border-emerald-500/40', text: 'text-emerald-200' },
+              { bg: 'bg-amber-500/20', border: 'border-amber-500/40', text: 'text-amber-200' },
+              { bg: 'bg-purple-500/20', border: 'border-purple-500/40', text: 'text-purple-200' },
+              { bg: 'bg-pink-500/20', border: 'border-pink-500/40', text: 'text-pink-200' },
+              { bg: 'bg-indigo-500/20', border: 'border-indigo-500/40', text: 'text-indigo-200' },
+            ];
+            const color = colors[idx % colors.length];
+            return (
+              <div
+                key={signal.key}
+                className={`p-4 ${color.bg} border-2 ${color.border} rounded-xl hover:shadow-lg transition-shadow`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className={`${color.text} font-semibold text-base`}>{signal.label}</span>
+                  <span className={`text-xs px-2 py-1 rounded font-medium ${
+                    signal.signal_type === 'boolean'
+                      ? 'bg-purple-500/30 text-purple-200 border border-purple-500/50'
+                      : 'bg-amber-500/30 text-amber-200 border border-amber-500/50'
+                  }`}>
+                    {signal.signal_type}
+                  </span>
+                </div>
+                <p className="text-white/90 text-sm mb-2 leading-relaxed">{signal.description}</p>
+                <code className="text-xs text-white/50 mt-2 block font-mono bg-black/20 px-2 py-1 rounded">{signal.key}</code>
               </div>
-              <p className="text-white/60 text-sm">{signal.description}</p>
-              <code className="text-xs text-white/40 mt-2 block">{signal.key}</code>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {/* User-defined Signals */}
-      <div className="glass-card p-6">
-        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-          <FontAwesomeIcon icon={faCode} className="text-teal-400" />
-          Eigen Signalen
-          <span className="text-sm font-normal text-white/50">({userSignals.length})</span>
-        </h2>
-        <p className="text-white/60 text-sm mb-4">
-          Maak signalen voor jouw specifieke documenttypes met zoekwoorden (bijv. &quot;factuur&quot;, &quot;BTW&quot;) of technische regex patronen.
-        </p>
+      <div className="glass-card p-6 border-l-4 border-teal-500/50">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="p-2 bg-teal-500/20 rounded-lg">
+            <FontAwesomeIcon icon={faCode} className="text-teal-300 text-lg" />
+          </div>
+          <div className="flex-1">
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              Eigen Signalen
+              <span className="text-sm font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded">({userSignals.length})</span>
+            </h2>
+            <p className="text-white/70 text-sm mt-1">
+              Maak aangepaste signalen voor jouw specifieke documenttypes. Gebruik zoekwoorden (bijv. &quot;factuur&quot;, &quot;BTW&quot;) of regex patronen voor geavanceerde matching.
+            </p>
+          </div>
+        </div>
         {userSignals.length === 0 ? (
-          <div className="text-center py-8 border border-dashed border-white/20 rounded-xl">
-            <p className="text-white/40">Nog geen eigen signalen gemaakt</p>
+          <div className="text-center py-12 border-2 border-dashed border-teal-500/30 rounded-xl bg-teal-500/5">
+            <FontAwesomeIcon icon={faCode} className="text-teal-400/50 text-4xl mb-3" />
+            <p className="text-white/70 font-medium mb-1">Nog geen eigen signalen gemaakt</p>
+            <p className="text-white/50 text-sm mb-4">Maak je eerste signaal om documenttypes te classificeren</p>
             <button
               onClick={() => { resetForm(); setShowCreateForm(true); }}
-              className="mt-3 text-teal-400 hover:text-teal-300"
+              className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-500 transition-colors font-medium"
             >
               + Maak je eerste signaal
             </button>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-3 mt-4">
             {userSignals.map((signal) => (
               <div
                 key={signal.key}
-                className="p-4 bg-white/5 border border-white/10 rounded-xl hover:border-white/20 transition-colors"
+                className="p-5 bg-white/10 border-2 border-teal-500/30 rounded-xl hover:border-teal-500/50 hover:bg-white/15 transition-all shadow-lg"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-white font-medium">{signal.label}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <span className="text-white font-semibold text-base">{signal.label}</span>
+                      <span className={`text-xs px-2 py-1 rounded font-medium border ${
                         signal.signal_type === 'boolean'
-                          ? 'bg-purple-500/20 text-purple-300'
-                          : 'bg-amber-500/20 text-amber-300'
+                          ? 'bg-purple-500/30 text-purple-200 border-purple-500/50'
+                          : 'bg-amber-500/30 text-amber-200 border-amber-500/50'
                       }`}>
                         {signal.signal_type}
                       </span>
-                      <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-white/60">
+                      <span className="text-xs px-2 py-1 rounded bg-teal-500/30 text-teal-200 border border-teal-500/50 font-medium">
                         {signal.compute_kind === 'keyword_set' ? 'Zoekwoorden' : 'Regex'}
                       </span>
                       {signal.config_json?.match_mode === 'all' && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-orange-500/20 text-orange-300">
-                          AND
+                        <span className="text-xs px-2 py-1 rounded bg-orange-500/30 text-orange-200 border border-orange-500/50 font-medium">
+                          ALL (AND)
+                        </span>
+                      )}
+                      {signal.config_json?.match_mode === 'any' && (
+                        <span className="text-xs px-2 py-1 rounded bg-green-500/30 text-green-200 border border-green-500/50 font-medium">
+                          ANY (OR)
                         </span>
                       )}
                     </div>
                     {signal.description && (
-                      <p className="text-white/60 text-sm mb-2">{signal.description}</p>
+                      <p className="text-white/80 text-sm mb-3 leading-relaxed">{signal.description}</p>
                     )}
-                    <div className="flex flex-wrap gap-1 mt-2">
+                    <div className="flex flex-wrap gap-2 mt-3">
                       {signal.compute_kind === 'keyword_set' && signal.config_json?.keywords?.slice(0, 5).map((kw, i) => (
-                        <span key={i} className="text-xs px-2 py-0.5 bg-white/10 rounded text-white/70">
+                        <span key={i} className="text-xs px-2.5 py-1 bg-white/20 rounded-md text-white font-medium border border-white/30">
                           {kw}
                         </span>
                       ))}
                       {signal.compute_kind === 'regex_set' && signal.config_json?.patterns?.slice(0, 3).map((p, i) => (
-                        <span key={i} className="text-xs px-2 py-0.5 bg-white/10 rounded text-white/70 font-mono">
+                        <span key={i} className="text-xs px-2.5 py-1 bg-white/20 rounded-md text-white/90 font-mono border border-white/30">
                           {p.length > 30 ? p.substring(0, 30) + '...' : p}
                         </span>
                       ))}
                       {((signal.config_json?.keywords?.length || 0) > 5 || (signal.config_json?.patterns?.length || 0) > 3) && (
-                        <span className="text-xs text-white/40">
+                        <span className="text-xs text-white/60 px-2.5 py-1 bg-white/10 rounded-md border border-white/20">
                           +{(signal.config_json?.keywords?.length || signal.config_json?.patterns?.length || 0) - (signal.compute_kind === 'keyword_set' ? 5 : 3)} meer
                         </span>
                       )}
                     </div>
-                    <code className="text-xs text-white/40 mt-2 block">{signal.key}</code>
+                    <code className="text-xs text-white/50 mt-3 block font-mono bg-black/30 px-2 py-1 rounded border border-white/10">{signal.key}</code>
                   </div>
-                  <div className="flex gap-2 ml-4">
+                  <div className="flex gap-2 shrink-0">
                     <button
                       onClick={() => startEdit(signal)}
-                      className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                      className="p-2.5 text-teal-300 hover:text-teal-200 hover:bg-teal-500/20 rounded-lg transition-colors border border-teal-500/30"
+                      title="Bewerken"
                     >
                       <FontAwesomeIcon icon={faEdit} />
                     </button>
@@ -645,7 +725,8 @@ export default function SignalsPage() {
                           deleteMutation.mutate(signal.key);
                         }
                       }}
-                      className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                      className="p-2.5 text-red-400 hover:text-red-300 hover:bg-red-500/20 rounded-lg transition-colors border border-red-500/30"
+                      title="Verwijderen"
                     >
                       <FontAwesomeIcon icon={faTrash} />
                     </button>

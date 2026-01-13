@@ -933,34 +933,39 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               {fraudReport && fraudReport.signals.length > 0 && (() => {
                 const filteredSignals = fraudReport.signals.filter(s => s.risk_level?.toLowerCase() !== 'low');
                 if (filteredSignals.length === 0) return null;
+                // Ensure we show all filtered signals (up to 3 in overview)
+                // Filter out any signals without a name to avoid rendering issues
+                const signalsToShow = filteredSignals
+                  .filter(s => s.name) // Only show signals with a name
+                  .slice(0, 3);
                 return (
                   <div className="mb-3 pb-3 border-b border-white/10">
                     <div className="text-xs text-white/60 mb-2">
                       Forensics: {filteredSignals.length} signaal{filteredSignals.length !== 1 ? 'en' : ''} gedetecteerd
                     </div>
                     <div className="space-y-1.5">
-                      {filteredSignals.slice(0, 3).map((signal, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs">
+                      {signalsToShow.map((signal, i) => (
+                      <div key={`signal-${signal.name || 'unknown'}-${i}-${documentId || 'unknown'}`} className="flex items-start gap-2 text-xs">
                         <FontAwesomeIcon 
                           icon={signal.risk_level === 'critical' || signal.risk_level === 'high' ? faExclamationTriangle : faInfoCircle} 
-                          className={`w-3 h-3 mt-0.5 ${
+                          className={`w-3 h-3 mt-0.5 shrink-0 ${
                             signal.risk_level === 'critical' ? 'text-red-400' :
                             signal.risk_level === 'high' ? 'text-orange-400' :
                             signal.risk_level === 'medium' ? 'text-yellow-400' : 'text-green-400'
                           }`}
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="text-white font-medium truncate">{signal.name.replace(/_/g, ' ')}</div>
-                          <div className="text-white/70 text-[10px] line-clamp-1">{signal.description}</div>
+                          <div className="text-white font-medium truncate">{signal.name?.replace(/_/g, ' ') || 'Onbekend signaal'}</div>
+                          <div className="text-white/70 text-[10px] line-clamp-1">{signal.description || 'Geen beschrijving'}</div>
                         </div>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
-                          {Math.round(signal.confidence * 100)}%
+                          {Math.round((signal.confidence || 0) * 100)}%
                         </span>
                       </div>
                       ))}
-                      {filteredSignals.length > 3 && (
+                      {filteredSignals.length > signalsToShow.length && (
                         <div className="text-[10px] text-white/50 pt-1">
-                          +{filteredSignals.length - 3} meer (zie Forensics tab)
+                          +{filteredSignals.length - signalsToShow.length} meer (zie Forensics tab)
                         </div>
                       )}
                     </div>
@@ -1683,7 +1688,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
   document: Document | undefined;
   isOpen: boolean;
 }) {
-  const [expandedSignals, setExpandedSignals] = useState<Set<number>>(new Set());
+  const [expandedSignalIndex, setExpandedSignalIndex] = useState<number | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(true);
 
   const { data: fraudReport, isLoading, error } = useQuery({
@@ -1826,52 +1831,57 @@ function ForensicsTab({ documentId, document, isOpen }: {
   }
 
   return (
-    <div className="p-4 space-y-3 max-h-[calc(100vh-200px)] overflow-y-auto">
-      {/* Compact Risk Score Header */}
-      <div className={`rounded-lg p-3 border ${getRiskColor(fraudReport.overall_risk)}`}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <FontAwesomeIcon icon={getRiskIcon(fraudReport.overall_risk)} className="text-xl shrink-0" />
+    <div className="p-4 space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+      {/* Risk Score Header - More prominent */}
+      <div className={`rounded-lg p-4 border-2 ${getRiskColor(fraudReport.overall_risk)}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
+            <FontAwesomeIcon icon={getRiskIcon(fraudReport.overall_risk)} className="text-2xl shrink-0 mt-0.5" />
             <div className="min-w-0 flex-1">
-              <div className="text-base font-bold truncate">
-                Risico: {Math.round(fraudReport.risk_score)}% ({getRiskLabel(fraudReport.overall_risk)})
+              <div className="text-lg font-bold mb-1">
+                Risico: {Math.round(fraudReport.risk_score)}%
               </div>
-              <div className="text-xs opacity-80 truncate">
-                {filteredSignals.length} signal{filteredSignals.length !== 1 ? 'en' : ''} • {new Date(fraudReport.analyzed_at).toLocaleDateString('nl-NL')}
+              <div className="text-sm font-medium mb-2 opacity-90">
+                {getRiskLabel(fraudReport.overall_risk)}
+              </div>
+              <div className="text-xs opacity-70 flex items-center gap-2 flex-wrap">
+                <span>{filteredSignals.length} signaal{filteredSignals.length !== 1 ? 'en' : ''} gedetecteerd</span>
+                <span>•</span>
+                <span>Geanalyseerd op {new Date(fraudReport.analyzed_at).toLocaleDateString('nl-NL', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
               </div>
             </div>
           </div>
         </div>
         {fraudReport.summary && (
-          <p className="mt-2 text-xs opacity-90 line-clamp-2">{fraudReport.summary}</p>
+          <div className="mt-3 pt-3 border-t border-current/20">
+            <p className="text-xs opacity-90 leading-relaxed">{fraudReport.summary}</p>
+          </div>
         )}
       </div>
 
-      {/* Signals List - Collapsible */}
+      {/* Signals List - Accordion (only one open at a time) */}
       {filteredSignals.length > 0 ? (
         <div className="space-y-2">
-          <button
-            onClick={() => {
-              if (expandedSignals.size === filteredSignals.length) {
-                setExpandedSignals(new Set());
-              } else {
-                setExpandedSignals(new Set(filteredSignals.map((_, i) => i)));
-              }
-            }}
-            className="w-full flex items-center justify-between p-2 bg-white/5 hover:bg-white/10 rounded-lg border border-white/10 transition-colors cursor-pointer"
-          >
-            <h3 className="text-white font-medium text-sm flex items-center gap-2">
-              <FontAwesomeIcon icon={faShieldAlt} className="text-blue-400 w-4 h-4" />
-              Signalen ({filteredSignals.length})
+          {/* Static header - not clickable */}
+          <div className="w-full flex items-center justify-between p-3 bg-white/5 rounded-lg border border-white/10">
+            <h3 className="text-white font-semibold text-base flex items-center gap-2">
+              <FontAwesomeIcon icon={faShieldAlt} className="text-blue-400 w-5 h-5" />
+              Gedetecteerde Signalen
             </h3>
-            <FontAwesomeIcon 
-              icon={expandedSignals.size === filteredSignals.length ? faChevronUp : faChevronDown}
-              className="text-white/60 w-3 h-3"
-            />
-          </button>
+            <div className="flex items-center gap-2">
+              <span className="text-white/60 text-xs bg-black/20 px-2 py-1 rounded">
+                {filteredSignals.length} totaal
+              </span>
+              {expandedSignalIndex !== null && (
+                <span className="text-blue-400 text-xs">
+                  1 open
+                </span>
+              )}
+            </div>
+          </div>
 
           {filteredSignals.map((signal, index) => {
-            const isExpanded = expandedSignals.has(index);
+            const isExpanded = expandedSignalIndex === index;
             return (
               <div
                 key={index}
@@ -1879,13 +1889,12 @@ function ForensicsTab({ documentId, document, isOpen }: {
               >
                 <button
                   onClick={() => {
-                    const newSet = new Set(expandedSignals);
+                    // Accordion: only one signal open at a time
                     if (isExpanded) {
-                      newSet.delete(index);
+                      setExpandedSignalIndex(null); // Close if already open
                     } else {
-                      newSet.add(index);
+                      setExpandedSignalIndex(index); // Open this one, closes others automatically
                     }
-                    setExpandedSignals(newSet);
                   }}
                   className="w-full flex items-start justify-between gap-2 p-2.5 hover:bg-black/10 transition-colors text-left cursor-pointer"
                 >
@@ -1939,16 +1948,14 @@ function ForensicsTab({ documentId, document, isOpen }: {
                       </div>
                     )}
 
-                    {/* Technical Details */}
+                    {/* Technical Details - Auto-opened when signal is expanded */}
                     {Object.keys(signal.details).length > 0 && (
-                      <details className="pt-1">
-                        <summary className="text-[10px] opacity-60 cursor-pointer hover:opacity-100">
-                          Technische details
-                        </summary>
-                        <pre className="mt-1 text-[10px] bg-black/20 p-1.5 rounded overflow-x-auto max-h-32 overflow-y-auto">
+                      <div className="pt-2">
+                        <div className="text-[10px] opacity-60 mb-1.5 font-medium">Technische details</div>
+                        <pre className="text-[10px] bg-black/20 p-1.5 rounded overflow-x-auto max-h-32 overflow-y-auto">
                           {JSON.stringify(signal.details, null, 2)}
                         </pre>
-                      </details>
+                      </div>
                     )}
                   </div>
                 )}

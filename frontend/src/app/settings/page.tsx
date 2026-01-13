@@ -542,13 +542,13 @@ function ModelTab() {
   
   // Dutch stopwords - complete list from backend
   const dutchStopwords = {
-    'Articles & Pronouns': ['de', 'het', 'een', 'die', 'dat', 'deze', 'dit', 'hij', 'zij', 'wij', 'jullie', 'hun', 'haar', 'hem', 'mij', 'jou', 'ons', 'hen', 'wie', 'wat', 'welke', 'welk'],
-    'Prepositions': ['van', 'in', 'op', 'te', 'aan', 'met', 'voor', 'door', 'over', 'bij', 'naar', 'uit', 'tot', 'om', 'onder', 'tegen', 'tussen', 'zonder', 'binnen', 'buiten'],
-    'Conjunctions': ['en', 'of', 'maar', 'want', 'dus', 'omdat', 'als', 'dan', 'toen', 'terwijl', 'hoewel', 'indien', 'tenzij', 'zodra', 'voordat', 'nadat', 'zodat'],
-    'Common Verbs': ['is', 'zijn', 'was', 'waren', 'ben', 'bent', 'heeft', 'hebben', 'had', 'hadden', 'wordt', 'worden', 'werd', 'werden', 'kan', 'kunnen', 'kon', 'konden', 'zal', 'zullen', 'zou', 'zouden', 'moet', 'moeten', 'moest', 'moesten', 'mag', 'mogen', 'wil', 'willen', 'wilde', 'wilden', 'gaat', 'gaan', 'ging', 'gingen', 'komt', 'komen', 'kwam', 'kwamen', 'doet', 'doen', 'deed', 'deden', 'zegt', 'zeggen'],
-    'Adverbs & Misc': ['niet', 'ook', 'nog', 'wel', 'al', 'er', 'hier', 'daar', 'waar', 'hoe', 'nu', 'dan', 'toen', 'zo', 'toch', 'heel', 'erg', 'zeer', 'meer', 'veel', 'weinig', 'alle', 'alles', 'iets', 'niets', 'iemand', 'niemand', 'elke', 'elk', 'ander', 'andere', 'eigen', 'zelf', 'alleen', 'samen', 'verder', 'eerst', 'laatste'],
-    'Numbers (as words)': ['een', 'twee', 'drie', 'vier', 'vijf', 'zes', 'zeven', 'acht', 'negen', 'tien'],
-    'Common Document Words': ['pagina', 'bladzijde', 'datum', 'naam', 'adres', 'www', 'http', 'https', 'com', 'org', 'net'],
+    'Lidwoorden & Voornaamwoorden': ['de', 'het', 'een', 'die', 'dat', 'deze', 'dit', 'hij', 'zij', 'wij', 'jullie', 'hun', 'haar', 'hem', 'mij', 'jou', 'ons', 'hen', 'wie', 'wat', 'welke', 'welk'],
+    'Voorzetsels': ['van', 'in', 'op', 'te', 'aan', 'met', 'voor', 'door', 'over', 'bij', 'naar', 'uit', 'tot', 'om', 'onder', 'tegen', 'tussen', 'zonder', 'binnen', 'buiten'],
+    'Voegwoorden': ['en', 'of', 'maar', 'want', 'dus', 'omdat', 'als', 'dan', 'toen', 'terwijl', 'hoewel', 'indien', 'tenzij', 'zodra', 'voordat', 'nadat', 'zodat'],
+    'Veelvoorkomende Werkwoorden': ['is', 'zijn', 'was', 'waren', 'ben', 'bent', 'heeft', 'hebben', 'had', 'hadden', 'wordt', 'worden', 'werd', 'werden', 'kan', 'kunnen', 'kon', 'konden', 'zal', 'zullen', 'zou', 'zouden', 'moet', 'moeten', 'moest', 'moesten', 'mag', 'mogen', 'wil', 'willen', 'wilde', 'wilden', 'gaat', 'gaan', 'ging', 'gingen', 'komt', 'komen', 'kwam', 'kwamen', 'doet', 'doen', 'deed', 'deden', 'zegt', 'zeggen'],
+    'Bijwoorden & Overig': ['niet', 'ook', 'nog', 'wel', 'al', 'er', 'hier', 'daar', 'waar', 'hoe', 'nu', 'dan', 'toen', 'zo', 'toch', 'heel', 'erg', 'zeer', 'meer', 'veel', 'weinig', 'alle', 'alles', 'iets', 'niets', 'iemand', 'niemand', 'elke', 'elk', 'ander', 'andere', 'eigen', 'zelf', 'alleen', 'samen', 'verder', 'eerst', 'laatste'],
+    'Getallen (als woorden)': ['een', 'twee', 'drie', 'vier', 'vijf', 'zes', 'zeven', 'acht', 'negen', 'tien'],
+    'Veelvoorkomende Documentwoorden': ['pagina', 'bladzijde', 'datum', 'naam', 'adres', 'www', 'http', 'https', 'com', 'org', 'net'],
   };
   
   const totalStopwords = Object.values(dutchStopwords).flat().length;
@@ -760,7 +760,13 @@ function ModelTab() {
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <div className="flex items-center gap-2 text-white/60">
                 <FontAwesomeIcon icon={faFolder} className="w-3 h-3" />
-                <span className="font-mono text-xs truncate max-w-[300px]">{selectedModelDetails.path}</span>
+                <span className="font-mono text-xs truncate max-w-[300px]" title={selectedModelDetails.path}>
+                  {selectedModelDetails.path ? (() => {
+                    // Convert absolute path to relative (e.g., /var/www/.../data/backoffice -> data/backoffice)
+                    const dataIndex = selectedModelDetails.path.indexOf('/data/');
+                    return dataIndex >= 0 ? selectedModelDetails.path.substring(dataIndex + 1) : selectedModelDetails.path;
+                  })() : 'N/A'}
+                </span>
               </div>
               <span className="text-white/40">•</span>
               <span className="text-purple-300">{selectedModelDetails.document_types?.length || 0} types</span>
@@ -1006,7 +1012,13 @@ function ModelTab() {
                           >
                             <div className="text-purple-200 font-medium">{fileInfo.label || 'Unknown'}</div>
                             <div className="text-white/70 truncate max-w-[200px]" title={fileInfo.path || fileInfo.file}>
-                              {fileInfo.file}
+                              {(() => {
+                                const path = fileInfo.path || fileInfo.file;
+                                if (!path) return fileInfo.file;
+                                // Convert absolute path to relative (e.g., /var/www/.../data/backoffice/file.pdf -> data/backoffice/file.pdf)
+                                const dataIndex = path.indexOf('/data/');
+                                return dataIndex >= 0 ? path.substring(dataIndex + 1) : path.split('/').pop() || path;
+                              })()}
                             </div>
                           </div>
                         ))}
@@ -1018,7 +1030,13 @@ function ModelTab() {
                         <span className="mr-2">Type: {classifierStatus.current_label}</span>
                       )}
                       {classifierStatus.current_file && (
-                        <span className="text-white/70">Bestand: {classifierStatus.current_file}</span>
+                        <span className="text-white/70">Bestand: {(() => {
+                          const path = classifierStatus.current_file;
+                          if (!path) return '';
+                          // Convert absolute path to relative
+                          const dataIndex = path.indexOf('/data/');
+                          return dataIndex >= 0 ? path.substring(dataIndex + 1) : path.split('/').pop() || path;
+                        })()}</span>
                       )}
                       {classifierStatus.ocr_rotation != null && classifierStatus.ocr_rotation !== 0 && (
                         <span className="ml-2 text-blue-300">OCR: {classifierStatus.ocr_rotation}°</span>

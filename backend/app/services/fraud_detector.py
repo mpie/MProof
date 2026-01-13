@@ -1009,12 +1009,16 @@ class FraudDetector:
             RiskLevel.CRITICAL: "Kritiek risico",
         }
         
-        summary_parts = [f"{risk_descriptions[overall_risk]}: {len(signals)} signalen gedetecteerd."]
+        # Filter out LOW risk signals for display (consistent with frontend)
+        non_low_signals = [s for s in signals if s.risk_level != RiskLevel.LOW]
+        signal_count = len(non_low_signals) if non_low_signals else len(signals)
         
-        # Add top signals
-        high_signals = [s for s in signals if s.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)]
+        summary_parts = [f"{risk_descriptions[overall_risk]}: {signal_count} signaal{'en' if signal_count != 1 else ''} gedetecteerd."]
+        
+        # Add top signals (only non-LOW)
+        high_signals = [s for s in non_low_signals if s.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)]
         if high_signals:
-            summary_parts.append(f"Belangrijkste: {', '.join(s.name for s in high_signals[:3])}")
+            summary_parts.append(f"Belangrijkste: {', '.join(s.name.replace('_', ' ') for s in high_signals[:3])}")
         
         return " ".join(summary_parts)
     
