@@ -156,8 +156,8 @@ class DocumentProcessor:
                     # Save updated risk analysis
                     risk_dir = document_dir / "risk"
                     risk_dir.mkdir(exist_ok=True)
-                    with open(risk_dir / "result.json", "w") as f:
-                        json.dump(risk_analysis.dict(), f, indent=2)
+                    with open(risk_dir / "result.json", "w", encoding="utf-8") as f:
+                        json.dump(risk_analysis.dict(), f, indent=2, ensure_ascii=False)
             
             await self._update_progress(document_id, 100, "completed", progress_callback)
 
@@ -248,10 +248,10 @@ class DocumentProcessor:
         )
 
         # Save artifacts
-        with open(text_dir / "extracted.json", "w") as f:
-            json.dump(result.dict(), f, indent=2)
+        with open(text_dir / "extracted.json", "w", encoding="utf-8") as f:
+            json.dump(result.dict(), f, indent=2, ensure_ascii=False)
 
-        with open(text_dir / "extracted.txt", "w") as f:
+        with open(text_dir / "extracted.txt", "w", encoding="utf-8") as f:
             f.write(combined_text)
 
         return result
@@ -1109,8 +1109,8 @@ class DocumentProcessor:
                     }
                     if bert_used_model:
                         classification_data["bert"]["model_used"] = bert_used_model
-                with open(llm_dir / "classification_local.json", "w") as f:
-                    json.dump(classification_data, f, indent=2)
+                with open(llm_dir / "classification_local.json", "w", encoding="utf-8") as f:
+                    json.dump(classification_data, f, indent=2, ensure_ascii=False)
 
                 return classification, extraction_result
             else:
@@ -1277,11 +1277,11 @@ Respond with JSON:
         llm_dir = document_dir / "llm"
         llm_dir.mkdir(exist_ok=True)
 
-        with open(llm_dir / "combined_analysis_prompt.txt", "w") as f:
+        with open(llm_dir / "combined_analysis_prompt.txt", "w", encoding="utf-8") as f:
             f.write(prompt)
 
-        with open(llm_dir / "combined_analysis_schema.json", "w") as f:
-            json.dump(schema, f, indent=2)
+        with open(llm_dir / "combined_analysis_schema.json", "w", encoding="utf-8") as f:
+            json.dump(schema, f, indent=2, ensure_ascii=False)
 
         curl_command = None
         try:
@@ -1290,23 +1290,23 @@ Respond with JSON:
             logger.info(f"Combined LLM analysis completed for document {document_dir.parent.name} in {duration:.2f}s")
             
             # Save response, curl command, and timing immediately after successful request
-            with open(llm_dir / "combined_analysis_response.txt", "w") as f:
+            with open(llm_dir / "combined_analysis_response.txt", "w", encoding="utf-8") as f:
                 f.write(response_text)
             
             if curl_command:
-                with open(llm_dir / "combined_analysis_curl.txt", "w") as f:
+                with open(llm_dir / "combined_analysis_curl.txt", "w", encoding="utf-8") as f:
                     f.write(curl_command)
             
             # Save timing metadata
-            with open(llm_dir / "combined_analysis_timing.json", "w") as f:
-                json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
+            with open(llm_dir / "combined_analysis_timing.json", "w", encoding="utf-8") as f:
+                json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Combined LLM analysis failed for document {document_dir.parent.name}: {e}")
-            with open(llm_dir / "combined_analysis_error.txt", "w") as f:
+            with open(llm_dir / "combined_analysis_error.txt", "w", encoding="utf-8") as f:
                 f.write(str(e))
             # Save curl command even if there was an error (if we got that far)
             if curl_command:
-                with open(llm_dir / "combined_analysis_curl.txt", "w") as f:
+                with open(llm_dir / "combined_analysis_curl.txt", "w", encoding="utf-8") as f:
                     f.write(curl_command)
             raise
 
@@ -1351,23 +1351,23 @@ Respond with JSON:
                             metadata_dir = document_dir / "metadata"
                             metadata_dir.mkdir(exist_ok=True)
 
-                            with open(metadata_dir / "result.json", "w") as f:
-                                json.dump(extraction_result.data, f, indent=2)
+                            with open(metadata_dir / "result.json", "w", encoding="utf-8") as f:
+                                json.dump(extraction_result.data, f, indent=2, ensure_ascii=False)
 
-                            with open(metadata_dir / "evidence.json", "w") as f:
-                                json.dump(self._json_serialize(extraction_result.evidence), f, indent=2)
+                            with open(metadata_dir / "evidence.json", "w", encoding="utf-8") as f:
+                                json.dump(self._json_serialize(extraction_result.evidence), f, indent=2, ensure_ascii=False)
 
                             # Validate evidence spans
                             pages = ocr_result.pages
                             validation_errors = self._validate_evidence(extraction_result, pages)
 
-                            with open(metadata_dir / "validation.json", "w") as f:
-                                json.dump({"errors": validation_errors}, f, indent=2)
+                            with open(metadata_dir / "validation.json", "w", encoding="utf-8") as f:
+                                json.dump({"errors": validation_errors}, f, indent=2, ensure_ascii=False)
             except Exception as e:
                 logger.warning(f"Extraction result processing failed: {e}")
 
-        with open(llm_dir / "combined_analysis_result.json", "w") as f:
-            json.dump(result, f, indent=2)
+        with open(llm_dir / "combined_analysis_result.json", "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
 
         return classification, extraction_result
 
@@ -1794,8 +1794,8 @@ Respond with JSON:
                     "models_tried": bert_models_tried
                 }
             
-            with open(llm_dir / "classification_local.json", "w") as f:
-                json.dump(classification_data, f, indent=2)
+            with open(llm_dir / "classification_local.json", "w", encoding="utf-8") as f:
+                    json.dump(classification_data, f, indent=2, ensure_ascii=False)
 
             logger.info(f"Document {document.id} classified as '{best_pred.label}' via {best_method} (p={best_pred.confidence:.2f})")
             return classification
@@ -1864,8 +1864,8 @@ Respond with JSON:
                     "models_tried": bert_models_tried
                 }
             
-            with open(llm_dir / "classification_local.json", "w") as f:
-                json.dump(classification_data, f, indent=2)
+            with open(llm_dir / "classification_local.json", "w", encoding="utf-8") as f:
+                    json.dump(classification_data, f, indent=2, ensure_ascii=False)
         
         # Step 2: Deterministic classification (fallback when trained models don't match)
         # Only use deterministic if trained models had low confidence (< 0.7) or no result
@@ -1925,7 +1925,7 @@ Respond with JSON:
             # Save classification artifacts with matched keywords
             llm_dir = document_dir / "llm"
             llm_dir.mkdir(exist_ok=True)
-            with open(llm_dir / "classification_deterministic.json", "w") as f:
+            with open(llm_dir / "classification_deterministic.json", "w", encoding="utf-8") as f:
                 json.dump({
                     "method": "deterministic",
                     "doc_type_slug": deterministic_result,
@@ -2118,11 +2118,11 @@ Respond with JSON only:
         llm_dir = document_dir / "llm"
         llm_dir.mkdir(exist_ok=True)
 
-        with open(llm_dir / "classification_prompt.txt", "w") as f:
+        with open(llm_dir / "classification_prompt.txt", "w", encoding="utf-8") as f:
             f.write(prompt)
 
-        with open(llm_dir / "classification_schema.json", "w") as f:
-            json.dump(schema, f, indent=2)
+        with open(llm_dir / "classification_schema.json", "w", encoding="utf-8") as f:
+            json.dump(schema, f, indent=2, ensure_ascii=False)
 
         curl_command = None
         response_text = None
@@ -2134,26 +2134,26 @@ Respond with JSON only:
             logger.info(f"LLM classification completed for document {document_dir.parent.name} in {duration:.2f}s")
 
             # Save response, curl command, and timing immediately after successful request
-            with open(llm_dir / "classification_response.txt", "w") as f:
+            with open(llm_dir / "classification_response.txt", "w", encoding="utf-8") as f:
                 f.write(response_text)
             
             if curl_command:
-                with open(llm_dir / "classification_curl.txt", "w") as f:
+                with open(llm_dir / "classification_curl.txt", "w", encoding="utf-8") as f:
                     f.write(curl_command)
             
             # Save timing metadata
             if duration is not None:
-                with open(llm_dir / "classification_timing.json", "w") as f:
-                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
+                with open(llm_dir / "classification_timing.json", "w", encoding="utf-8") as f:
+                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"LLM classification failed for document {document_dir.parent.name}: {e}")
             error_msg = str(e)
-            with open(llm_dir / "classification_error.txt", "w") as f:
+            with open(llm_dir / "classification_error.txt", "w", encoding="utf-8") as f:
                 f.write(error_msg)
             
             # Save curl command even if there was an error (if we got that far)
             if curl_command:
-                with open(llm_dir / "classification_curl.txt", "w") as f:
+                with open(llm_dir / "classification_curl.txt", "w", encoding="utf-8") as f:
                     f.write(curl_command)
             
             # If we have response_text but parsing failed, try to repair it
@@ -2177,8 +2177,8 @@ Respond with JSON only:
         if result:
             validated_result = self._validate_llm_classification(result, sample_text)
 
-            with open(llm_dir / "classification_result.json", "w") as f:
-                json.dump(validated_result, f, indent=2)
+            with open(llm_dir / "classification_result.json", "w", encoding="utf-8") as f:
+                json.dump(validated_result, f, indent=2, ensure_ascii=False)
 
             return ClassificationResult(**validated_result)
         else:
@@ -2294,7 +2294,7 @@ Respond with JSON only:
             logger.info(f"Skipping LLM extraction for document {document.id}: No fields configured for type '{classification.doc_type_slug}'")
             llm_dir = document_dir / "llm"
             llm_dir.mkdir(exist_ok=True)
-            with open(llm_dir / "extraction_skipped.json", "w") as f:
+            with open(llm_dir / "extraction_skipped.json", "w", encoding="utf-8") as f:
                 json.dump(
                     {
                         "used_llm": False,
@@ -2324,8 +2324,8 @@ Respond with JSON only:
         llm_dir = document_dir / "llm"
         llm_dir.mkdir(exist_ok=True)
         
-        with open(llm_dir / "extraction_schema.json", "w") as f:
-            json.dump(schema, f, indent=2)
+        with open(llm_dir / "extraction_schema.json", "w", encoding="utf-8") as f:
+            json.dump(schema, f, indent=2, ensure_ascii=False)
         
         # Split into chunks if text is too large
         # For 4K context models: need ~1500 tokens for response, ~500 for prompt overhead
@@ -2368,7 +2368,7 @@ Respond with JSON only:
                 prompt = self._build_extraction_prompt(fields, chunk, classification.doc_type_slug, preamble, chunk_num=chunk_num, total_chunks=total_chunks)
                 
                 # Save chunk prompt
-                with open(llm_dir / f"extraction_prompt_chunk_{chunk_num}.txt", "w") as f:
+                with open(llm_dir / f"extraction_prompt_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
                     f.write(prompt)
                 
                 try:
@@ -2383,15 +2383,15 @@ Respond with JSON only:
                         logger.info(f"Chunk {chunk_num}: found {len(found_fields)} fields: {found_fields}")
                     
                     # Save chunk response
-                    with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w") as f:
+                    with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
                         f.write(chunk_response_text)
                     if chunk_curl_command:
-                        with open(llm_dir / f"extraction_curl_chunk_{chunk_num}.txt", "w") as f:
+                        with open(llm_dir / f"extraction_curl_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
                             f.write(chunk_curl_command)
                     
                     # Save chunk timing
-                    with open(llm_dir / f"extraction_timing_chunk_{chunk_num}.json", "w") as f:
-                        json.dump({"duration_seconds": chunk_duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
+                    with open(llm_dir / f"extraction_timing_chunk_{chunk_num}.json", "w", encoding="utf-8") as f:
+                        json.dump({"duration_seconds": chunk_duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
                 except Exception as e:
                     logger.warning(f"Chunk {chunk_num} extraction failed: {e}, continuing with other chunks")
                     continue
@@ -2421,19 +2421,20 @@ Respond with JSON only:
                 ])
                 
                 # Save merged prompt and response
-                with open(llm_dir / "extraction_prompt.txt", "w") as f:
+                with open(llm_dir / "extraction_prompt.txt", "w", encoding="utf-8") as f:
                     f.write(f"# Multi-chunk extraction ({len(chunks)} chunks)\n")
                     for i in range(len(chunks)):
                         if (llm_dir / f"extraction_prompt_chunk_{i+1}.txt").exists():
                             f.write(f"\n--- Chunk {i+1} ---\n")
-                            f.write(open(llm_dir / f"extraction_prompt_chunk_{i+1}.txt").read())
+                            with open(llm_dir / f"extraction_prompt_chunk_{i+1}.txt", "r", encoding="utf-8") as chunk_file:
+                                f.write(chunk_file.read())
                 
-                with open(llm_dir / "extraction_response.txt", "w") as f:
+                with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
                     f.write(response_text)
                 
                 # Calculate and save total duration
                 total_duration = sum(chunk_durations) if chunk_durations else 0
-                with open(llm_dir / "extraction_timing.json", "w") as f:
+                with open(llm_dir / "extraction_timing.json", "w", encoding="utf-8") as f:
                     json.dump({
                         "duration_seconds": total_duration,
                         "chunk_count": len(chunk_durations),
@@ -2445,15 +2446,15 @@ Respond with JSON only:
                 logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} ({len(chunks)} chunks merged) in {total_duration:.2f}s total")
                 
                 # Save merged result
-                with open(llm_dir / "extraction_result.json", "w") as f:
-                    json.dump(self._json_serialize(result), f, indent=2)
+                with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                    json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
             else:
                 raise Exception("All chunk extractions failed")
         else:
             # Single chunk - normal processing
             prompt = self._build_extraction_prompt(fields, filtered_text, classification.doc_type_slug, preamble)
             
-            with open(llm_dir / "extraction_prompt.txt", "w") as f:
+            with open(llm_dir / "extraction_prompt.txt", "w", encoding="utf-8") as f:
                 f.write(prompt)
             
             result = None
@@ -2466,28 +2467,28 @@ Respond with JSON only:
                 logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} in {duration:.2f}s")
                 
                 # Save response, curl command, and timing immediately after successful request
-                with open(llm_dir / "extraction_response.txt", "w") as f:
+                with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
                     f.write(response_text)
                 
                 if curl_command:
-                    with open(llm_dir / "extraction_curl.txt", "w") as f:
+                    with open(llm_dir / "extraction_curl.txt", "w", encoding="utf-8") as f:
                         f.write(curl_command)
                 
                 # Save timing metadata
-                with open(llm_dir / "extraction_timing.json", "w") as f:
-                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2)
+                with open(llm_dir / "extraction_timing.json", "w", encoding="utf-8") as f:
+                    json.dump({"duration_seconds": duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
                 
-                with open(llm_dir / "extraction_result.json", "w") as f:
-                    json.dump(self._json_serialize(result), f, indent=2)
+                with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                    json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
             except Exception as e:
                 logger.error(f"LLM metadata extraction failed for document {document_dir.parent.name}: {e}")
                 error_msg = str(e)
-                with open(llm_dir / "extraction_error.txt", "w") as f:
+                with open(llm_dir / "extraction_error.txt", "w", encoding="utf-8") as f:
                     f.write(error_msg)
                 
                 # Save curl command even if there was an error (if we got that far)
                 if curl_command:
-                    with open(llm_dir / "extraction_curl.txt", "w") as f:
+                    with open(llm_dir / "extraction_curl.txt", "w", encoding="utf-8") as f:
                         f.write(curl_command)
                 
                 # If we have response_text but parsing failed, try to repair it
@@ -2499,10 +2500,10 @@ Respond with JSON only:
                             logger.info("Successfully repaired JSON from response_text")
                             result = repaired_result
                             # Save the repaired result
-                            with open(llm_dir / "extraction_response.txt", "w") as f:
+                            with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
                                 f.write(response_text)
-                            with open(llm_dir / "extraction_result.json", "w") as f:
-                                json.dump(self._json_serialize(result), f, indent=2)
+                            with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                                json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
                         else:
                             logger.error("Failed to repair JSON even from response_text")
                             # Try to extract at least one object as fallback
@@ -2510,8 +2511,8 @@ Respond with JSON only:
                             if json_objects:
                                 logger.warning(f"Using first extracted object as fallback from {len(json_objects)} objects")
                                 result = json_objects[0]
-                                with open(llm_dir / "extraction_result.json", "w") as f:
-                                    json.dump(self._json_serialize(result), f, indent=2)
+                                with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                                    json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
                             else:
                                 raise
                     except Exception as repair_error:
@@ -2522,8 +2523,8 @@ Respond with JSON only:
                             if json_objects:
                                 logger.warning(f"Using first extracted object as last resort from {len(json_objects)} objects")
                                 result = json_objects[0]
-                                with open(llm_dir / "extraction_result.json", "w") as f:
-                                    json.dump(self._json_serialize(result), f, indent=2)
+                                with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                                    json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
                             else:
                                 raise e  # Re-raise original error
                         except Exception as extract_error:
@@ -2641,17 +2642,17 @@ Respond with JSON only:
         metadata_dir = document_dir / "metadata"
         metadata_dir.mkdir(exist_ok=True)
 
-        with open(metadata_dir / "result.json", "w") as f:
-            json.dump(evidence_data.data, f, indent=2)
+        with open(metadata_dir / "result.json", "w", encoding="utf-8") as f:
+            json.dump(evidence_data.data, f, indent=2, ensure_ascii=False)
 
-        with open(metadata_dir / "validation.json", "w") as f:
-            json.dump({"errors": validation_errors}, f, indent=2)
+        with open(metadata_dir / "validation.json", "w", encoding="utf-8") as f:
+            json.dump({"errors": validation_errors}, f, indent=2, ensure_ascii=False)
         
-        with open(metadata_dir / "verified.json", "w") as f:
-            json.dump(verified, f, indent=2)
+        with open(metadata_dir / "verified.json", "w", encoding="utf-8") as f:
+            json.dump(verified, f, indent=2, ensure_ascii=False)
 
-        with open(metadata_dir / "evidence.json", "w") as f:
-            json.dump(self._json_serialize(evidence_data.evidence), f, indent=2)
+        with open(metadata_dir / "evidence.json", "w", encoding="utf-8") as f:
+            json.dump(self._json_serialize(evidence_data.evidence), f, indent=2, ensure_ascii=False)
 
         await self._update_progress(document.id, 85, "extracting_metadata_complete", progress_callback)
         return evidence_data
@@ -2920,8 +2921,8 @@ Replace null with extracted values. Keep null if not found."""
         # Save regex corrections for debugging
         if regex_corrections:
             try:
-                with open(llm_dir / "regex_corrections.json", "w") as f:
-                    json.dump(regex_corrections, f, indent=2)
+                with open(llm_dir / "regex_corrections.json", "w", encoding="utf-8") as f:
+                    json.dump(regex_corrections, f, indent=2, ensure_ascii=False)
             except Exception as e:
                 logger.warning(f"Failed to save regex corrections: {e}")
         
@@ -3185,8 +3186,8 @@ Replace null with extracted values. Keep null if not found."""
         risk_dir = document_dir / "risk"
         risk_dir.mkdir(exist_ok=True)
 
-        with open(risk_dir / "result.json", "w") as f:
-            json.dump(analysis.dict(), f, indent=2)
+        with open(risk_dir / "result.json", "w", encoding="utf-8") as f:
+            json.dump(analysis.dict(), f, indent=2, ensure_ascii=False)
 
         return analysis
 
@@ -3301,7 +3302,7 @@ Replace null with extracted values. Keep null if not found."""
         classification_file = document_dir / "llm" / "classification_local.json"
         if classification_file.exists():
             try:
-                with open(classification_file, "r") as f:
+                with open(classification_file, "r", encoding="utf-8") as f:
                     classification_data = json.load(f)
                     # Extract NB and BERT scores if available
                     classification_scores = {}
