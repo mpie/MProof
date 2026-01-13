@@ -15,10 +15,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Check if table already exists
-    conn = op.get_bind()
-    inspector = sa.inspect(conn)
-    tables = inspector.get_table_names()
+    # Check if table already exists (idempotent migration)
+    try:
+        conn = op.get_bind()
+        inspector = sa.inspect(conn)
+        tables = inspector.get_table_names()
+    except Exception:
+        # If inspection fails, assume table doesn't exist (safer to try creating)
+        tables = []
     
     if 'app_settings' not in tables:
         op.create_table(

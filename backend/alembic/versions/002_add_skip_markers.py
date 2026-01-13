@@ -15,16 +15,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Check if table already exists
-    conn = op.get_bind()
-    inspector = sa.inspect(conn)
-    tables = inspector.get_table_names()
+    # Check if table already exists (idempotent migration)
+    try:
+        conn = op.get_bind()
+        inspector = sa.inspect(conn)
+        tables = inspector.get_table_names()
+    except Exception:
+        # If inspection fails, assume table doesn't exist (safer to try creating)
+        tables = []
     
     # Create skip_markers table (only if it doesn't exist)
     if 'skip_markers' not in tables:
         op.create_table(
             'skip_markers',
-        sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('pattern', sa.String(length=500), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('is_regex', sa.Boolean(), nullable=False, server_default='0'),

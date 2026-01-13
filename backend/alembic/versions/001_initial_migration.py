@@ -15,9 +15,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    conn = op.get_bind()
-    inspector = sa.inspect(conn)
-    existing_tables = inspector.get_table_names()
+    # Check if tables already exist (idempotent migration)
+    try:
+        conn = op.get_bind()
+        inspector = sa.inspect(conn)
+        existing_tables = set(inspector.get_table_names())
+    except Exception:
+        # If inspection fails, assume tables don't exist (safer to try creating)
+        existing_tables = set()
     
     # Create subjects table (only if it doesn't exist)
     if 'subjects' not in existing_tables:

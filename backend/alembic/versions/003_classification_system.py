@@ -22,17 +22,27 @@ depends_on = None
 
 def upgrade() -> None:
     # Add classification_policy_json column to document_types (if it doesn't exist)
-    conn = op.get_bind()
-    inspector = sa.inspect(conn)
-    columns = [col['name'] for col in inspector.get_columns('document_types')]
-    if 'classification_policy_json' not in columns:
-        op.add_column(
-            'document_types',
-            sa.Column('classification_policy_json', sa.JSON(), nullable=True)
-        )
+    try:
+        conn = op.get_bind()
+        inspector = sa.inspect(conn)
+        columns = [col['name'] for col in inspector.get_columns('document_types')]
+        if 'classification_policy_json' not in columns:
+            op.add_column(
+                'document_types',
+                sa.Column('classification_policy_json', sa.JSON(), nullable=True)
+            )
+    except Exception:
+        # If inspection fails or table doesn't exist, skip column addition
+        pass
 
     # Create classification_signals table (if it doesn't exist)
-    tables = inspector.get_table_names()
+    try:
+        conn = op.get_bind()
+        inspector = sa.inspect(conn)
+        tables = inspector.get_table_names()
+    except Exception:
+        tables = []
+    
     if 'classification_signals' not in tables:
         op.create_table(
             'classification_signals',

@@ -39,21 +39,18 @@ def upgrade() -> None:
         )
         if not result.fetchone():
             # Insert built-in signal
-            op.execute(
-                sa.text("""
-                    INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json)
-                    VALUES (:key, :label, :description, :signal_type, :source, :compute_kind, :config_json)
-                """),
-                {
-                    'key': key,
-                    'label': label,
-                    'description': description,
-                    'signal_type': signal_type,
-                    'source': source,
-                    'compute_kind': compute_kind,
-                    'config_json': config_json,
-                }
-            )
+            # Escape single quotes in strings
+            label_escaped = label.replace("'", "''")
+            desc_escaped = (description or '').replace("'", "''")
+            config_str = "NULL"
+            if config_json:
+                import json
+                config_str = f"'{json.dumps(config_json).replace(chr(39), chr(39)+chr(39))}'"
+            
+            op.execute(f"""
+                INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json)
+                VALUES ('{key}', '{label_escaped}', '{desc_escaped}', '{signal_type}', '{source}', '{compute_kind}', {config_str})
+            """)
     
     # Check if user signals already exist (idempotent)
     result = conn.execute(sa.text("SELECT COUNT(*) FROM classification_signals WHERE source = 'user'"))
@@ -112,19 +109,16 @@ def upgrade() -> None:
         
         if not existing:
             # Insert document type
-            op.execute(
-                sa.text("""
-                    INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, created_at, updated_at)
-                    VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, datetime('now'), datetime('now'))
-                """),
-                {
-                    'name': doc_type['name'],
-                    'slug': doc_type['slug'],
-                    'description': doc_type['description'],
-                    'classification_hints': doc_type['classification_hints'],
-                    'extraction_prompt_preamble': doc_type['extraction_prompt_preamble'],
-                }
-            )
+            # Escape single quotes
+            name_escaped = doc_type['name'].replace("'", "''")
+            desc_escaped = (doc_type['description'] or '').replace("'", "''")
+            hints_escaped = (doc_type['classification_hints'] or '').replace("'", "''")
+            preamble_escaped = (doc_type['extraction_prompt_preamble'] or '').replace("'", "''")
+            
+            op.execute(f"""
+                INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, created_at, updated_at)
+                VALUES ('{name_escaped}', '{doc_type['slug']}', '{desc_escaped}', '{hints_escaped}', '{preamble_escaped}', datetime('now'), datetime('now'))
+            """)
             # Get the inserted ID
             result = conn.execute(
                 sa.text("SELECT id FROM document_types WHERE slug = :slug"),
@@ -143,23 +137,19 @@ def upgrade() -> None:
             )
             if not result.fetchone():
                 # Insert field
-                op.execute(
-                    sa.text("""
-                        INSERT INTO document_type_fields 
-                        (document_type_id, key, label, field_type, required, description, enum_values, regex, created_at, updated_at)
-                        VALUES (:document_type_id, :key, :label, :field_type, :required, :description, :enum_values, :regex, datetime('now'), datetime('now'))
-                    """),
-                    {
-                        'document_type_id': doc_type_id,
-                        'key': field['key'],
-                        'label': field['label'],
-                        'field_type': field['field_type'],
-                        'required': 1 if field['required'] else 0,
-                        'description': field['description'],
-                        'enum_values': json.dumps(field['enum_values']) if field['enum_values'] else None,
-                        'regex': field['regex'],
-                    }
-                )
+                # Escape single quotes
+                label_escaped = field['label'].replace("'", "''")
+                desc_escaped = (field['description'] or '').replace("'", "''")
+                regex_escaped = (field['regex'] or '').replace("'", "''") if field['regex'] else 'NULL'
+                enum_vals = "NULL"
+                if field['enum_values']:
+                    enum_vals = f"'{json.dumps(field['enum_values']).replace(chr(39), chr(39)+chr(39))}'"
+                
+                op.execute(f"""
+                    INSERT INTO document_type_fields 
+                    (document_type_id, key, label, field_type, required, description, enum_values, regex, created_at, updated_at)
+                    VALUES ({doc_type_id}, '{field['key']}', '{label_escaped}', '{field['field_type']}', {1 if field['required'] else 0}, '{desc_escaped}', {enum_vals}, {f"'{regex_escaped}'" if field['regex'] else 'NULL'}, datetime('now'), datetime('now'))
+                """)
     
     # Update policies (idempotent - always updates)
     # Policy for bankafschrift
@@ -193,10 +183,11 @@ def upgrade() -> None:
     }
   }
 }''')
-    op.execute(
-        sa.text("UPDATE document_types SET classification_policy_json = :policy WHERE slug = :slug"),
-        {'policy': json.dumps(policy_json_bankafschrift), 'slug': 'bankafschrift'}
-    )
+    # Update policy - escape JSON string for SQL
+    policy_str = json.dumps(policy_json_bankafschrift).replace("'", "''")
+    op.execute(f"""
+        UPDATE document_types SET classification_policy_json = '{policy_str}' WHERE slug = 'bankafschrift'
+    """)
 
 
 def downgrade() -> None:
