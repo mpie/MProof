@@ -67,12 +67,15 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
-  const { data: recentDocs } = useQuery<DocumentListResponse>({
+  const { data: recentDocs } = useQuery({
     queryKey: ['documents-recent'],
-    queryFn: async (): Promise<DocumentListResponse> => listDocuments(undefined, undefined, 5, 0),
+    queryFn: () => listDocuments(undefined, undefined, 5, 0),
     refetchInterval: 5000,
-    structuralSharing: (oldData, newData) => {
-      if (!oldData || !newData) return newData;
+    structuralSharing: (
+      oldData: DocumentListResponse | undefined,
+      newData: DocumentListResponse
+    ) => {
+      if (!oldData) return newData;
 
       const oldMap = new Map(oldData.documents.map(doc => [doc.id, doc]));
 
