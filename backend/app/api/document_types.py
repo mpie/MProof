@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -124,8 +125,7 @@ async def create_document_type(
             policy_json_str = json.dumps(doc_type.classification_policy_json)
 
         # Create document type
-        from datetime import datetime
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             text("""INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, classification_policy_json, created_at, updated_at)
                    VALUES (:name, :slug, :description, :classification_hints, :extraction_prompt_preamble, :classification_policy_json, :created_at, :updated_at) RETURNING *"""),
@@ -231,9 +231,8 @@ async def update_document_type(
             doc_type_dict["fields"] = [DocumentTypeFieldResponse(**field._mapping) for field in fields]
             return DocumentTypeResponse(**doc_type_dict)
 
-        from datetime import datetime
         sql = f"UPDATE document_types SET {', '.join(update_fields)}, updated_at = :updated_at WHERE slug = :old_slug"
-        params["updated_at"] = datetime.now()
+        params["updated_at"] = datetime.now(timezone.utc)
         params["old_slug"] = slug
 
         await session.execute(text(sql), params)
@@ -342,8 +341,7 @@ async def create_document_type_field(
             raise HTTPException(status_code=409, detail="Field key already exists")
 
         # Create field
-        from datetime import datetime
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             text("""INSERT INTO document_type_fields
                    (document_type_id, key, label, field_type, required, enum_values, regex, description, examples, created_at, updated_at)
@@ -413,9 +411,8 @@ async def update_document_type_field(
             current_field = field_result.fetchone()
             return DocumentTypeFieldResponse(**current_field._mapping)
 
-        from datetime import datetime
         sql = f"UPDATE document_type_fields SET {', '.join(update_fields)}, updated_at = :updated_at WHERE id = :field_id"
-        params["updated_at"] = datetime.now()
+        params["updated_at"] = datetime.now(timezone.utc)
         params["field_id"] = field_id
 
         await session.execute(text(sql), params)

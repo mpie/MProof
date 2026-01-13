@@ -8,6 +8,7 @@ import shutil
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, NamedTuple
+from datetime import datetime, timezone
 try:
     import magic
     HAS_MAGIC = True
@@ -3282,10 +3283,9 @@ Replace null with extracted values. Keep null if not found."""
                              callback: callable = None,
                              doc_type_slug: str = None, doc_type_confidence: float = None) -> None:
         """Update document progress and call callback if provided."""
-        from datetime import datetime
         await self.db.execute(
             text("UPDATE documents SET status = 'processing', progress = :progress, stage = :stage, updated_at = :updated_at WHERE id = :document_id"),
-            {"progress": progress, "stage": stage, "document_id": document_id, "updated_at": datetime.now()}
+            {"progress": progress, "stage": stage, "document_id": document_id, "updated_at": datetime.now(timezone.utc)}
         )
         await self.db.commit()
 
@@ -3296,8 +3296,6 @@ Replace null with extracted values. Keep null if not found."""
                                extraction_result: Optional[ExtractionEvidence],
                                risk_analysis: RiskAnalysis, ocr_result: OCRResult, document_dir: Path) -> None:
         """Finalize document processing."""
-        from datetime import datetime
-        
         # Try to load classification scores from classification_local.json
         classification_scores = None
         classification_file = document_dir / "llm" / "classification_local.json"
@@ -3327,7 +3325,7 @@ Replace null with extracted values. Keep null if not found."""
             "ocr_quality": ocr_result.ocr_quality,
             "skip_marker_used": self._skip_marker_used,
             "skip_marker_position": self._skip_marker_position,
-            "updated_at": datetime.now()
+            "updated_at": datetime.now(timezone.utc)
         }
 
         if extraction_result:
@@ -3348,10 +3346,9 @@ Replace null with extracted values. Keep null if not found."""
 
     async def _update_document_error(self, document_id: int, error_message: str) -> None:
         """Mark document as error."""
-        from datetime import datetime
         await self.db.execute(
             text("UPDATE documents SET status = 'error', error_message = :error_message, updated_at = :updated_at WHERE id = :document_id"),
-            {"error_message": error_message, "document_id": document_id, "updated_at": datetime.now()}
+            {"error_message": error_message, "document_id": document_id, "updated_at": datetime.now(timezone.utc)}
         )
         await self.db.commit()
 

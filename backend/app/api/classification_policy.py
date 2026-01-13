@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Optional
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, ValidationError
@@ -144,7 +145,6 @@ async def get_document_type_policy(slug: str):
 @router.put("/document-types/{slug}/policy", response_model=TypePolicyResponse)
 async def update_document_type_policy(slug: str, policy: ClassificationPolicy = Body(...)):
     """Update classification policy for a document type."""
-    from datetime import datetime
     from app.main import async_session_maker
 
     async with async_session_maker() as session:
@@ -164,7 +164,7 @@ async def update_document_type_policy(slug: str, policy: ClassificationPolicy = 
             {
                 "slug": slug,
                 "policy": json.dumps(policy.model_dump()),
-                "updated_at": datetime.now(),
+                "updated_at": datetime.now(timezone.utc),
             },
         )
         await session.commit()
@@ -175,7 +175,6 @@ async def update_document_type_policy(slug: str, policy: ClassificationPolicy = 
 @router.delete("/document-types/{slug}/policy")
 async def delete_document_type_policy(slug: str):
     """Delete classification policy (reset to default)."""
-    from datetime import datetime
     from app.main import async_session_maker
 
     async with async_session_maker() as session:
@@ -192,7 +191,7 @@ async def delete_document_type_policy(slug: str):
                 SET classification_policy_json = NULL, updated_at = :updated_at
                 WHERE slug = :slug
             """),
-            {"slug": slug, "updated_at": datetime.now()},
+            {"slug": slug, "updated_at": datetime.now(timezone.utc)},
         )
         await session.commit()
 
@@ -362,7 +361,6 @@ async def import_config(bundle: ConfigExportBundle = Body(...)):
 
     Upsert based on key/slug. Validates strictly.
     """
-    from datetime import datetime
     from app.main import async_session_maker
 
     errors = []
@@ -465,7 +463,7 @@ async def import_config(bundle: ConfigExportBundle = Body(...)):
                     {
                         "slug": entry.slug,
                         "policy": policy_value,
-                        "updated_at": datetime.now(),
+                        "updated_at": datetime.now(timezone.utc),
                     },
                 )
                 imported_policies.append(entry.slug)

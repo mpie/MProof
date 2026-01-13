@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, or_, and_
 from typing import List, Optional
+from datetime import datetime, timezone
 import unicodedata
 import re
 from app.models.schemas import (
@@ -74,8 +75,7 @@ async def create_subject(
             raise HTTPException(status_code=409, detail="Subject already exists")
 
         # Create new subject
-        from datetime import datetime
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             text("""INSERT INTO subjects (name, name_normalized, context, created_at, updated_at)
                    VALUES (:name, :name_normalized, :context, :created_at, :updated_at) RETURNING id"""),

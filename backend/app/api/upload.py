@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from datetime import datetime, timezone
 import shutil
 import hashlib
 from pathlib import Path
@@ -98,8 +99,7 @@ async def upload_document(
         sha256 = hashlib.sha256(file_content).hexdigest()
 
         # Create document record FIRST to get the real ID (atomic)
-        from datetime import datetime
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             text("""INSERT INTO documents
                    (subject_id, original_filename, mime_type, size_bytes, sha256, status, progress, ocr_used, created_at, updated_at)
