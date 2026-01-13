@@ -67,25 +67,21 @@ export default function Dashboard() {
     refetchInterval: 10000,
   });
 
-  const { data: recentDocs } = useQuery({
+  const { data: recentDocs } = useQuery<DocumentListResponse>({
     queryKey: ['documents-recent'],
-    queryFn: async () => listDocuments(undefined, undefined, 5, 0),
+    queryFn: async (): Promise<DocumentListResponse> => listDocuments(undefined, undefined, 5, 0),
     refetchInterval: 5000,
     structuralSharing: (oldData, newData) => {
       if (!oldData || !newData) return newData;
-      
-      // Create a map of old documents by ID for quick lookup
+
       const oldMap = new Map(oldData.documents.map(doc => [doc.id, doc]));
-      
-      // Merge: preserve doc_type_slug and confidence from old data if new data doesn't have them
-      const merged = {
+
+      return {
         ...newData,
         documents: newData.documents.map((doc) => {
           const oldDoc = oldMap.get(doc.id);
           if (!oldDoc) return doc;
-          
-          // Preserve doc_type_slug and confidence if they exist in old data but not in new data
-          // Only preserve if document is still processing (not done)
+
           if (doc.status === 'processing' || doc.status === 'queued') {
             return {
               ...doc,
@@ -93,12 +89,10 @@ export default function Dashboard() {
               doc_type_confidence: doc.doc_type_confidence ?? oldDoc.doc_type_confidence ?? undefined,
             };
           }
-          
+
           return doc;
         }),
       };
-      
-      return merged;
     },
   });
 
