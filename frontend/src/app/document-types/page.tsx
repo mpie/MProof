@@ -805,7 +805,7 @@ export default function DocumentTypesAdmin() {
 
 // Document Type Form Component
 interface DocumentTypeFormProps {
-  initialData?: DocumentType;
+  initialData?: Partial<DocumentType>;
   onSubmit: (data: any) => void;
   onCancel: () => void;
   isLoading: boolean;
