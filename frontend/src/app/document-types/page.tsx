@@ -123,8 +123,8 @@ export default function DocumentTypesAdmin() {
   });
 
   const { data: trainingDetails } = useQuery({
-    queryKey: ['training-details'],
-    queryFn: getTrainingDetails,
+    queryKey: ["training-details", modelName],
+    queryFn: ({ queryKey }) => getTrainingDetails(queryKey[1] as string | undefined),
   });
 
   const { data: availableModels } = useQuery({
