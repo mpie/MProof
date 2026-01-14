@@ -135,7 +135,8 @@ class LLMClient:
         normalized_messages = self._normalize_messages(messages)
         
         if self.provider == "vllm":
-            # Calculate available tokens based on actual model context (4096 for most models)
+            # Calculate available tokens based on actual model context
+            # Use 4096 as conservative default - the model will reject if we exceed
             MODEL_CONTEXT = 4096
             SAFETY_MARGIN = 100  # Buffer for tokenization differences
             
@@ -786,7 +787,7 @@ class LLMClient:
         messages = [
             {
                 "role": "system",
-                "content": "You are a document analysis assistant. Extract information from the provided document text and respond with valid JSON only. Always extract REAL values from the document - never use placeholder text. Respond with a single complete JSON object, no explanations or markdown."
+                "content": "You are a document analysis assistant. Extract information from the provided document text and respond with valid JSON only. Always extract REAL values from the document - never use placeholder text. Respond with a single complete JSON object, no explanations or markdown. IMPORTANT: Only extract the fields that are explicitly listed in the prompt - do not add fields that are not mentioned."
             },
             {
                 "role": "user",
@@ -795,7 +796,16 @@ class LLMClient:
         ]
 
         if schema:
-            messages[0]["content"] += f"\n\nExpected JSON schema: {json.dumps(schema, indent=2)}"
+            # Extract field names from schema for clarity
+            field_names = []
+            if isinstance(schema, dict) and "properties" in schema:
+                data_props = schema.get("properties", {}).get("data", {}).get("properties", {})
+                field_names = list(data_props.keys())
+            
+            schema_note = f"\n\nExpected JSON schema: {json.dumps(schema, indent=2)}"
+            if field_names:
+                schema_note += f"\n\nREQUIRED FIELDS to extract: {', '.join(field_names)}"
+            messages[0]["content"] += schema_note
 
         response_text, curl_command, duration = await self._make_request(messages)
 

@@ -485,7 +485,12 @@ export const getDocumentArtifact = async (documentId: number, path: string): Pro
 
 export const getDocumentArtifactText = async (documentId: number, path: string): Promise<string> => {
   try {
-    const response = await api.get(`/documents/${documentId}/artifact`, { params: { path }, responseType: 'text' });
+    // Add cache-busting timestamp to prevent browser/HTTP caching
+    const response = await api.get(`/documents/${documentId}/artifact`, { 
+      params: { path, _t: Date.now() }, 
+      responseType: 'text',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
     return response.data;
   } catch (error: unknown) {
     if ((error as { response?: { status?: number }; silent?: boolean }).response?.status === 404 || (error as { silent?: boolean }).silent) {
@@ -497,7 +502,11 @@ export const getDocumentArtifactText = async (documentId: number, path: string):
 
 export const getDocumentArtifactJson = async <T = unknown>(documentId: number, path: string): Promise<T> => {
   try {
-    const response = await api.get(`/documents/${documentId}/artifact`, { params: { path } });
+    // Add cache-busting timestamp to prevent browser/HTTP caching
+    const response = await api.get(`/documents/${documentId}/artifact`, { 
+      params: { path, _t: Date.now() },
+      headers: { 'Cache-Control': 'no-cache' }
+    });
     return response.data as T;
   } catch (error: unknown) {
     if ((error as { response?: { status?: number }; silent?: boolean }).response?.status === 404 || (error as { silent?: boolean }).silent) {

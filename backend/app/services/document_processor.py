@@ -7,7 +7,7 @@ import re
 import shutil
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, NamedTuple
+from typing import Dict, Any, List, Optional, Tuple, NamedTuple, Set
 from datetime import datetime, timezone
 try:
     import magic
@@ -1126,151 +1126,51 @@ class DocumentProcessor:
         return await self._llm_combined_analysis(document_dir, sample_text, available_types)
 
     async def _llm_combined_analysis(self, document_dir: Path, sample_text: str, available_types: List[Tuple[str, str]]) -> Tuple[ClassificationResult, Optional[ExtractionEvidence]]:
-        """Combined classification and extraction in single LLM call."""
-        # Build comprehensive prompt with all document types and their fields
-        types_info = []
-        available_slugs = []
-
-        for slug, hints in available_types:
-            if slug == "unknown":
+        """Combined classification and extraction in single LLM call (fallback when trained models fail)."""
+        # For classification, only use hints - NOT all field definitions (too long)
+        # Field definitions are only needed for extraction, which happens after classification
+        available_slugs = [slug for slug, _ in available_types if slug != "unknown"]
+        
+        # Get classification hints only (much shorter than full field definitions)
+        hints = []
+        for slug, hint_text in available_types:
+            if slug == "unknown" or not hint_text:
                 continue
+            hints.append(f"- {slug}: {hint_text}")
 
-            available_slugs.append(slug)
+        hints_text = "\n".join(hints) if hints else "No classification hints available."
 
-            # Get document type info and fields
-            doc_type_result = await self.db.execute(
-                text("SELECT name, description, extraction_prompt_preamble FROM document_types WHERE slug = :slug"),
-                {"slug": slug}
-            )
-            doc_type_row = doc_type_result.fetchone()
-
-            fields_result = await self.db.execute(
-                text("""
-                    SELECT key, label, field_type, required, enum_values, regex, description
-                    FROM document_type_fields
-                    WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug)
-                    ORDER BY key
-                """),
-                {"slug": slug}
-            )
-            fields = fields_result.fetchall()
-
-            if fields:
-                type_info = f"## {slug.upper()}: {doc_type_row.name}\n"
-                if doc_type_row.description:
-                    type_info += f"Description: {doc_type_row.description}\n"
-                if hints:
-                    type_info += f"\n⚠️ DISTINCTIVE CLASSIFICATION HINTS (use these to differentiate from similar types):\n{hints}\n"
-                if doc_type_row.extraction_prompt_preamble:
-                    type_info += f"\nExtraction context: {doc_type_row.extraction_prompt_preamble}\n"
-
-                type_info += "\nFields to extract:\n"
-                for field in fields:
-                    key, label, field_type, required, enum_values, regex, description = field
-                    field_desc = f"- {key} ({field_type}): {label}"
-                    if enum_values:
-                        field_desc += f" - Values: {enum_values}"
-                    if regex:
-                        field_desc += f" - Pattern: {regex}"
-                    if required:
-                        field_desc += " (required)"
-                    if description:
-                        field_desc += f" - {description}"
-                    type_info += field_desc + "\n"
-
-                types_info.append(type_info)
-
-        if not types_info:
-            # No document types with fields configured
-            classification = ClassificationResult(
-                doc_type_slug="unknown",
-                confidence=0.0,
-                rationale="No document types with fields configured"
-            )
-            return classification, None
-
-        # Build the combined prompt
-        types_text = "\n\n".join(types_info)
-
-        prompt = f"""Analyze this document and perform both classification AND metadata extraction in a single response.
-
-First, classify the document into one of these types based on the content:
-{', '.join(available_slugs)}, or 'unknown' if it doesn't match any type.
+        prompt = f"""Classify this document into one of these types: {', '.join(available_slugs)}, or 'unknown' if it doesn't match any type.
 
 CRITICAL CLASSIFICATION RULES:
-- If multiple document types share common keywords (e.g., both contain "iban"), you MUST look for DISTINCTIVE features that differentiate them
+- Choose a type ONLY if you can quote exact evidence from the text
+- If you cannot prove any specific type, return 'unknown'
+- NEVER guess or assume - only classify based on concrete evidence
+- If multiple document types share common keywords, look for DISTINCTIVE features that differentiate them
 - Pay close attention to the document's PURPOSE and STRUCTURE, not just individual keywords
-- Use the classification hints provided for each type to identify unique characteristics
-- Consider the CONTEXT: what is the document trying to accomplish? What is its primary function?
-- If two types seem similar, choose based on the MOST SPECIFIC and DISTINCTIVE features
-- When in doubt, prefer the type with more specific matching characteristics
 
-Then, if you classified it as a specific type (not 'unknown'), extract the metadata according to that type's field definitions.
-
-IMPORTANT:
-- If you cannot confidently classify the document, return 'unknown' and empty metadata (empty data and evidence objects)
-- If doc_type_slug is 'unknown', the extraction.data and extraction.evidence MUST be empty objects {{}}
-- For classification, you MUST provide exact evidence from the text that shows DISTINCTIVE features
-- For extraction, ONLY extract if doc_type_slug is NOT 'unknown' - skip extraction entirely if unknown
-- Return both classification and extraction results in one JSON response
-
-Document types and their field definitions:
-{types_text}
+Classification hints:
+{hints_text}
 
 Document text sample:
 {sample_text}
 
 Respond with JSON:
 {{
-  "classification": {{
-    "doc_type_slug": "one of the types or 'unknown'",
-    "confidence": 0.0-1.0,
-    "rationale": "brief explanation",
-    "evidence": "exact quote from text or empty"
-  }},
-  "extraction": {{
-    "data": {{
-      "field_key": "extracted_value",
-      ...
-    }},
-    "evidence": {{
-      "field_key": [
-        {{"page": 0, "start": 10, "end": 30, "quote": "exact text span"}},
-        ...
-      ],
-      ...
-    }}
-  }}
+  "doc_type_slug": "one of the types or 'unknown'",
+  "confidence": 0.0-1.0,
+  "rationale": "brief explanation",
+  "evidence": "exact quote from text or empty (max 50 chars)"
 }}"""
 
         schema = {
             "type": "object",
-            "required": ["classification", "extraction"],
+            "required": ["doc_type_slug", "confidence", "rationale", "evidence"],
             "properties": {
-                "classification": {
-                    "type": "object",
-                    "required": ["doc_type_slug", "confidence", "rationale", "evidence"],
-                    "properties": {
-                        "doc_type_slug": {"type": "string", "enum": available_slugs + ["unknown"]},
-                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                        "rationale": {"type": "string"},
-                        "evidence": {"type": "string"}
-                    }
-                },
-                "extraction": {
-                    "type": "object",
-                    "required": ["data", "evidence"],
-                    "properties": {
-                        "data": {
-                            "type": "object",
-                            "description": "Extracted metadata fields. Must be empty {} if doc_type_slug is 'unknown'"
-                        },
-                        "evidence": {
-                            "type": "object",
-                            "description": "Evidence spans for each field. Must be empty {} if doc_type_slug is 'unknown'"
-                        }
-                    }
-                }
+                "doc_type_slug": {"type": "string", "enum": available_slugs + ["unknown"]},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "rationale": {"type": "string"},
+                "evidence": {"type": "string"}
             }
         }
 
@@ -1310,71 +1210,39 @@ Respond with JSON:
                     f.write(curl_command)
             raise
 
-        # Parse the combined result
-        classification_data = result.get("classification", {})
-        extraction_data = result.get("extraction", {})
-
+        # Parse classification result (now only classification, no extraction)
         # Validate classification (returns dict)
-        validated_classification_data = self._validate_llm_classification(classification_data, sample_text)
+        validated_classification_data = self._validate_llm_classification(result, sample_text)
         # Convert to ClassificationResult object
         classification = ClassificationResult(**validated_classification_data)
 
-        # Handle extraction result
-        extraction_result = None
-        if classification.doc_type_slug != "unknown" and extraction_data:
-            try:
-                # Build schema for the specific document type
-                doc_type_result = await self.db.execute(
-                    text("SELECT id FROM document_types WHERE slug = :slug"),
-                    {"slug": classification.doc_type_slug}
-                )
-                doc_type_row = doc_type_result.fetchone()
-
-                if doc_type_row:
-                    fields_result = await self.db.execute(
-                        text("SELECT * FROM document_type_fields WHERE document_type_id = :doc_type_id"),
-                        {"doc_type_id": doc_type_row.id}
-                    )
-                    fields = fields_result.fetchall()
-
-                    if fields:
-                        # Create extraction schema
-                        extraction_schema = self._build_extraction_schema(fields)
-
-                        # Validate extraction data against schema
-                        if self._validate_extraction_data(extraction_data, extraction_schema):
-                            # Normalize extraction data to ensure correct structure
-                            normalized_data = self._normalize_extraction_data(extraction_data)
-                            extraction_result = ExtractionEvidence(**normalized_data)
-
-                            # Save extraction artifacts
-                            metadata_dir = document_dir / "metadata"
-                            metadata_dir.mkdir(exist_ok=True)
-
-                            with open(metadata_dir / "result.json", "w", encoding="utf-8") as f:
-                                json.dump(extraction_result.data, f, indent=2, ensure_ascii=False)
-
-                            with open(metadata_dir / "evidence.json", "w", encoding="utf-8") as f:
-                                json.dump(self._json_serialize(extraction_result.evidence), f, indent=2, ensure_ascii=False)
-
-                            # Validate evidence spans
-                            pages = ocr_result.pages
-                            validation_errors = self._validate_evidence(extraction_result, pages)
-
-                            with open(metadata_dir / "validation.json", "w", encoding="utf-8") as f:
-                                json.dump({"errors": validation_errors}, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                logger.warning(f"Extraction result processing failed: {e}")
-
-        with open(llm_dir / "combined_analysis_result.json", "w", encoding="utf-8") as f:
+        # Save classification result
+        with open(llm_dir / "classification_result.json", "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
 
-        return classification, extraction_result
+        # Return only classification - extraction will be done separately if needed
+        # (via _stage_metadata_extraction which is called after classification)
+        return classification, None
 
-    def _normalize_extraction_data(self, extraction_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize extraction data to ensure correct structure for ExtractionEvidence."""
+    def _normalize_extraction_data(self, extraction_data: Dict[str, Any], expected_fields: Optional[Set[str]] = None) -> Dict[str, Any]:
+        """Normalize extraction data to ensure correct structure for ExtractionEvidence.
+        
+        Args:
+            extraction_data: Raw extraction data from LLM
+            expected_fields: Optional set of expected field keys to filter out unexpected fields
+        """
         data = extraction_data.get("data", {})
         evidence = extraction_data.get("evidence", {})
+        
+        # Filter out unexpected fields if expected_fields is provided
+        if expected_fields is not None:
+            unexpected_in_data = [k for k in data.keys() if k not in expected_fields]
+            if unexpected_in_data:
+                logger.warning(f"Filtering out unexpected fields from data during normalization: {unexpected_in_data}")
+                data = {k: v for k, v in data.items() if k in expected_fields}
+                # Also filter evidence
+                if isinstance(evidence, dict):
+                    evidence = {k: v for k, v in evidence.items() if k in expected_fields}
         
         # Handle case where evidence is an array instead of an object
         if isinstance(evidence, list):
@@ -1553,10 +1421,20 @@ Respond with JSON:
         nb_error = None
         nb_below_threshold = None
         nb_threshold = None
+        nb_all_scores = None  # Store all scores for all types
         try:
             from app.services.doc_type_classifier import classifier_service
             pred, threshold, raw_pred = classifier_service().predict_with_threshold_info(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
             nb_threshold = threshold
+            
+            # Always get all scores, even if prediction fails
+            try:
+                nb_all_scores, _ = classifier_service().predict_all_scores_with_threshold(sample_text, allowed_labels=allowed_slugs, model_name=self.model_name)
+                if nb_all_scores:
+                    logger.info(f"Document {document.id} NB all scores: {[(k, f'{v:.2%}') for k, v in sorted(nb_all_scores.items(), key=lambda x: x[1], reverse=True)[:3]]}")
+            except Exception as e:
+                logger.debug(f"Could not get all NB scores: {e}")
+            
             if pred:
                 nb_pred = pred
                 # Only use NB if no strong deterministic match
@@ -1750,6 +1628,9 @@ Respond with JSON:
                 if nb_validation_reason:
                     nb_data["status"] = "rejected"
                     nb_data["rejection_reason"] = nb_validation_reason
+                # Add all scores if available
+                if nb_all_scores:
+                    nb_data["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
                 classification_data["naive_bayes"] = nb_data
             elif nb_below_threshold:
                 classification_data["naive_bayes"] = {
@@ -1759,16 +1640,25 @@ Respond with JSON:
                     "threshold": float(nb_threshold) if nb_threshold else None,
                     "reason": f"Confidence {nb_below_threshold.confidence:.2f} < threshold {nb_threshold:.2f}"
                 }
+                # Add all scores if available
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             elif nb_error:
                 classification_data["naive_bayes"] = {
                     "error": nb_error,
                     "status": "failed"
                 }
+                # Add all scores if available (even if there was an error getting the best prediction)
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             else:
                 classification_data["naive_bayes"] = {
                     "status": "no_result",
                     "reason": "No model available or no prediction generated"
                 }
+                # Add all scores if available (even if no best prediction)
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             
             if bert_pred:
                 bert_data = {
@@ -1820,6 +1710,9 @@ Respond with JSON:
                 if nb_validation_reason:
                     nb_data["status"] = "rejected"
                     nb_data["rejection_reason"] = nb_validation_reason
+                # Add all scores if available
+                if nb_all_scores:
+                    nb_data["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
                 classification_data["naive_bayes"] = nb_data
             elif nb_below_threshold:
                 classification_data["naive_bayes"] = {
@@ -1829,16 +1722,25 @@ Respond with JSON:
                     "threshold": float(nb_threshold) if nb_threshold else None,
                     "reason": f"Confidence {nb_below_threshold.confidence:.2f} < threshold {nb_threshold:.2f}"
                 }
+                # Add all scores if available
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             elif nb_error:
                 classification_data["naive_bayes"] = {
                     "error": nb_error,
                     "status": "failed"
                 }
+                # Add all scores if available (even if there was an error getting the best prediction)
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             else:
                 classification_data["naive_bayes"] = {
                     "status": "no_result",
                     "reason": "No model available or no prediction generated"
                 }
+                # Add all scores if available (even if no best prediction)
+                if nb_all_scores:
+                    classification_data["naive_bayes"]["all_scores"] = {k: float(v) for k, v in nb_all_scores.items()}
             
             if bert_pred:
                 bert_data = {
@@ -1939,8 +1841,50 @@ Respond with JSON:
             return classification
 
         # Step 3: LLM classification as last resort
-        logger.info(f"Document {document.id} falling back to LLM classification")
-        available_slugs_with_unknown = allowed_slugs + ["unknown"]
+        # Only use LLM if trained models failed
+        # Get labels from trained models to limit LLM to only those types
+        model_labels = set()
+        try:
+            from app.services.doc_type_classifier import classifier_service
+            nb_svc = classifier_service()
+            if self.model_name:
+                nb_model = nb_svc._load_model_by_name(self.model_name)
+            else:
+                nb_model = nb_svc._load_classifier_if_changed()
+            if nb_model and hasattr(nb_model, 'model') and nb_model.model.get("labels"):
+                model_labels.update(nb_model.model.get("labels", []))
+                logger.info(f"Document {document.id}: Found NB model with {len(model_labels)} labels: {sorted(model_labels)}")
+        except Exception as e:
+            logger.debug(f"Could not get NB model labels: {e}")
+        
+        try:
+            from app.services.bert_classifier import bert_classifier_service
+            bert_svc = bert_classifier_service()
+            if self.model_name:
+                bert_status = bert_svc.status(self.model_name)
+                if bert_status.get("model_exists") and bert_status.get("labels"):
+                    model_labels.update(bert_status.get("labels", []))
+                    logger.info(f"Document {document.id}: Found BERT model with labels: {sorted(bert_status.get('labels', []))}")
+        except Exception as e:
+            logger.debug(f"Could not get BERT model labels: {e}")
+        
+        # If we have trained models, only classify among their labels
+        # Otherwise, use all available types
+        if model_labels:
+            # Filter to only types that are in the trained model AND in allowed_slugs
+            llm_types = [slug for slug in allowed_slugs if slug in model_labels]
+            if not llm_types:
+                # No overlap between model labels and allowed slugs - use all allowed slugs
+                llm_types = allowed_slugs
+                logger.warning(f"Document {document.id}: No overlap between model labels {sorted(model_labels)} and allowed slugs {allowed_slugs}, using all allowed types")
+            else:
+                logger.info(f"Document {document.id} falling back to LLM classification (limited to trained model types: {llm_types})")
+        else:
+            # No trained model, use all available types
+            llm_types = allowed_slugs
+            logger.info(f"Document {document.id} falling back to LLM classification (no trained model, using all types)")
+        
+        available_slugs_with_unknown = llm_types + ["unknown"]
         llm_result = await self._llm_classify_document(document_dir, sample_text, available_slugs_with_unknown)
 
         logger.info(f"Document {document.id} classified as '{llm_result.doc_type_slug}' via LLM (confidence: {llm_result.confidence})")
@@ -2275,8 +2219,9 @@ Respond with JSON only:
         logger.info(f"Starting metadata extraction for document {document.id}, doc_type: {classification.doc_type_slug}")
         
         # Get document type fields and preamble
+        # ORDER BY id to ensure consistent ordering and get latest fields
         result = await self.db.execute(
-            text("SELECT key, label, field_type, required, enum_values, regex FROM document_type_fields WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug)"),
+            text("SELECT key, label, field_type, required, enum_values, regex FROM document_type_fields WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug) ORDER BY id"),
             {"slug": classification.doc_type_slug}
         )
         fields = result.fetchall()
@@ -2328,11 +2273,14 @@ Respond with JSON only:
             json.dump(schema, f, indent=2, ensure_ascii=False)
         
         # Split into chunks if text is too large
-        # For 4K context models: need ~1500 tokens for response, ~500 for prompt overhead
-        # That leaves ~2000 tokens (~8000 chars) for document text
-        # Use smaller chunks to be safe: 4000 chars = ~1000 tokens
-        CHUNK_SIZE = 4000
-        OVERLAP = 400  # Overlap between chunks to avoid missing data at boundaries
+        # For 4K context models with long preambles:
+        # - Model context: 4096 tokens
+        # - Response output: ~800 tokens needed
+        # - Prompt overhead (instructions, preamble, fields): ~1500 tokens
+        # - Available for document text: ~1800 tokens (~5000 chars)
+        # Use 2500 chars to be safe with long preambles
+        CHUNK_SIZE = 2500
+        OVERLAP = 300  # Overlap between chunks to avoid missing data at boundaries
         
         curl_command = None
         response_text = None
@@ -2342,13 +2290,8 @@ Respond with JSON only:
         if len(filtered_text) > CHUNK_SIZE:
             logger.info(f"Document text is large ({len(filtered_text)} chars), splitting into chunks for extraction")
             chunks = self._split_text_into_chunks(filtered_text, CHUNK_SIZE, OVERLAP)
-            logger.info(f"Split into {len(chunks)} chunks")
-            
-            # Process each chunk
-            all_results = []
-            chunk_responses = []
-            chunk_durations = []
-            total_chunks = len(chunks)  # Store for post-processing stages
+            total_chunks = len(chunks)
+            logger.info(f"Split into {total_chunks} chunks - processing in PARALLEL")
             
             # Metadata extraction runs from 60-85%, so we use 60-80% for chunks, 80-85% for merging
             EXTRACTION_START = 60
@@ -2356,26 +2299,27 @@ Respond with JSON only:
             MERGE_START = 80
             MERGE_END = 85
             
+            # Update progress to show parallel extraction starting
+            await self._update_progress(document.id, EXTRACTION_START, f"extracting_metadata_parallel_{total_chunks}_chunks", progress_callback)
+            
+            # Build all prompts first and save them
+            prompts_and_schemas = []
             for i, chunk in enumerate(chunks):
                 chunk_num = i + 1
-                logger.info(f"Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} chars)")
-                
-                # Update progress: 60% + (chunk_num/total_chunks * 20%)
-                chunk_progress = int(EXTRACTION_START + (chunk_num / total_chunks * (EXTRACTION_END - EXTRACTION_START)))
-                chunk_stage = f"extracting_metadata_chunk_{chunk_num}_{total_chunks}"
-                await self._update_progress(document.id, chunk_progress, chunk_stage, progress_callback)
-                
                 prompt = self._build_extraction_prompt(fields, chunk, classification.doc_type_slug, preamble, chunk_num=chunk_num, total_chunks=total_chunks)
                 
                 # Save chunk prompt
                 with open(llm_dir / f"extraction_prompt_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
                     f.write(prompt)
                 
+                prompts_and_schemas.append((chunk_num, prompt, schema))
+            
+            # Process all chunks in parallel
+            async def process_chunk(chunk_num: int, prompt: str, schema: dict):
+                """Process a single chunk and return results."""
                 try:
+                    logger.info(f"Starting parallel chunk {chunk_num}/{total_chunks}")
                     chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, schema)
-                    all_results.append(chunk_result)
-                    chunk_responses.append(chunk_response_text)
-                    chunk_durations.append(chunk_duration)
                     
                     # Log what was found in this chunk
                     if chunk_result and "data" in chunk_result:
@@ -2392,9 +2336,34 @@ Respond with JSON only:
                     # Save chunk timing
                     with open(llm_dir / f"extraction_timing_chunk_{chunk_num}.json", "w", encoding="utf-8") as f:
                         json.dump({"duration_seconds": chunk_duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
+                    
+                    return (chunk_num, chunk_result, chunk_response_text, chunk_duration, None)
                 except Exception as e:
-                    logger.warning(f"Chunk {chunk_num} extraction failed: {e}, continuing with other chunks")
-                    continue
+                    logger.warning(f"Chunk {chunk_num} extraction failed: {e}")
+                    return (chunk_num, None, None, 0, str(e))
+            
+            # Run all chunks in parallel using asyncio.gather
+            parallel_results = await asyncio.gather(*[
+                process_chunk(chunk_num, prompt, schema) 
+                for chunk_num, prompt, schema in prompts_and_schemas
+            ])
+            
+            # Sort results by chunk number and separate successful from failed
+            parallel_results.sort(key=lambda x: x[0])
+            
+            all_results = []
+            chunk_responses = []
+            chunk_durations = []
+            
+            for chunk_num, chunk_result, chunk_response_text, chunk_duration, error in parallel_results:
+                if error is None and chunk_result is not None:
+                    all_results.append(chunk_result)
+                    chunk_responses.append(chunk_response_text)
+                    chunk_durations.append(chunk_duration)
+                else:
+                    logger.warning(f"Chunk {chunk_num} failed, skipping in merge")
+            
+            logger.info(f"Parallel extraction complete: {len(all_results)}/{total_chunks} chunks successful")
             
             # Update progress for merging
             await self._update_progress(document.id, MERGE_START, "extracting_metadata_merging", progress_callback)
@@ -2411,6 +2380,23 @@ Respond with JSON only:
                     if "data" in result:
                         merged_fields = [k for k, v in result["data"].items() if v is not None]
                         logger.info(f"Merged result: {len(merged_fields)} fields with values: {merged_fields}")
+                
+                # Ensure all expected fields are present in merged result
+                expected_field_keys = [key for key, _, _, _, _, _ in fields]
+                if "data" in result and isinstance(result["data"], dict):
+                    for field_key in expected_field_keys:
+                        if field_key not in result["data"]:
+                            logger.warning(f"Field '{field_key}' missing from merged extraction result, adding as null")
+                            result["data"][field_key] = None
+                    
+                    # Remove any unexpected fields
+                    unexpected_fields = [k for k in result["data"].keys() if k not in expected_field_keys]
+                    if unexpected_fields:
+                        logger.warning(f"Removing unexpected fields from merged result: {unexpected_fields}")
+                        for unexpected_field in unexpected_fields:
+                            result["data"].pop(unexpected_field, None)
+                            if "evidence" in result and isinstance(result["evidence"], dict):
+                                result["evidence"].pop(unexpected_field, None)
                 
                 # Update progress after merging - keep chunk info in stage for visibility
                 await self._update_progress(document.id, MERGE_END, f"extracting_metadata_chunk_done_{total_chunks}", progress_callback)
@@ -2537,6 +2523,28 @@ Respond with JSON only:
             # Ensure result is set before post-processing
             if result is None:
                 raise Exception("LLM extraction failed: no result obtained")
+            
+            # Validate that result contains expected structure
+            if "data" not in result or not isinstance(result["data"], dict):
+                logger.error(f"Invalid extraction result structure: {result}")
+                raise Exception(f"LLM extraction returned invalid structure. Expected {{'data': {{...}}, 'evidence': {{...}}}}, got: {list(result.keys())}")
+            
+            # Ensure all expected fields are present in result (add null if missing)
+            expected_field_keys = [key for key, _, _, _, _, _ in fields]
+            for field_key in expected_field_keys:
+                if field_key not in result["data"]:
+                    logger.warning(f"Field '{field_key}' missing from LLM extraction result, adding as null")
+                    result["data"][field_key] = None
+            
+            # Remove any unexpected fields that are not in the schema
+            unexpected_fields = [k for k in result["data"].keys() if k not in expected_field_keys]
+            if unexpected_fields:
+                logger.warning(f"Removing unexpected fields from extraction result: {unexpected_fields}")
+                for unexpected_field in unexpected_fields:
+                    result["data"].pop(unexpected_field, None)
+                    # Also remove from evidence if present
+                    if "evidence" in result and isinstance(result["evidence"], dict):
+                        result["evidence"].pop(unexpected_field, None)
 
         # Post-processing steps - include chunk info if we used chunks
         post_stage_suffix = f"_chunks_{total_chunks}" if total_chunks else ""
@@ -2550,13 +2558,39 @@ Respond with JSON only:
         # Validate evidence spans
         await self._update_progress(document.id, 80, f"extracting_metadata_validating{post_stage_suffix}", progress_callback)
         # Normalize extraction data to ensure correct structure
-        normalized_result = self._normalize_extraction_data(result)
+        # Pass expected fields to filter out unexpected fields during normalization
+        expected_field_keys = {key for key, _, _, _, _, _ in fields}
+        logger.info(f"Expected fields for validation: {sorted(expected_field_keys)}")
+        normalized_result = self._normalize_extraction_data(result, expected_fields=expected_field_keys)
+        
+        # Double-check: remove any unexpected fields that might have slipped through
+        if "data" in normalized_result:
+            unexpected_after_norm = [k for k in normalized_result["data"].keys() if k not in expected_field_keys]
+            if unexpected_after_norm:
+                logger.warning(f"Removing unexpected fields after normalization: {unexpected_after_norm}")
+                for unexpected_field in unexpected_after_norm:
+                    normalized_result["data"].pop(unexpected_field, None)
+                    if "evidence" in normalized_result and isinstance(normalized_result["evidence"], dict):
+                        normalized_result["evidence"].pop(unexpected_field, None)
+        
         evidence_data = ExtractionEvidence(**normalized_result)
         validation_errors = self._validate_evidence(evidence_data, ocr_result.pages)
         
-        # Build verified.json
+        # Log what fields are actually in evidence_data.data
+        actual_fields = set(evidence_data.data.keys())
+        logger.info(f"Fields in evidence_data.data: {sorted(actual_fields)}")
+        unexpected_in_evidence = actual_fields - expected_field_keys
+        if unexpected_in_evidence:
+            logger.error(f"CRITICAL: Unexpected fields still in evidence_data.data after normalization: {sorted(unexpected_in_evidence)}")
+        
+        # Build verified.json - only for fields that are in the schema
         verified = {}
         for key in evidence_data.data.keys():
+            # Skip fields that are not in the schema (e.g., "datasets" from LLM mistakes)
+            if key not in expected_field_keys:
+                logger.warning(f"Skipping verification for unexpected field '{key}' (not in schema)")
+                continue
+                
             value = evidence_data.data.get(key)
             evidence_spans = evidence_data.evidence.get(key, [])
             
@@ -2574,6 +2608,92 @@ Respond with JSON only:
                             "snippet": snippet
                         }
                         continue
+            elif value is not None and not evidence_spans:
+                # Value exists but no evidence spans - try to find it in the document text
+                value_str = str(value).strip()
+                if value_str:
+                    # Search for the value in all pages
+                    found_evidence = False
+                    for page_idx, page in enumerate(ocr_result.pages):
+                        page_text = page.get("text", "")
+                        # Normalize whitespace for comparison (OCR often adds extra whitespace/newlines)
+                        page_text_normalized = ' '.join(page_text.split())
+                        value_str_normalized = ' '.join(value_str.split())
+                        
+                        # Try exact match first
+                        if value_str in page_text:
+                            start_pos = page_text.find(value_str)
+                            verified[key] = {
+                                "verified": True,
+                                "method": "auto_found",
+                                "page": page_idx,
+                                "snippet": value_str
+                            }
+                            found_evidence = True
+                            logger.info(f"Auto-found evidence for field '{key}' in page {page_idx}")
+                            break
+                        # Try normalized whitespace match
+                        elif value_str_normalized in page_text_normalized:
+                            verified[key] = {
+                                "verified": True,
+                                "method": "auto_found_normalized",
+                                "page": page_idx,
+                                "snippet": value_str_normalized
+                            }
+                            found_evidence = True
+                            logger.info(f"Auto-found evidence for field '{key}' in page {page_idx} (normalized whitespace)")
+                            break
+                        # Try case-insensitive match
+                        elif value_str.lower() in page_text.lower():
+                            start_pos = page_text.lower().find(value_str.lower())
+                            verified[key] = {
+                                "verified": True,
+                                "method": "auto_found",
+                                "page": page_idx,
+                                "snippet": page_text[start_pos:start_pos + len(value_str)]
+                            }
+                            found_evidence = True
+                            logger.info(f"Auto-found evidence for field '{key}' in page {page_idx} (case-insensitive)")
+                            break
+                        # Try normalized case-insensitive match
+                        elif value_str_normalized.lower() in page_text_normalized.lower():
+                            verified[key] = {
+                                "verified": True,
+                                "method": "auto_found_normalized",
+                                "page": page_idx,
+                                "snippet": value_str_normalized
+                            }
+                            found_evidence = True
+                            logger.info(f"Auto-found evidence for field '{key}' in page {page_idx} (normalized, case-insensitive)")
+                            break
+                        # For numeric values, try different formats (100000 -> 100.000 or 100,000)
+                        elif isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '').replace(',', '').isdigit()):
+                            try:
+                                num_value = float(str(value).replace(',', '.')) if isinstance(value, str) else float(value)
+                                # Try European format: 100.000
+                                european_format = f"{num_value:,.0f}".replace(',', '.')
+                                # Try with euro sign
+                                euro_format = f"€ {european_format}"
+                                euro_format_alt = f"€{european_format}"
+                                
+                                for fmt in [european_format, euro_format, euro_format_alt, f"{int(num_value)}"]:
+                                    if fmt in page_text or fmt in page_text_normalized:
+                                        verified[key] = {
+                                            "verified": True,
+                                            "method": "auto_found_number_format",
+                                            "page": page_idx,
+                                            "snippet": fmt
+                                        }
+                                        found_evidence = True
+                                        logger.info(f"Auto-found evidence for field '{key}' in page {page_idx} (number format: {fmt})")
+                                        break
+                                if found_evidence:
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    if found_evidence:
+                        continue
             
             verified[key] = {
                 "verified": False,
@@ -2583,10 +2703,17 @@ Respond with JSON only:
             }
         
         # Apply hard validators and add to validation_errors
-        validation_errors.extend(self._validate_hard_validators(evidence_data.data, fields))
+        # Filter evidence_data.data to only include expected fields before validation
+        filtered_data = {k: v for k, v in evidence_data.data.items() if k in expected_field_keys}
+        validation_errors.extend(self._validate_hard_validators(filtered_data, fields))
         
-        # Check required fields
+        # Check required fields - only check fields that are in the schema
         for key, label, field_type, is_required, enum_values, regex in fields:
+            # Double-check: skip if key is not in expected fields (shouldn't happen, but safety check)
+            if key not in expected_field_keys:
+                logger.warning(f"Skipping validation for field '{key}' - not in expected fields list")
+                continue
+                
             if is_required:
                 val = evidence_data.data.get(key)
                 if val is None or val == "":
@@ -2651,8 +2778,80 @@ Respond with JSON only:
         with open(metadata_dir / "verified.json", "w", encoding="utf-8") as f:
             json.dump(verified, f, indent=2, ensure_ascii=False)
 
+        # Build comprehensive evidence.json by searching ALL pages for ALL field values
+        # This ensures the PDF viewer can show all occurrences of extracted values
+        merged_evidence = {}
+        
+        # First, copy existing LLM evidence (convert to list of dicts)
+        for key, spans in evidence_data.evidence.items():
+            if spans:
+                merged_evidence[key] = [
+                    {"page": s.page, "start": s.start, "end": s.end, "quote": s.quote}
+                    for s in spans
+                ]
+        
+        # Then search ALL pages for ALL field values to find additional occurrences
+        for key, value in evidence_data.data.items():
+            if key not in expected_field_keys or value is None:
+                continue
+                
+            value_str = str(value).strip()
+            if not value_str:
+                continue
+            
+            # Get existing evidence pages for this field
+            existing_pages = set()
+            if key in merged_evidence:
+                existing_pages = {e.get("page") for e in merged_evidence[key]}
+            else:
+                merged_evidence[key] = []
+            
+            # Search all pages
+            value_str_normalized = ' '.join(value_str.split())
+            
+            for page_idx, page in enumerate(ocr_result.pages):
+                if page_idx in existing_pages:
+                    continue  # Already have evidence from this page
+                    
+                page_text = page.get("text", "")
+                page_text_normalized = ' '.join(page_text.split())
+                found_snippet = None
+                
+                # Try various matching strategies
+                if value_str in page_text:
+                    found_snippet = value_str
+                elif value_str_normalized in page_text_normalized:
+                    found_snippet = value_str_normalized
+                elif value_str.lower() in page_text.lower():
+                    start_pos = page_text.lower().find(value_str.lower())
+                    found_snippet = page_text[start_pos:start_pos + len(value_str)]
+                else:
+                    # Try numeric formats
+                    if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '').replace(',', '').isdigit()):
+                        try:
+                            num_value = float(str(value).replace(',', '.')) if isinstance(value, str) else float(value)
+                            european_format = f"{num_value:,.0f}".replace(',', '.')
+                            euro_format = f"€ {european_format}"
+                            euro_format_alt = f"€{european_format}"
+                            
+                            for fmt in [european_format, euro_format, euro_format_alt, f"{int(num_value)}"]:
+                                if fmt in page_text or fmt in page_text_normalized:
+                                    found_snippet = fmt
+                                    break
+                        except (ValueError, TypeError):
+                            pass
+                
+                if found_snippet:
+                    merged_evidence[key].append({
+                        "page": page_idx,
+                        "start": 0,
+                        "end": len(found_snippet),
+                        "quote": found_snippet
+                    })
+                    logger.info(f"Found additional evidence for field '{key}' on page {page_idx}: '{found_snippet[:30]}...'")
+
         with open(metadata_dir / "evidence.json", "w", encoding="utf-8") as f:
-            json.dump(self._json_serialize(evidence_data.evidence), f, indent=2, ensure_ascii=False)
+            json.dump(merged_evidence, f, indent=2, ensure_ascii=False)
 
         await self._update_progress(document.id, 85, "extracting_metadata_complete", progress_callback)
         return evidence_data
@@ -2768,19 +2967,32 @@ NOTE: This is chunk {chunk_num} of {total_chunks} of a large document.
         # Build a concrete JSON template with the actual field names
         data_template = ", ".join([f'"{k}": null' for k in field_keys])
         
+        # Build field list for clarity
+        field_list = ", ".join([f'"{k}"' for k in field_keys])
+        
         extra_notes = ""
         if notes_block.strip():
             extra_notes = f"\n{notes_block.strip()}"
         if preamble_text.strip():
             extra_notes += f"\n{preamble_text.strip()}"
         
-        return f"""Extract from this {doc_type}:{chunk_info}{extra_notes}
+        return f"""Extract metadata from this {doc_type} document.{chunk_info}
 
+Fields to extract:
+{fields_str}{extra_notes}
+
+Document text:
 {text}
 
+Return JSON in this exact format (replace null with actual values, keep null if not found):
 {{"data": {{{data_template}}}, "evidence": {{}}}}
 
-Replace null with extracted values. Keep null if not found."""
+IMPORTANT:
+- Extract ALL fields listed above: {field_list}
+- Replace null with the actual extracted value for each field
+- If a field is not found in the document, keep it as null
+- Do NOT add fields that are not in the list above
+- Do NOT use placeholder values like "datasets" or other field names not in the schema"""
 
     def _fill_missing_quotes(self, result: Dict[str, Any], pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Fill in missing quote fields in evidence from document text."""
@@ -3331,7 +3543,18 @@ Replace null with extracted values. Keep null if not found."""
 
         if extraction_result:
             update_data["metadata_json"] = json.dumps(extraction_result.data)
-            update_data["metadata_evidence_json"] = json.dumps(self._json_serialize(extraction_result.evidence))
+            # Load merged evidence from file (includes auto-found evidence)
+            evidence_file = document_dir / "metadata" / "evidence.json"
+            if evidence_file.exists():
+                try:
+                    with open(evidence_file, "r", encoding="utf-8") as f:
+                        merged_evidence = json.load(f)
+                    update_data["metadata_evidence_json"] = json.dumps(merged_evidence)
+                except Exception as e:
+                    logger.warning(f"Failed to load merged evidence from file: {e}")
+                    update_data["metadata_evidence_json"] = json.dumps(self._json_serialize(extraction_result.evidence))
+            else:
+                update_data["metadata_evidence_json"] = json.dumps(self._json_serialize(extraction_result.evidence))
         
         # Store classification scores in metadata_validation_json (reusing existing JSON field)
         if classification_scores:

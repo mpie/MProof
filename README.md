@@ -511,6 +511,67 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 | Metadata Extraction | 60-85% | Schema-driven field extraction |
 | Risk Analysis | 85-100% | Fraud detection and scoring |
 
+### How Data Extraction Works
+
+MProof extracts structured metadata from documents in a 4-step process:
+
+#### Step 1: Document Classification
+The system first identifies the **document type** (e.g., "invoice", "payslip", "commitment-agreement"). This uses trained AI models:
+- **Naive Bayes**: Fast word-frequency based classification (~1ms)
+- **BERT**: Semantic embeddings for better understanding (~100ms)
+- **LLM Fallback**: When trained models have low confidence
+
+#### Step 2: Metadata Extraction (LLM)
+Based on the document type, the system asks the LLM to extract specific fields defined for that type:
+```
+Example "commitment-agreement":
+→ participant, fund_manager, commitment (amount), date, address
+```
+For large documents (>2500 chars), the text is split into chunks and processed in **parallel**.
+
+#### Step 3: Evidence Finding (All Pages)
+For each extracted value, the system searches **ALL pages** of the document to find where the value appears:
+
+| Match Type | Description | Example |
+|------------|-------------|---------|
+| **Exact** | Literal text match | "P.C.M. Vastgoed Holding B.V." |
+| **Normalized** | Whitespace differences (OCR) | "Calle Aloe 2A" vs "Calle  Aloe  2A" |
+| **Numeric formats** | Number formatting variations | 100000 → "100.000" → "€ 100.000,-" |
+| **Case-insensitive** | Different capitalization | "AMSTERDAM" = "Amsterdam" |
+
+This ensures evidence is found even when:
+- The LLM extracts from chunk 1 (page 1) but doesn't provide evidence spans
+- OCR adds extra whitespace or line breaks
+- Currency amounts have different formats (€, EUR, no symbol)
+
+#### Step 4: PDF Highlighting
+In the PDF viewer, all evidence locations are **highlighted in blue**. Navigation buttons at the bottom allow quick jumps to pages with evidence.
+
+```
+┌─────────────────────────────────────────────┐
+│ 📄 document.pdf            • Met highlights │
+├─────────────────────────────────────────────┤
+│ ◀ 1/7 ▶           🔍- 100% 🔍+              │
+├─────────────────────────────────────────────┤
+│    ┌─────────────────────────────────────┐  │
+│    │     PDF PAGE CONTENT                │  │
+│    │                                     │  │
+│    │  ████ € 100.000,- highlighted ████  │  │
+│    │                                     │  │
+│    └─────────────────────────────────────┘  │
+│  ┌─ Gevonden evidence: ──────────────────┐  │
+│  │ "€ 100.000,-" p1 │ "P.C.M. Vast..." p1│  │
+│  └───────────────────────────────────────┘  │
+├─────────────────────────────────────────────┤
+│ Pagina's met evidence: [p1] [p3] [p7]       │
+└─────────────────────────────────────────────┘
+```
+
+**Troubleshooting "No Evidence Found":**
+- OCR quality issues → Try re-uploading with higher resolution
+- Unusual formatting → System tries multiple formats automatically
+- Value not in document → Check extracted value is correct
+
 ### Artifact Structure
 
 ```

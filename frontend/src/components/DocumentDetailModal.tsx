@@ -13,6 +13,7 @@ import {
   Document, DocumentEvent, getDocument, analyzeDocument, getDocumentArtifact, getDocumentArtifactText, getDocumentArtifactJson,
   RiskSignal, subscribeToDocumentEvents, getFraudAnalysis, FraudReport, FraudSignal
 } from '@/lib/api';
+import { PDFViewerWithHighlights } from './PDFViewerWithHighlights';
 
 // Document Viewer Modal Component
 function DocumentViewerModal({ 
@@ -21,7 +22,8 @@ function DocumentViewerModal({
   documentUrl, 
   filename, 
   mimeType,
-  onDownload
+  onDownload,
+  evidence
 }: { 
   isOpen: boolean; 
   onClose: () => void; 
@@ -29,12 +31,14 @@ function DocumentViewerModal({
   filename: string;
   mimeType: string;
   onDownload: () => void;
+  evidence?: Record<string, any[]>;
 }) {
   if (!isOpen || !documentUrl) return null;
 
   const isPDF = mimeType === 'application/pdf';
   const isImage = mimeType.startsWith('image/');
   const isWord = mimeType.includes('word') || mimeType.includes('msword') || filename.toLowerCase().endsWith('.doc') || filename.toLowerCase().endsWith('.docx');
+  const hasEvidence = evidence && Object.keys(evidence).length > 0;
 
   const handleDownload = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -56,7 +60,10 @@ function DocumentViewerModal({
               <h2 className="text-white text-lg font-semibold truncate">
                 {filename}
               </h2>
-              <p className="text-white/60 text-xs">Origineel bestand</p>
+              <p className="text-white/60 text-xs">
+                Origineel bestand
+                {hasEvidence && <span className="text-blue-400 ml-2">• Met highlights</span>}
+              </p>
             </div>
           </div>
           <div className="flex items-center space-x-2 flex-shrink-0">
@@ -76,22 +83,32 @@ function DocumentViewerModal({
           </div>
         </div>
 
-
         {/* Viewer Content */}
-        <div className="flex-1 overflow-auto bg-black/30 p-2 sm:p-4 flex items-center justify-center">
-          {isPDF ? (
-            <iframe
-              src={`${documentUrl}#toolbar=1&navpanes=1&scrollbar=1&view=FitH`}
-              className="w-full h-full min-h-[80vh] rounded-lg border border-white/10 bg-white"
-              title={filename}
-              style={{ colorScheme: 'light' }}
+        <div className="flex-1 overflow-hidden bg-black/30">
+          {isPDF && hasEvidence ? (
+            // Use custom PDF viewer with highlights when we have evidence
+            <PDFViewerWithHighlights 
+              url={documentUrl} 
+              evidence={evidence}
             />
+          ) : isPDF ? (
+            // Fall back to iframe for PDFs without evidence
+            <div className="w-full h-full p-2 sm:p-4">
+              <iframe
+                src={`${documentUrl}#toolbar=1&navpanes=1&scrollbar=1&view=FitH`}
+                className="w-full h-full min-h-[80vh] rounded-lg border border-white/10 bg-white"
+                title={filename}
+                style={{ colorScheme: 'light' }}
+              />
+            </div>
           ) : isImage ? (
-            <img
-              src={documentUrl}
-              alt={filename}
-              className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-            />
+            <div className="w-full h-full p-2 sm:p-4 flex items-center justify-center">
+              <img
+                src={documentUrl}
+                alt={filename}
+                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+              />
+            </div>
           ) : isWord ? (
             <div className="text-center text-white/60 w-full h-full flex flex-col items-center justify-center">
               <FontAwesomeIcon icon={faFile} className="w-16 h-16 mb-4 opacity-50" />
@@ -105,7 +122,7 @@ function DocumentViewerModal({
               </button>
             </div>
           ) : (
-            <div className="text-center text-white/60">
+            <div className="text-center text-white/60 w-full h-full flex flex-col items-center justify-center">
               <FontAwesomeIcon icon={faFile} className="w-16 h-16 mb-4 opacity-50" />
               <p>Preview niet beschikbaar voor dit bestandstype</p>
               <button
@@ -279,6 +296,12 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
         // Also refetch to ensure consistency
         refetch();
         queryClient.invalidateQueries({ queryKey: ['documents'] });
+        
+        // Invalidate LLM artifacts when document status changes or finishes processing
+        if (event.type === 'result' || (event.type === 'status' && event.stage?.includes('extract'))) {
+          queryClient.removeQueries({ queryKey: ['document-llm', documentId] });
+          queryClient.invalidateQueries({ queryKey: ['document-llm', documentId] });
+        }
       },
       () => {
         console.warn(`SSE connection lost for document ${documentId}`);
@@ -593,6 +616,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
           filename={document?.original_filename || ''}
           mimeType={document?.mime_type || ''}
           onDownload={() => downloadArtifact(documentViewerPath, document?.original_filename || 'document')}
+          evidence={document?.metadata_evidence_json as Record<string, any[]> | undefined}
         />
       )}
     </>
@@ -714,55 +738,94 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                     {(document.metadata_validation_json.classification_scores as any)?.naive_bayes && (
                       (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ||
                       (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'no_result' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-60">
-                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
-                          <div className="text-white/60 text-xs">
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' 
-                              ? `Fout: ${(document.metadata_validation_json.classification_scores as any).naive_bayes.error?.substring(0, 50) || 'Onbekende fout'}...`
-                              : (document.metadata_validation_json.classification_scores as any).naive_bayes.reason || 'Geen resultaat'}
-                          </div>
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-60">
+                          <div className="text-purple-300 text-[10px] font-medium">NB: {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ? 'Fout' : 'Geen model'}</div>
+                          {/* Show all scores if available - filter out 0% */}
+                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
+                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
+                                  .sort(([, a], [, b]) => b - a)
+                                  .filter(([, score]) => Math.round(score * 100) > 0)
+                                  .map(([label, score]) => (
+                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                      {label}: {Math.round(score * 100)}%
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'rejected' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
-                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
-                          <div className="text-white/80 text-xs font-medium">
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-75">
+                          <div className="flex items-center justify-between">
+                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
+                            <span className="text-white/80 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
-                          <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.threshold && (
-                              <span className="text-white/40 ml-1">(threshold: {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold * 100)}%)</span>
-                            )}
-                          </div>
-                          <div className="text-red-400 text-[10px] mt-1">
-                            ❌ Afgewezen: {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Onbekende reden'}
-                          </div>
+                          <div className="text-red-400 text-[9px]">❌ {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Afgewezen'}</div>
+                          {/* Show all scores if available - filter out 0% */}
+                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
+                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
+                                  .sort(([, a], [, b]) => b - a)
+                                  .filter(([, score]) => Math.round(score * 100) > 0)
+                                  .map(([label, score]) => (
+                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                      {label}: {Math.round(score * 100)}%
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'below_threshold' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2 opacity-75">
-                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
-                          <div className="text-white/80 text-xs font-medium">
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-75">
+                          <div className="flex items-center justify-between">
+                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
+                            <span className="text-white/80 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
-                          <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
-                          </div>
-                          <div className="text-yellow-400 text-[10px] mt-1">
-                            ⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)
-                          </div>
+                          <div className="text-yellow-400 text-[9px]">⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)</div>
+                          {/* Show all scores if available - filter out 0% */}
+                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
+                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
+                                  .sort(([, a], [, b]) => b - a)
+                                  .filter(([, score]) => Math.round(score * 100) > 0)
+                                  .map(([label, score]) => (
+                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                      {label}: {Math.round(score * 100)}%
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded p-2">
-                          <div className="text-purple-300 text-xs font-medium mb-0.5">Naive Bayes</div>
-                          <div className="text-white text-xs">
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.label}
+                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
+                            <span className="text-white text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
-                          <div className="text-purple-400 text-[10px] mt-0.5">
-                            {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}% confidence
-                            {(document.metadata_validation_json.classification_scores as any).naive_bayes.threshold && (
-                              <span className="text-white/40 ml-1">(threshold: {Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold * 100)}%)</span>
-                            )}
-                          </div>
+                          {/* Show all scores if available - filter out 0% */}
+                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
+                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                              <div className="flex flex-wrap gap-1">
+                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
+                                  .sort(([, a], [, b]) => b - a)
+                                  .filter(([, score]) => Math.round(score * 100) > 0)
+                                  .map(([label, score]) => (
+                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                      {label}: {Math.round(score * 100)}%
+                                    </span>
+                                  ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )
                     )}
@@ -1137,6 +1200,17 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
   });
   const data = hasDbData ? document.metadata_json : artifactData;
   const hasData = !!data && Object.keys(data).length > 0;
+  
+  // Get evidence data (multiple quotes per field)
+  const evidenceFromDb = document.metadata_evidence_json as Record<string, any[]> | null;
+  const { data: evidenceArtifact } = useQuery({
+    queryKey: ['document-evidence-artifact', documentId],
+    queryFn: () => getDocumentArtifactJson<Record<string, any[]>>(documentId, 'metadata/evidence.json'),
+    enabled: !evidenceFromDb && document.status === 'done',
+    retry: false,
+    staleTime: Infinity,
+  });
+  const evidence = evidenceFromDb || evidenceArtifact || {};
 
   const formatValue = (value: any): string => {
     if (value === null || value === undefined) {
@@ -1162,26 +1236,162 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
       </div>
 
       {hasData ? (
-        <div className="grid gap-2 sm:gap-3">
-          {Object.entries(data!).map(([key, value]) => (
-            <div key={key} className="bg-purple-500/10 rounded-lg p-2.5 sm:p-3 border border-purple-500/20">
-              <div className="flex items-center justify-between gap-2 sm:gap-3">
-                <div className="flex items-start sm:items-center gap-1.5 sm:gap-2 flex-1 min-w-0">
-                  <span className="text-white/70 text-[10px] sm:text-xs font-medium uppercase shrink-0 pt-0.5 sm:pt-0">{key.replace(/_/g, ' ')}:</span>
-                  <span className="text-white font-mono text-xs sm:text-sm break-all whitespace-pre-wrap">{formatValue(value)}</span>
+        <div className="grid gap-1.5">
+          {Object.entries(data!).map(([key, value]) => {
+            const isArray = Array.isArray(value);
+            const isNull = value === null || value === undefined;
+            const isObject = typeof value === 'object' && !isArray && !isNull;
+            const fieldEvidence = evidence[key] || [];
+            const hasMultipleEvidence = Array.isArray(fieldEvidence) && fieldEvidence.length > 1;
+            
+            return (
+              <div key={key} className="bg-white/5 rounded px-2 py-1.5 border border-white/10 hover:bg-white/10 transition-colors">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-white/50 text-[10px] font-medium uppercase">{key.replace(/_/g, ' ')}</span>
+                      {hasMultipleEvidence && (
+                        <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1 py-0.5 rounded">
+                          {fieldEvidence.length} bronnen
+                        </span>
+                      )}
+                    </div>
+                    {isNull ? (
+                      <span className="block text-white/30 text-xs italic">null</span>
+                    ) : isArray ? (
+                      <div className="flex flex-wrap gap-1 mt-0.5">
+                        {(value as any[]).map((item, i) => (
+                          <span key={i} className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">
+                            {typeof item === 'object' ? JSON.stringify(item) : String(item)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : isObject ? (
+                      <pre className="text-white/80 text-[10px] font-mono mt-0.5 bg-black/20 rounded p-1 overflow-x-auto">
+                        {JSON.stringify(value, null, 2)}
+                      </pre>
+                    ) : (
+                      <span className="block text-white font-mono text-xs break-all">{String(value)}</span>
+                    )}
+                    
+                    {/* Show all evidence quotes if multiple */}
+                    {Array.isArray(fieldEvidence) && fieldEvidence.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {fieldEvidence.map((ev: any, i: number) => (
+                          <span 
+                            key={i} 
+                            className="text-[9px] bg-blue-500/20 text-blue-200 px-1.5 py-0.5 rounded border border-blue-500/30"
+                            title={`Pagina ${(ev.page || 0) + 1}, positie ${ev.start}-${ev.end}`}
+                          >
+                            "{ev.quote?.substring(0, 40)}{ev.quote?.length > 40 ? '...' : ''}"
+                            <span className="text-blue-400/60 ml-1">p{(ev.page || 0) + 1}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => copyToClipboard(formatValue(value))} className="text-white/30 hover:text-white/60 shrink-0 p-0.5">
+                    <FontAwesomeIcon icon={faCopy} className="w-2.5 h-2.5" />
+                  </button>
                 </div>
-                <button onClick={() => copyToClipboard(formatValue(value))} className="text-purple-400 hover:text-purple-300 shrink-0 p-1">
-                  <FontAwesomeIcon icon={faCopy} className="w-3 h-3" />
-                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="text-center py-8">
           <FontAwesomeIcon icon={faInfoCircle} className="text-white/40 w-8 h-8 mb-2" />
           <p className="text-white/60 text-sm">No extracted data</p>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Separate component to prevent ref reset on parent re-render
+function CollapsiblePromptBlock({ 
+  id, 
+  title, 
+  content, 
+  downloadPath, 
+  downloadName, 
+  description,
+  isExpanded,
+  onToggle,
+  onDownload
+}: { 
+  id: string; 
+  title: string; 
+  content: string | null; 
+  downloadPath?: string; 
+  downloadName?: string; 
+  description?: string;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onDownload: (path: string, filename: string) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollPositionRef = useRef<number>(0);
+
+  // Don't render if no content
+  if (!content) return null;
+  
+  const preview = content.length > 100 ? content.substring(0, 100) + '...' : content;
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    scrollPositionRef.current = e.currentTarget.scrollTop;
+  };
+
+  return (
+    <div className="border border-white/10 rounded-lg overflow-hidden">
+      <div 
+        className="flex items-center justify-between p-2 bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+        onClick={onToggle}
+      >
+        <div className="flex-1 text-left text-white/80 text-xs font-medium hover:text-white">
+          <div className="flex items-center gap-2">
+            <span>{title}</span>
+            {description && (
+              <span className="text-white/40 text-[10px] font-normal">({description})</span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+          {downloadPath && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDownload(downloadPath, downloadName || 'download.txt');
+              }}
+              className="text-white/40 hover:text-white p-1 cursor-pointer"
+              title="Download"
+            >
+              <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
+            </button>
+          )}
+          <div className="text-white/40 p-1">
+            <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} className="w-3 h-3" />
+          </div>
+        </div>
+      </div>
+      {isExpanded ? (
+        <div 
+          className="max-h-64 overflow-y-auto bg-black/20"
+          onScroll={handleScroll}
+          onWheel={(e) => e.stopPropagation()}
+          onTouchMove={(e) => e.stopPropagation()}
+          ref={scrollRef}
+        >
+          <pre 
+            className="text-white/80 text-xs font-mono whitespace-pre-wrap break-words p-3 cursor-text select-text"
+            style={{ margin: 0 }}
+          >
+            {content}
+          </pre>
+        </div>
+      ) : (
+        <div className="text-white/50 text-xs font-mono p-2 truncate cursor-pointer" onClick={onToggle}>{preview}</div>
       )}
     </div>
   );
@@ -1239,7 +1449,9 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     },
     enabled: !!documentId && isDone,
     retry: false,
-    staleTime: Infinity, // Don't refetch automatically
+    staleTime: 0, // Always refetch to get latest prompts (especially after rerun)
+    refetchOnMount: 'always', // Force refetch when component mounts
+    gcTime: 0, // Don't cache at all (previously called cacheTime)
   });
 
   // Show appropriate message based on document status - BEFORE any data fetching
@@ -1305,53 +1517,20 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     );
   }
 
-  const CollapsibleBlock = ({ id, title, content, downloadPath, downloadName, description }: { id: string; title: string; content: string | null; downloadPath?: string; downloadName?: string; description?: string }) => {
-    if (!content) return null;
-    const isExpanded = expandedSections.has(id);
-    const preview = content.length > 100 ? content.substring(0, 100) + '...' : content;
-
-    return (
-      <div className="border border-white/10 rounded-lg overflow-hidden">
-        <div 
-          className="flex items-center justify-between p-2 bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
-          onClick={() => toggleSection(id)}
-        >
-          <div className="flex-1 text-left text-white/80 text-xs font-medium hover:text-white">
-            <div className="flex items-center gap-2">
-              <span>{title}</span>
-              {description && (
-                <span className="text-white/40 text-[10px] font-normal">({description})</span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
-            {downloadPath && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  downloadArtifact(downloadPath, downloadName || 'download.txt');
-                }}
-                className="text-white/40 hover:text-white p-1 cursor-pointer"
-                title="Download"
-              >
-                <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
-              </button>
-            )}
-            <div className="text-white/40 p-1">
-              <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} className="w-3 h-3" />
-            </div>
-          </div>
-        </div>
-        {isExpanded ? (
-          <pre className="text-white/80 text-xs font-mono whitespace-pre-wrap break-words p-3 max-h-48 overflow-y-auto bg-black/20 cursor-text">
-            {content}
-          </pre>
-        ) : (
-          <div className="text-white/50 text-xs font-mono p-2 truncate cursor-pointer" onClick={() => toggleSection(id)}>{preview}</div>
-        )}
-      </div>
-    );
-  };
+  // Helper to render CollapsiblePromptBlock with current state
+  const renderCollapsibleBlock = (id: string, title: string, content: string | null, downloadPath?: string, downloadName?: string, description?: string) => (
+    <CollapsiblePromptBlock
+      id={id}
+      title={title}
+      content={content}
+      downloadPath={downloadPath}
+      downloadName={downloadName}
+      description={description}
+      isExpanded={expandedSections.has(id)}
+      onToggle={() => toggleSection(id)}
+      onDownload={downloadArtifact}
+    />
+  );
 
   return (
     <div className="p-4 space-y-4">
@@ -1389,14 +1568,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
           )}
 
           <div className="space-y-2">
-            <CollapsibleBlock 
-              id="class-prompt" 
-              title="Prompt" 
-              content={data.classification.prompt} 
-              downloadPath="llm/classification_prompt.txt" 
-              downloadName="classification_prompt.txt"
-              description="Volledige prompt naar LLM"
-            />
+            {renderCollapsibleBlock("class-prompt", "Prompt", data.classification.prompt, "llm/classification_prompt.txt", "classification_prompt.txt", "Volledige prompt naar LLM")}
             {/* Show Response and compare with Result to detect validation issues */}
             {(() => {
               const responseText = data.classification.response?.trim() || '';
@@ -1428,29 +1600,13 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                         Het evidence dat de LLM heeft gegeven kon niet worden gevonden in de document tekst.
                       </div>
                     )}
-                    <CollapsibleBlock 
-                      id="class-response" 
-                      title="Response" 
-                      content={data.classification.response} 
-                      downloadPath="llm/classification_response.txt" 
-                      downloadName="classification_response.txt"
-                      description={wasRejected ? "LLM output (afgewezen door validatie)" : "Ruwe LLM output"}
-                    />
+                    {renderCollapsibleBlock("class-response", "Response", data.classification.response, "llm/classification_response.txt", "classification_response.txt", wasRejected ? "LLM output (afgewezen door validatie)" : "Ruwe LLM output")}
                   </>
                 );
               }
               return null;
             })()}
-            {data.classification.result && (
-              <CollapsibleBlock 
-                id="class-result" 
-                title="Result (JSON)" 
-                content={JSON.stringify(data.classification.result, null, 2)} 
-                downloadPath="llm/classification_result.json" 
-                downloadName="classification_result.json"
-                description={data.classification.result.doc_type_slug === 'unknown' ? "Gevalidateerd resultaat (afgewezen)" : "Gevalidateerd JSON resultaat"}
-              />
-            )}
+            {data.classification.result && renderCollapsibleBlock("class-result", "Result (JSON)", JSON.stringify(data.classification.result, null, 2), "llm/classification_result.json", "classification_result.json", data.classification.result.doc_type_slug === 'unknown' ? "Gevalidateerd resultaat (afgewezen)" : "Gevalidateerd JSON resultaat")}
             
             {/* Show local classification info (NB/BERT scores, deterministic matches) */}
             {data.classification.local && (
@@ -1471,14 +1627,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                     </div>
                   </div>
                 )}
-                <CollapsibleBlock 
-                  id="class-local" 
-                  title="Local Classification (NB/BERT)" 
-                  content={JSON.stringify(data.classification.local, null, 2)} 
-                  downloadPath="llm/classification_local.json" 
-                  downloadName="classification_local.json"
-                  description="Naive Bayes en BERT scores, deterministic matches"
-                />
+                {renderCollapsibleBlock("class-local", "Local Classification (NB/BERT)", JSON.stringify(data.classification.local, null, 2), "llm/classification_local.json", "classification_local.json", "Naive Bayes en BERT scores, deterministic matches")}
               </>
             )}
           </div>
@@ -1533,14 +1682,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
           )}
 
           <div className="space-y-2">
-            <CollapsibleBlock 
-              id="ext-prompt" 
-              title="Prompt" 
-              content={data.extraction.prompt} 
-              downloadPath="llm/extraction_prompt.txt" 
-              downloadName="extraction_prompt.txt"
-              description="Volledige prompt naar LLM"
-            />
+            {renderCollapsibleBlock("ext-prompt", "Prompt", data.extraction.prompt, "llm/extraction_prompt.txt", "extraction_prompt.txt", "Volledige prompt naar LLM")}
             {/* Show Response and compare with Result to detect validation issues */}
             {(() => {
               const responseText = data.extraction.response?.trim() || '';
@@ -1571,29 +1713,13 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                         Sommige velden zijn mogelijk gefilterd of gecorrigeerd.
                       </div>
                     )}
-                    <CollapsibleBlock 
-                      id="ext-response" 
-                      title="Response" 
-                      content={data.extraction.response} 
-                      downloadPath="llm/extraction_response.txt" 
-                      downloadName="extraction_response.txt"
-                      description={isDifferent ? "LLM output (aangepast door validatie)" : "Ruwe LLM output"}
-                    />
+                    {renderCollapsibleBlock("ext-response", "Response", data.extraction.response, "llm/extraction_response.txt", "extraction_response.txt", isDifferent ? "LLM output (aangepast door validatie)" : "Ruwe LLM output")}
                   </>
                 );
               }
               return null;
             })()}
-            {data.extraction.result && (
-              <CollapsibleBlock 
-                id="ext-result" 
-                title="Result (JSON)" 
-                content={JSON.stringify(data.extraction.result, null, 2)} 
-                downloadPath="llm/extraction_result.json" 
-                downloadName="extraction_result.json"
-                description="Gevalidateerd JSON resultaat"
-              />
-            )}
+            {data.extraction.result && renderCollapsibleBlock("ext-result", "Result (JSON)", JSON.stringify(data.extraction.result, null, 2), "llm/extraction_result.json", "extraction_result.json", "Gevalidateerd JSON resultaat")}
           </div>
         </div>
       )}

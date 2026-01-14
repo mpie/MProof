@@ -378,6 +378,51 @@ class NaiveBayesTextClassifier:
 
         best_label, best_prob = max(probs.items(), key=lambda kv: kv[1])
         return Prediction(label=best_label, confidence=float(best_prob))
+    
+    def predict_all_scores(self, text: str, allowed_labels: Optional[Iterable[str]] = None) -> Optional[Dict[str, float]]:
+        """Get all probability scores for all labels, not just the best one."""
+        labels = self.model.get("labels") or []
+        if allowed_labels is not None:
+            allowed = set(allowed_labels)
+            labels = [l for l in labels if l in allowed]
+
+        if not labels:
+            return None
+
+        tokens = _tokenize(text)
+        if not tokens:
+            return None
+
+        counts = Counter(tokens)
+        alpha = float(self.model.get("alpha", 1.0))
+        vocab_size = int(self.model.get("vocab_size", 1)) or 1
+        class_doc_counts: Dict[str, int] = self.model.get("class_doc_counts", {})
+        class_total_tokens: Dict[str, int] = self.model.get("class_total_tokens", {})
+        class_token_counts: Dict[str, Dict[str, int]] = self.model.get("class_token_counts", {})
+
+        total_docs = sum(int(v) for v in class_doc_counts.values()) or 1
+        num_classes = len(labels) or 1
+
+        log_scores: Dict[str, float] = {}
+        for label in labels:
+            doc_count = int(class_doc_counts.get(label, 0))
+            prior = math.log((doc_count + alpha) / (total_docs + alpha * num_classes))
+
+            denom = (int(class_total_tokens.get(label, 0)) + alpha * vocab_size) or 1.0
+            token_counts = class_token_counts.get(label, {})
+
+            score = prior
+            for token, n in counts.items():
+                c = int(token_counts.get(token, 0))
+                score += int(n) * math.log((c + alpha) / denom)
+            log_scores[label] = score
+
+        probs = _softmax_from_log_scores(log_scores)
+        if not probs:
+            return None
+
+        # Return all probabilities as a dict
+        return {label: float(prob) for label, prob in probs.items()}
 
 
 class ClassifierService:
@@ -508,6 +553,17 @@ class ClassifierService:
         if pred.confidence < clf.threshold:
             return None
         return pred
+    
+    def predict_all_scores_with_threshold(self, text: str, allowed_labels: Optional[Iterable[str]] = None, model_name: str = None) -> tuple[Optional[Dict[str, float]], Optional[float]]:
+        """Get all probability scores for all labels with threshold info."""
+        if model_name:
+            clf = self._load_model_by_name(model_name)
+        else:
+            clf = self._load_classifier_if_changed()
+        if not clf:
+            return None, None
+        all_scores = clf.predict_all_scores(text, allowed_labels=allowed_labels)
+        return all_scores, clf.threshold
     
     def predict_with_threshold_info(self, text: str, allowed_labels: Optional[Iterable[str]] = None, model_name: str = None) -> tuple[Optional[Prediction], Optional[float], Optional[Prediction]]:
         """

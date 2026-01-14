@@ -294,7 +294,17 @@ class FraudDetector:
                         ))
                     
                     # Check for missing verified required fields
-                    missing_verified_errors = [e for e in validation_errors if e.startswith("missing_verified_required_field:")]
+                    # Only show errors for fields that exist in result_data AND are not verified
+                    missing_verified_errors = []
+                    for e in validation_errors:
+                        if e.startswith("missing_verified_required_field:"):
+                            field_name = e.split(':')[1]
+                            # Only include if field exists in result_data
+                            if field_name in result_data:
+                                # Check if it's actually verified in verified.json
+                                field_verified = verified.get(field_name, {}).get("verified", False)
+                                if not field_verified:
+                                    missing_verified_errors.append(e)
                     if missing_verified_errors:
                         signals.append(FraudSignal(
                             name="missing_verified_required_fields",

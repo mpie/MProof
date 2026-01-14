@@ -9,7 +9,7 @@ import {
   faEye, faEyeSlash, faRefresh, faExclamationTriangle, faGraduationCap,
   faFileAlt, faCode, faDatabase, faFilter, faToggleOn, faToggleOff, faTimes, faSpinner,
   faFolder, faChevronDown, faBan, faHandPointer, faSearch, faBullseye, faBolt, faBrain,
-  faLightbulb, faGlobe, faCommentDots, faChartBar, faRocket, faShieldAlt, faImage
+  faLightbulb, faGlobe, faCommentDots, faChartBar, faRocket, faShieldAlt, faImage, faInfoCircle
 } from '@fortawesome/free-solid-svg-icons';
 import {
   getTrainingDetails,
@@ -174,7 +174,7 @@ function TrainedLabelsGrid({ labels, docCounts, trainingFilesByLabel, tokensByLa
           <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center">
             <FontAwesomeIcon icon={faDatabase} className="text-blue-400 w-4 h-4" />
           </div>
-          Getrainde Document Types ({labels.length})
+          {modelName ? `Document Types (${labels.length})` : `Getrainde Modellen (${labels.length})`}
           {modelName && (
             <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full font-normal">
               {modelName}
@@ -463,6 +463,7 @@ function ModelTab() {
   // Scroll spy to update active section
   useEffect(() => {
     let scrollTimeout: NodeJS.Timeout;
+    let rafId: number;
 
     const handleScroll = () => {
       // Skip scroll spy updates during programmatic scrolling
@@ -470,57 +471,78 @@ function ModelTab() {
         return;
       }
 
-      // Clear any pending scroll end detection
-      clearTimeout(scrollTimeout);
+      // Cancel any pending RAF
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+      }
 
-      const sections = [
-        { id: 'naive-bayes', element: document.getElementById('naive-bayes') },
-        { id: 'bert', element: document.getElementById('bert') },
-        { id: 'training-data', element: document.getElementById('training-data') },
-        { id: 'classification-priority', element: document.getElementById('classification-priority') },
-        { id: 'stopwords', element: document.getElementById('stopwords') },
-      ];
+      // Use requestAnimationFrame for smoother updates
+      rafId = requestAnimationFrame(() => {
+        const sectionIds = [
+          'naive-bayes',
+          'bert', 
+          'how-extraction-works',
+          'training-data',
+          'classification-priority',
+          'stopwords',
+        ];
 
-      // Get scroll position with proper offset for sticky sidebar
-      const scrollPosition = window.scrollY + 100; // Offset for sticky header
+        // Get all sections with their positions
+        const sectionsWithPositions = sectionIds
+          .map(id => {
+            const element = document.getElementById(id);
+            if (!element) return null;
+            const rect = element.getBoundingClientRect();
+            return {
+              id,
+              top: rect.top,
+              bottom: rect.bottom,
+            };
+          })
+          .filter((s): s is { id: string; top: number; bottom: number } => s !== null);
 
-      // Find the section that's currently in view
-      let activeId = sections[0].id; // Default to first section
-      
-      for (let i = sections.length - 1; i >= 0; i--) {
-        const { id, element } = sections[i];
-        if (element) {
-          const rect = element.getBoundingClientRect();
-          const elementTop = window.scrollY + rect.top;
-          
-          // Check if section is in the viewport (with some threshold)
-          if (scrollPosition >= elementTop - 50) {
-            activeId = id;
+        if (sectionsWithPositions.length === 0) return;
+
+        // Find the section that's currently most visible
+        // A section is "active" if its top is above the middle of the viewport
+        const viewportMiddle = window.innerHeight / 3; // Use top third as trigger point
+        
+        let activeId = sectionsWithPositions[0].id; // Default to first
+        
+        for (let i = sectionsWithPositions.length - 1; i >= 0; i--) {
+          const section = sectionsWithPositions[i];
+          // If the section's top is above the trigger point, it's the active one
+          if (section.top <= viewportMiddle) {
+            activeId = section.id;
             break;
           }
         }
-      }
 
-      // Only update if it's different to avoid unnecessary re-renders
-      setActiveSection((prev) => {
-        if (prev !== activeId) {
-          return activeId;
-        }
-        return prev;
+        // Only update if it's different to avoid unnecessary re-renders
+        setActiveSection((prev) => {
+          if (prev !== activeId) {
+            return activeId;
+          }
+          return prev;
+        });
       });
 
-      // Debounce scroll end detection
-      scrollTimeout = setTimeout(() => {
-        // Scroll ended
-      }, 100);
+      // Clear any pending timeout
+      clearTimeout(scrollTimeout);
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
-    handleScroll(); // Initial check
+    // Also listen for resize as it can affect positions
+    window.addEventListener('resize', handleScroll, { passive: true });
+    
+    // Initial check after a small delay to ensure DOM is ready
+    setTimeout(handleScroll, 100);
     
     return () => {
-      window.removeEventListener('scroll', handleScroll);
+      if (rafId) cancelAnimationFrame(rafId);
       clearTimeout(scrollTimeout);
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleScroll);
     };
   }, []);
   
@@ -841,6 +863,34 @@ function ModelTab() {
                 BERT Classifier
               </a>
               <a
+                href="#how-extraction-works"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const element = document.getElementById('how-extraction-works');
+                  if (element) {
+                    isProgrammaticScrollRef.current = true;
+                    setActiveSection('how-extraction-works');
+                    const elementTop = element.getBoundingClientRect().top + window.scrollY;
+                    const offsetPosition = elementTop - 20;
+                    window.scrollTo({
+                      top: offsetPosition,
+                      behavior: 'smooth'
+                    });
+                    setTimeout(() => {
+                      isProgrammaticScrollRef.current = false;
+                    }, 800);
+                  }
+                }}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  activeSection === 'how-extraction-works'
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                    : 'text-white/60 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FontAwesomeIcon icon={faLightbulb} className="w-4 h-4" />
+                Hoe werkt extractie?
+              </a>
+              <a
                 href="#training-data"
                 onClick={(e) => {
                   e.preventDefault();
@@ -1108,7 +1158,7 @@ function ModelTab() {
                 <div className="text-white font-semibold">
                   {trainingDetails.model.alpha}
                 </div>
-                <div className="text-cyan-300/60 text-[10px] mt-1">Laplace parameter</div>
+                <div className="text-cyan-300/60 text-[10px] mt-1">Onbekende woorden</div>
               </div>
             </div>
 
@@ -1122,23 +1172,44 @@ function ModelTab() {
                   </div>
                   Threshold (Drempel)
                 </h4>
-                <p className="text-white/70 text-sm mb-3">
+                <p className="text-white/70 text-sm mb-2">
                   Hoe zeker moet het model zijn voordat het een classificatie accepteert?
                 </p>
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="w-12 text-purple-300 font-mono">30%</span>
-                    <span className="text-white/60">→ Accepteert meer, maar maakt vaker fouten</span>
+                
+                {/* Example scenario */}
+                <div className="bg-black/20 rounded p-2.5 mb-3 text-xs">
+                  <div className="text-purple-300 font-medium mb-1">Voorbeeld:</div>
+                  <div className="text-white/70">
+                    Model zegt: &quot;Dit is 72% een factuur&quot;
                   </div>
-                  <div className="flex items-center gap-2 bg-purple-500/20 rounded px-2 py-1">
-                    <span className="w-12 text-purple-300 font-mono font-bold">50%</span>
-                    <span className="text-white">→ Goede balans (aanbevolen)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="w-12 text-purple-300 font-mono">80%</span>
-                    <span className="text-white/60">→ Strenger, vaker "onbekend" als resultaat</span>
+                  <div className="text-white/50 mt-1">
+                    <span className="text-green-400">Threshold 70%</span> → Geaccepteerd als factuur<br/>
+                    <span className="text-red-400">Threshold 85%</span> → Afgewezen, valt terug op LLM
                   </div>
                 </div>
+
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="w-12 text-purple-300 font-mono">30%</span>
+                    <span className="text-white/60">→ Soepel: accepteert bijna alles</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-12 text-purple-300 font-mono">50%</span>
+                    <span className="text-white/60">→ Gemiddeld: goede balans</span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-purple-500/20 rounded px-2 py-1">
+                    <span className="w-12 text-purple-300 font-mono font-bold">85%</span>
+                    <span className="text-white">→ Hoog: alleen zekere matches</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-12 text-purple-300 font-mono">95%</span>
+                    <span className="text-white/60">→ Zeer streng: perfecte match</span>
+                  </div>
+                </div>
+                <p className="text-white/50 text-[10px] mt-2 flex items-center gap-1">
+                  <FontAwesomeIcon icon={faLightbulb} className="w-3 h-3 text-amber-400" />
+                  85% voorkomt foute classificaties, LLM vangt twijfelgevallen op
+                </p>
               </div>
 
               {/* Alpha Explanation */}
@@ -1149,26 +1220,43 @@ function ModelTab() {
                   </div>
                   Alpha (Smoothing)
                 </h4>
-                <p className="text-white/70 text-sm mb-3">
-                  Voorkomt dat nieuwe woorden het model volledig breken. Laat op standaard!
+                <p className="text-white/70 text-sm mb-2">
+                  Hoe gaat het model om met woorden die niet in de training data voorkomen?
                 </p>
-                <div className="space-y-2 text-xs">
+                
+                {/* Example scenario */}
+                <div className="bg-black/20 rounded p-2.5 mb-3 text-xs">
+                  <div className="text-cyan-300 font-medium mb-1">Voorbeeld:</div>
+                  <div className="text-white/70">
+                    Factuur bevat &quot;cryptocurrency&quot; maar dat woord zat niet in training
+                  </div>
+                  <div className="text-white/50 mt-1">
+                    <span className="text-red-400">Alpha 0.01</span> → Classificatie faalt volledig<br/>
+                    <span className="text-green-400">Alpha 1.0</span> → Woord genegeerd, rest bepaalt
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="w-12 text-cyan-300 font-mono">0.1</span>
-                    <span className="text-white/60">→ Vertrouwt training data meer</span>
+                    <span className="w-12 text-cyan-300 font-mono">0.01</span>
+                    <span className="text-white/60">→ Streng: onbekend = grote straf</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="w-12 text-cyan-300 font-mono">0.5</span>
+                    <span className="text-white/60">→ Gemiddeld: kleine straf</span>
                   </div>
                   <div className="flex items-center gap-2 bg-cyan-500/20 rounded px-2 py-1">
                     <span className="w-12 text-cyan-300 font-mono font-bold">1.0</span>
-                    <span className="text-white">→ Standaard - goed voor meeste cases</span>
+                    <span className="text-white">→ Standaard: neutraal effect</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="w-12 text-cyan-300 font-mono">2.0</span>
-                    <span className="text-white/60">→ Meer tolerant voor onbekende woorden</span>
+                    <span className="w-12 text-cyan-300 font-mono">2.0+</span>
+                    <span className="text-white/60">→ Soepel: woord genegeerd</span>
                   </div>
                 </div>
-                <p className="text-cyan-300/50 text-[10px] mt-3 flex items-center gap-1.5">
-                  <FontAwesomeIcon icon={faLightbulb} className="w-2.5 h-2.5 text-amber-400" />
-                  Tip: Wijzig dit alleen als je weet wat je doet. Standaard werkt bijna altijd goed.
+                <p className="text-white/50 text-[10px] mt-2 flex items-center gap-1">
+                  <FontAwesomeIcon icon={faLightbulb} className="w-3 h-3 text-amber-400" />
+                  1.0 zorgt dat nieuwe woorden de classificatie niet breken
                 </p>
               </div>
             </div>
@@ -1189,6 +1277,98 @@ function ModelTab() {
       {/* BERT Classifier Section - Under Naive Bayes */}
       <div id="bert" className="mt-6 scroll-mt-4">
         <BertClassifierSection selectedModel={selectedModel} />
+      </div>
+
+      {/* How Extraction Works - Explanation */}
+      <div id="how-extraction-works" className="scroll-mt-4">
+        <div className="glass-card p-6 mb-6">
+          <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center">
+              <FontAwesomeIcon icon={faLightbulb} className="text-blue-400 w-4 h-4" />
+            </div>
+            Hoe werkt data extractie?
+          </h3>
+          
+          <div className="space-y-4 text-sm">
+            {/* Step 1: Classification */}
+            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-6 h-6 bg-purple-500/30 rounded-full flex items-center justify-center text-purple-300 text-xs font-bold">1</span>
+                <span className="text-white font-medium">Document Classificatie</span>
+              </div>
+              <p className="text-white/70 ml-8">
+                Het systeem herkent eerst het <strong className="text-white">documenttype</strong> (bijv. &quot;factuur&quot;, &quot;loonstrook&quot;, &quot;commitment-agreement&quot;). 
+                Dit gebeurt via getrainde AI-modellen (Naive Bayes en BERT) die leren van voorbeelddocumenten.
+              </p>
+            </div>
+
+            {/* Step 2: Field Extraction */}
+            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-6 h-6 bg-blue-500/30 rounded-full flex items-center justify-center text-blue-300 text-xs font-bold">2</span>
+                <span className="text-white font-medium">Metadata Extractie (LLM)</span>
+              </div>
+              <p className="text-white/70 ml-8 mb-2">
+                Op basis van het documenttype vraagt het systeem aan de LLM om specifieke velden te extraheren. 
+                Elk documenttype heeft zijn eigen velden gedefinieerd in <strong className="text-white">Document Types</strong>.
+              </p>
+              <div className="ml-8 bg-black/20 rounded p-3 font-mono text-xs text-white/60">
+                <div>Voorbeeld &quot;commitment-agreement&quot;:</div>
+                <div className="text-blue-300 mt-1">→ participant, fondsmanager, commitment (bedrag), datum, adres</div>
+              </div>
+            </div>
+
+            {/* Step 3: Evidence Finding */}
+            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-6 h-6 bg-emerald-500/30 rounded-full flex items-center justify-center text-emerald-300 text-xs font-bold">3</span>
+                <span className="text-white font-medium">Evidence Zoeken (Alle Pagina&apos;s)</span>
+              </div>
+              <p className="text-white/70 ml-8 mb-2">
+                Voor elke geëxtraheerde waarde doorzoekt het systeem <strong className="text-white">ALLE pagina&apos;s</strong> van het document om te vinden waar de waarde voorkomt:
+              </p>
+              <ul className="ml-8 text-white/60 space-y-1">
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400">•</span>
+                  <span>Exacte tekstmatch (bijv. &quot;P.C.M. Vastgoed Holding B.V.&quot;)</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400">•</span>
+                  <span>Genormaliseerde match (witruimte-verschillen door OCR)</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400">•</span>
+                  <span>Numerieke formaten (100000 → &quot;100.000&quot; → &quot;€ 100.000,-&quot;)</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-400">•</span>
+                  <span>Case-insensitive matching</span>
+                </li>
+              </ul>
+            </div>
+
+            {/* Step 4: PDF Highlighting */}
+            <div className="bg-white/5 rounded-lg p-4 border border-white/10">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-6 h-6 bg-yellow-500/30 rounded-full flex items-center justify-center text-yellow-300 text-xs font-bold">4</span>
+                <span className="text-white font-medium">PDF Highlighting</span>
+              </div>
+              <p className="text-white/70 ml-8">
+                In de PDF viewer worden alle gevonden evidence-locaties <strong className="text-blue-300">blauw gemarkeerd</strong>. 
+                Onderaan zie je knoppen om snel naar pagina&apos;s met evidence te navigeren.
+              </p>
+            </div>
+
+            {/* Tip */}
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 flex items-start gap-3">
+              <FontAwesomeIcon icon={faLightbulb} className="text-yellow-400 w-4 h-4 mt-0.5" />
+              <div className="text-white/80 text-xs">
+                <strong className="text-yellow-300">Tip:</strong> Als een veld &quot;geen bewijs&quot; toont maar de waarde WEL in het document staat,
+                kan dit komen door OCR-fouten of afwijkende opmaak. Het systeem probeert automatisch verschillende formaten te matchen.
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Training Data per Label - Scalable */}
@@ -1461,6 +1641,7 @@ function ModelTab() {
 function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
   const queryClient = useQueryClient();
   const [bertThreshold, setBertThreshold] = useState(0.7);
+  const [selectedBertLabel, setSelectedBertLabel] = useState<string | null>(null);
 
   const { data: bertStatus } = useQuery({
     queryKey: ['bert-classifier-status', selectedModel],
@@ -1598,6 +1779,11 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
           <div className="text-white font-mono text-xs truncate" title={bertStatus?.bert_model}>
             {bertStatus?.bert_model || 'multilingual-MiniLM'}
           </div>
+          <p className="text-white/40 text-[10px] mt-2 leading-relaxed">
+            {bertStatus?.bert_model?.includes('robbert') || bertStatus?.bert_model?.includes('NetherlandsForensicInstitute')
+              ? 'Ontwikkeld door het Nederlands Forensisch Instituut (NFI). Gespecialiseerd in Nederlandse juridische en zakelijke documenten. Herkent o.a. contracten, facturen, ID-documenten, bankafschriften en officiële correspondentie.'
+              : 'Dit model zet tekst om naar numerieke vectoren die de betekenis vastleggen, waardoor documenten vergeleken kunnen worden op inhoud.'}
+          </p>
         </div>
 
         {/* Labels */}
@@ -1633,19 +1819,22 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
             </div>
           )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <div>
+            <div title="Totaal aantal documenten gebruikt voor training">
               <span className="text-white/50">Documenten:</span>
               <span className="text-white ml-1">{bertStatus.last_summary.total_documents}</span>
             </div>
-            <div>
+            <div title="Aantal document types dat BERT kan herkennen">
               <span className="text-white/50">Types:</span>
               <span className="text-white ml-1">{bertStatus.last_summary.labels?.length || 0}</span>
             </div>
-            <div>
-              <span className="text-white/50">Embedding Dim:</span>
+            <div 
+              title="Dimensie van de BERT vector: elk document wordt omgezet naar 768 getallen die de 'betekenis' van het document representeren. Dit is een vast kenmerk van het BERT model."
+              className="cursor-help"
+            >
+              <span className="text-white/50">Vector grootte:</span>
               <span className="text-white ml-1">{bertStatus.last_summary.embedding_dim}</span>
             </div>
-            <div>
+            <div title="Minimale zekerheid voordat BERT een classificatie accepteert">
               <span className="text-white/50">Threshold:</span>
               <span className="text-white ml-1">{Math.round(bertStatus.last_summary.threshold * 100)}%</span>
             </div>
@@ -1690,25 +1879,170 @@ function BertClassifierSection({ selectedModel }: { selectedModel?: string }) {
             </div>
           </div>
           
+          {/* How BERT works explanation */}
+          <details className="mt-2">
+            <summary className="text-white/70 text-xs cursor-pointer hover:text-white transition-colors flex items-center gap-1">
+              <FontAwesomeIcon icon={faLightbulb} className="w-3 h-3 text-amber-400" />
+              Hoe werkt BERT classificatie?
+            </summary>
+            <div className="mt-2 pt-2 border-t border-white/10 text-xs space-y-2">
+              <div className="bg-black/20 rounded p-3">
+                <div className="text-blue-300 font-medium mb-2">BERT zet tekst om naar vectoren</div>
+                <p className="text-white/60 mb-2">
+                  Elk document wordt omgezet naar een &quot;vector&quot; van <strong className="text-white">{bertStatus.last_summary.embedding_dim || 768} getallen</strong>. 
+                  Deze getallen representeren de &quot;betekenis&quot; van het document.
+                </p>
+                <div className="bg-black/30 rounded p-2 font-mono text-[10px] text-white/50">
+                  &quot;Factuur voor levering...&quot; → [0.23, -0.87, 0.45, ... 768 getallen]
+                </div>
+              </div>
+              <div className="bg-black/20 rounded p-3">
+                <div className="text-blue-300 font-medium mb-2">Vergelijking via afstand</div>
+                <p className="text-white/60">
+                  BERT vergelijkt de vector van een nieuw document met de vectoren van bekende types. 
+                  Het type met de kleinste &quot;afstand&quot; wint (als boven threshold).
+                </p>
+              </div>
+              <div className="text-white/40 text-[10px] flex items-center gap-1">
+                <FontAwesomeIcon icon={faInfoCircle} className="w-3 h-3" />
+                768 dimensies is standaard voor het &quot;all-MiniLM-L6-v2&quot; BERT model
+              </div>
+            </div>
+          </details>
+
           {bertStatus.last_summary.samples_per_label && Object.keys(bertStatus.last_summary.samples_per_label).length > 0 && (
             <details className="mt-2">
               <summary className="text-white/70 text-xs cursor-pointer hover:text-white transition-colors">
-                Getrainde types ({Object.keys(bertStatus.last_summary.samples_per_label).length}) • 
+                Document types ({Object.keys(bertStatus.last_summary.samples_per_label).length}) •
                 Semantisch begrip • Beter dan NB bij variaties
               </summary>
               <div className="mt-2 pt-2 border-t border-white/10">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
                   {Object.entries(bertStatus.last_summary.samples_per_label)
                     .sort(([, a], [, b]) => (b as number) - (a as number))
-                    .map(([label, count]) => (
-                      <div key={label} className="bg-white/5 rounded px-2 py-1 border border-white/10 flex items-center justify-between">
-                        <span className="text-white/80 truncate">{label}</span>
-                        <span className="text-cyan-300 font-semibold shrink-0 ml-1">{count}</span>
-                      </div>
-                    ))}
+                    .map(([label, count]) => {
+                      const numCount = count as number;
+                      const quality = numCount >= 10 ? 'good' : numCount >= 5 ? 'medium' : 'low';
+                      return (
+                        <button 
+                          key={label} 
+                          onClick={() => setSelectedBertLabel(label)}
+                          className="bg-white/5 rounded px-2 py-1.5 border border-white/10 flex items-center justify-between hover:bg-white/10 hover:border-cyan-500/30 transition-colors cursor-pointer text-left"
+                        >
+                          <span className="text-white/80 truncate">{label}</span>
+                          <span className={`font-semibold shrink-0 ml-1 ${
+                            quality === 'good' ? 'text-green-400' : 
+                            quality === 'medium' ? 'text-yellow-400' : 
+                            'text-red-400'
+                          }`}>{count}</span>
+                        </button>
+                      );
+                    })}
                 </div>
               </div>
             </details>
+          )}
+
+          {/* BERT Label Detail Modal */}
+          {selectedBertLabel && bertStatus?.last_summary?.samples_per_label && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedBertLabel(null)}>
+              <div className="bg-gray-900 border border-white/20 rounded-xl p-6 max-w-lg w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-white font-semibold flex items-center gap-2">
+                    <FontAwesomeIcon icon={faBrain} className="text-cyan-400 w-5 h-5" />
+                    Model: {selectedBertLabel}
+                  </h3>
+                  <button onClick={() => setSelectedBertLabel(null)} className="text-white/60 hover:text-white p-1">
+                    <FontAwesomeIcon icon={faTimes} className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {(() => {
+                  const count = bertStatus.last_summary.samples_per_label[selectedBertLabel] as number;
+                  const quality = count >= 10 ? 'good' : count >= 5 ? 'medium' : 'low';
+                  const modelName = selectedModel || 'backoffice';
+                  return (
+                    <div className="space-y-4">
+                      {/* Count display */}
+                      <div className="bg-white/5 rounded-lg p-4 border border-white/10 text-center">
+                        <div className={`text-4xl font-bold ${
+                          quality === 'good' ? 'text-green-400' : 
+                          quality === 'medium' ? 'text-yellow-400' : 
+                          'text-red-400'
+                        }`}>{count}</div>
+                        <div className="text-white/60 text-sm mt-1">training documenten</div>
+                      </div>
+
+                      {/* What does this mean */}
+                      <div className="space-y-3">
+                        <h4 className="text-white/80 font-medium text-sm">Wat betekent dit getal?</h4>
+                        <p className="text-white/60 text-sm">
+                          In de map <code className="bg-black/30 px-1 py-0.5 rounded text-cyan-300 text-xs">data/{selectedBertLabel}/</code> staan 
+                          <strong className="text-white"> {count} PDF&apos;s</strong> verdeeld over verschillende document type mappen 
+                          (bijv. <code className="bg-black/30 px-1 py-0.5 rounded text-white/60 text-xs">offerte/</code>, 
+                          <code className="bg-black/30 px-1 py-0.5 rounded text-white/60 text-xs">factuur/</code>, etc.).
+                        </p>
+                        <p className="text-white/60 text-sm">
+                          BERT leert hiermee welke documenten bij het model <strong className="text-cyan-300">{selectedBertLabel}</strong> horen 
+                          en kan nieuwe documenten automatisch classificeren naar het juiste document type.
+                        </p>
+                      </div>
+
+                      {/* Quality indicator */}
+                      <div className={`rounded-lg p-3 border ${
+                        quality === 'good' ? 'bg-green-500/10 border-green-500/30' : 
+                        quality === 'medium' ? 'bg-yellow-500/10 border-yellow-500/30' : 
+                        'bg-red-500/10 border-red-500/30'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <FontAwesomeIcon 
+                            icon={quality === 'good' ? faCheck : quality === 'medium' ? faExclamationTriangle : faExclamationTriangle} 
+                            className={`w-4 h-4 ${
+                              quality === 'good' ? 'text-green-400' : 
+                              quality === 'medium' ? 'text-yellow-400' : 
+                              'text-red-400'
+                            }`} 
+                          />
+                          <span className={`font-medium text-sm ${
+                            quality === 'good' ? 'text-green-300' : 
+                            quality === 'medium' ? 'text-yellow-300' : 
+                            'text-red-300'
+                          }`}>
+                            {quality === 'good' ? 'Voldoende training data' : 
+                             quality === 'medium' ? 'Matig - meer voorbeelden aanbevolen' : 
+                             'Onvoldoende - voeg meer voorbeelden toe'}
+                          </span>
+                        </div>
+                        <p className="text-white/50 text-xs mt-2">
+                          {quality === 'good'
+                            ? 'Met 10+ documenten per document type kan BERT betrouwbaar classificeren.'
+                            : quality === 'medium'
+                            ? 'Met 5-9 documenten werkt BERT redelijk, maar meer voorbeelden per type verbeteren nauwkeurigheid.'
+                            : 'Met minder dan 5 documenten per type is BERT onbetrouwbaar. Voeg meer voorbeelden toe.'}
+                        </p>
+                      </div>
+
+                      {/* Folder structure explanation */}
+                      <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-3">
+                        <div className="text-cyan-300 text-xs font-medium mb-2">Folder structuur:</div>
+                        <div className="bg-black/30 rounded p-2 font-mono text-[10px] text-white/70 space-y-0.5">
+                          <div className="text-purple-300">data/</div>
+                          <div className="ml-3 text-blue-300">{selectedBertLabel}/ <span className="text-white/40">← model ({count} PDF&apos;s totaal)</span></div>
+                          <div className="ml-6 text-cyan-300">offerte/ <span className="text-white/40">← document type</span></div>
+                          <div className="ml-9 text-white/50">offerte1.pdf, offerte2.pdf, ...</div>
+                          <div className="ml-6 text-cyan-300">factuur/ <span className="text-white/40">← document type</span></div>
+                          <div className="ml-9 text-white/50">factuur1.pdf, factuur2.pdf, ...</div>
+                          <div className="ml-6 text-white/40">... meer document types</div>
+                        </div>
+                        <p className="text-white/50 text-[10px] mt-2">
+                          Het totaal van {count} PDF&apos;s is de som van alle bestanden in alle document type mappen.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
           )}
         </div>
       )}
