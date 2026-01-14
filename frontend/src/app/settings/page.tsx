@@ -462,8 +462,8 @@ function ModelTab() {
 
   // Scroll spy to update active section
   useEffect(() => {
-    let scrollTimeout: NodeJS.Timeout;
-    let rafId: number;
+    let scrollTimeout: NodeJS.Timeout | undefined;
+    let rafId: number | undefined;
 
     const handleScroll = () => {
       // Skip scroll spy updates during programmatic scrolling
@@ -528,7 +528,9 @@ function ModelTab() {
       });
 
       // Clear any pending timeout
-      clearTimeout(scrollTimeout);
+      if (scrollTimeout) {
+        clearTimeout(scrollTimeout);
+      }
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -536,11 +538,11 @@ function ModelTab() {
     window.addEventListener('resize', handleScroll, { passive: true });
     
     // Initial check after a small delay to ensure DOM is ready
-    setTimeout(handleScroll, 100);
+    scrollTimeout = setTimeout(handleScroll, 100);
     
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
-      clearTimeout(scrollTimeout);
+      if (scrollTimeout) clearTimeout(scrollTimeout);
       window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleScroll);
     };
