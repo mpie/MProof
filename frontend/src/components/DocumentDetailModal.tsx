@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -13,7 +14,15 @@ import {
   Document, DocumentEvent, getDocument, analyzeDocument, getDocumentArtifact, getDocumentArtifactText, getDocumentArtifactJson,
   RiskSignal, subscribeToDocumentEvents, getFraudAnalysis, FraudReport, FraudSignal
 } from '@/lib/api';
-import { PDFViewerWithHighlights } from './PDFViewerWithHighlights';
+
+// Dynamically import PDFViewerWithHighlights to avoid SSR issues with react-pdf
+const PDFViewerWithHighlights = dynamic(
+  () => import('./PDFViewerWithHighlights').then(mod => ({ default: mod.PDFViewerWithHighlights })),
+  { 
+    ssr: false,
+    loading: () => <div className="flex items-center justify-center h-full text-white/60">PDF viewer laden...</div>
+  }
+);
 
 // Document Viewer Modal Component
 function DocumentViewerModal({ 
