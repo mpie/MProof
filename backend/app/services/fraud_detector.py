@@ -41,6 +41,16 @@ class FraudSignal:
     confidence: float  # 0.0 - 1.0
     details: Dict[str, Any] = field(default_factory=dict)
     evidence: List[str] = field(default_factory=list)
+    category: str = "quality_warning"
+    recommendation: str = "Controleer dit signaal handmatig in combinatie met de documentinhoud."
+
+    @property
+    def code(self) -> str:
+        return self.name
+
+    @property
+    def severity(self) -> str:
+        return self.risk_level.value
 
 
 @dataclass
@@ -53,6 +63,7 @@ class FraudReport:
     signals: List[FraudSignal]
     summary: str
     analyzed_at: str
+    semantic_context: Optional[Dict[str, Any]] = None
     
     def _convert_numpy_types(self, obj: Any) -> Any:
         """Recursively convert numpy types to native Python types."""
@@ -74,17 +85,43 @@ class FraudReport:
             "risk_score": float(self.risk_score),
             "signals": [
                 {
+                    "code": s.code,
                     "name": s.name,
+                    "category": s.category,
+                    "severity": s.severity,
                     "description": s.description,
+                    "message": s.description,
+                    "explanation": s.description,
                     "risk_level": s.risk_level.value,
                     "confidence": float(s.confidence),
                     "details": self._convert_numpy_types(s.details),
                     "evidence": s.evidence,
+                    "recommendation": s.recommendation,
                 }
                 for s in self.signals
             ],
             "summary": self.summary,
             "analyzed_at": self.analyzed_at,
+            "semantic_context": self._convert_numpy_types(self.semantic_context),
+        }
+
+    def to_risk_analysis_dict(self) -> Dict[str, Any]:
+        """Return DB/risk artifact-compatible representation of the canonical report."""
+        return {
+            "risk_score": int(round(self.risk_score)),
+            "signals": [
+                {
+                    "code": signal.code,
+                    "severity": signal.severity,
+                    "category": signal.category,
+                    "message": signal.description,
+                    "evidence": "; ".join(signal.evidence),
+                    "confidence": float(signal.confidence),
+                    "recommendation": signal.recommendation,
+                    "details": self._convert_numpy_types(signal.details),
+                }
+                for signal in self.signals
+            ],
         }
 
 
@@ -130,6 +167,7 @@ class FraudDetector:
         self.ela_min_size = ela_min_size if ela_min_size is not None else settings.ela_min_size
         self.ela_allow_non_jpeg = ela_allow_non_jpeg if ela_allow_non_jpeg is not None else settings.ela_allow_non_jpeg
         self.ela_scale_for_heatmap = ela_scale_for_heatmap if ela_scale_for_heatmap is not None else settings.ela_scale_for_heatmap
+        self.ela_quality = ela_quality if ela_quality is not None else settings.ela_quality
     
     async def _get_ela_enabled(self) -> bool:
         """Get ELA enabled setting, checking database first."""
@@ -166,7 +204,6 @@ class FraudDetector:
         except Exception:
             pass
         return self.settings.exif_enabled
-        self.ela_quality = ela_quality if ela_quality is not None else settings.ela_quality
     
     async def analyze_document(
         self,
@@ -177,6 +214,8 @@ class FraudDetector:
         document_dir: Optional[Path] = None,
         extracted_text: Optional[str] = None,
         classification_confidence: Optional[float] = None,
+        classification_label: Optional[str] = None,
+        semantic_context: Optional[Dict[str, Any]] = None,
         existing_signals: Optional[Dict[str, Any]] = None,
     ) -> FraudReport:
         """
@@ -222,19 +261,11 @@ class FraudDetector:
             
             if is_image and file_bytes:
                 image_signals = await self._analyze_image_forensics(file_bytes, filename, ela_heatmap_path)
-                # Force LOW risk and cap confidence
-                for sig in image_signals:
-                    sig.risk_level = RiskLevel.LOW
-                    sig.confidence = min(sig.confidence, 0.4)
                 signals.extend(image_signals)
             
             # 3. Extract images from PDF for analysis
             if is_pdf and file_bytes:
                 pdf_image_signals = await self._analyze_pdf_images(file_bytes, ela_heatmap_path)
-                # Force LOW risk and cap confidence
-                for sig in pdf_image_signals:
-                    sig.risk_level = RiskLevel.LOW
-                    sig.confidence = min(sig.confidence, 0.4)
                 signals.extend(pdf_image_signals)
         
         # 4. Text Anomaly Detection
@@ -260,13 +291,18 @@ class FraudDetector:
         if classification_confidence is not None:
             conf_signals = self._analyze_classification_confidence(classification_confidence)
             signals.extend(conf_signals)
+
+        # 6. Semantic BERT context, used as assistive context and mismatch hint only
+        if semantic_context:
+            semantic_signals = self._analyze_semantic_context(semantic_context, classification_label)
+            signals.extend(semantic_signals)
         
-        # 6. Include existing signals from document processing
+        # 7. Include existing signals from document processing
         if existing_signals:
             proc_signals = self._parse_existing_signals(existing_signals)
             signals.extend(proc_signals)
         
-        # 7. Check verified.json and validation.json for metadata issues
+        # 8. Check verified.json and validation.json for metadata issues
         if document_dir:
             verified_path = document_dir / "metadata" / "verified.json"
             validation_path = document_dir / "metadata" / "validation.json"
@@ -289,6 +325,8 @@ class FraudDetector:
                             description=f"Ongeldig IBAN nummer gedetecteerd ({len(invalid_iban_errors)} velden)",
                             risk_level=RiskLevel.MEDIUM,
                             confidence=0.7,
+                            category="context_mismatch",
+                            recommendation="Controleer het IBAN tegen het originele document en bekende rekeninggegevens.",
                             details={"errors": invalid_iban_errors},
                             evidence=[f"Ongeldig IBAN in: {', '.join(e.split(':')[1] for e in invalid_iban_errors)}"],
                         ))
@@ -311,6 +349,8 @@ class FraudDetector:
                             description=f"Verplichte velden zonder bewijs ({len(missing_verified_errors)} velden)",
                             risk_level=RiskLevel.MEDIUM,
                             confidence=0.6,
+                            category="context_mismatch",
+                            recommendation="Controleer of deze verplichte velden echt in het document staan en of de extractie bewijs heeft gevonden.",
                             details={"errors": missing_verified_errors},
                             evidence=[f"Geen bewijs voor: {', '.join(e.split(':')[1] for e in missing_verified_errors)}"],
                         ))
@@ -332,6 +372,8 @@ class FraudDetector:
                                     description=f"Bedragen kloppen niet: totaal ({total}) ≠ subtotaal ({subtotal}) + BTW ({vat})",
                                     risk_level=RiskLevel.MEDIUM,
                                     confidence=0.6,
+                                    category="context_mismatch",
+                                    recommendation="Controleer de bedragen handmatig; afronding, korting of verzendkosten kunnen dit soms verklaren.",
                                     details={"total": total, "subtotal": subtotal, "vat": vat, "difference": diff},
                                     evidence=[f"Verschil: €{diff:.2f}"],
                                 ))
@@ -360,7 +402,8 @@ class FraudDetector:
             risk_score=risk_score,
             signals=signals,
             summary=summary,
-                analyzed_at=datetime.now(timezone.utc).isoformat(),
+            analyzed_at=datetime.now(timezone.utc).isoformat(),
+            semantic_context=semantic_context,
         )
     
     def _analyze_pdf_metadata(self, pdf_bytes: bytes) -> List[FraudSignal]:
@@ -382,6 +425,8 @@ class FraudDetector:
                         description=f"PDF gemaakt met verdachte software: {description}",
                         risk_level=RiskLevel.MEDIUM,
                         confidence=0.8,
+                        category="manipulation",
+                        recommendation="Controleer of deze PDF-generator past bij de verwachte bron van het document.",
                         details={
                             "creator": metadata.get("creator"),
                             "producer": metadata.get("producer"),
@@ -404,6 +449,8 @@ class FraudDetector:
                             description="Creatiedatum en wijzigingsdatum verschillen",
                             risk_level=RiskLevel.LOW,
                             confidence=0.5,
+                            category="manipulation",
+                            recommendation="Controleer of de wijzigingsdatum logisch is voor dit document.",
                             details={
                                 "creation_date": creation_date,
                                 "modification_date": mod_date,
@@ -420,6 +467,8 @@ class FraudDetector:
                     description="PDF mist auteur en titel metadata",
                     risk_level=RiskLevel.LOW,
                     confidence=0.4,
+                    category="quality_warning",
+                    recommendation="Gebruik dit alleen als ondersteunende context; ontbrekende metadata is op zichzelf geen fraudebewijs.",
                     details={"metadata": metadata},
                     evidence=["Geen auteur", "Geen titel"],
                 ))
@@ -430,7 +479,7 @@ class FraudDetector:
             logger.warning(f"PDF metadata analysis failed: {e}")
         
         return signals
-    
+
     async def _analyze_image_forensics(self, image_bytes: bytes, filename: str, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
         """Perform Error Level Analysis (ELA) on images."""
         signals = []
@@ -642,6 +691,8 @@ class FraudDetector:
                     description=description,
                     risk_level=risk_level,
                     confidence=confidence,
+                    category="manipulation",
+                    recommendation="Bekijk de ELA-heatmap en vergelijk verdachte gebieden met de originele documentinhoud.",
                     details={
                         "mean_error": mean_error,
                         "max_error": max_error,
@@ -740,7 +791,9 @@ class FraudDetector:
                             name="image_editing_software",
                             description=f"Afbeelding bewerkt met: {exif[tag]}",
                             risk_level=RiskLevel.LOW,
-                            confidence=min(0.4, 0.7),
+                            confidence=0.7,
+                            category="manipulation",
+                            recommendation="Controleer of gebruik van beeldbewerkingssoftware verwacht is voor dit document.",
                             details={"software": exif[tag]},
                             evidence=[f"Bewerkt met: {exif[tag]}"],
                         ))
@@ -880,6 +933,8 @@ class FraudDetector:
                 description=f"Verdachte unicode karakters gedetecteerd ({len(suspicious_chars)} stuks)",
                 risk_level=default_risk,
                 confidence=default_confidence,
+                category="ai_generated",
+                recommendation="Controleer of de zichtbare tekst overeenkomt met het originele documentbeeld.",
                 details={
                     "count": len(suspicious_chars),
                     "types": list(unique_types),
@@ -908,6 +963,8 @@ class FraudDetector:
                     description="Onnatuurlijke tekstherhaling gedetecteerd",
                     risk_level=default_risk,
                     confidence=default_confidence,
+                    category="ai_generated",
+                    recommendation="Controleer of herhaalde tekst logisch is of wijst op gegenereerde/template-achtige inhoud.",
                     details={
                         "repeated_words": suspicious_repeats[:10],
                         "total_words": total_words,
@@ -927,12 +984,62 @@ class FraudDetector:
                 description="Document past niet bij bekende document types",
                 risk_level=RiskLevel.MEDIUM,
                 confidence=1.0 - confidence,
+                category="context_mismatch",
+                recommendation="Controleer of het gekozen documenttype inhoudelijk klopt of dat dit document onbekend moet blijven.",
                 details={"classification_confidence": confidence},
                 evidence=[f"Classificatie zekerheid: {confidence*100:.1f}%"],
             ))
         
         return signals
     
+    def _analyze_semantic_context(
+        self,
+        semantic_context: Dict[str, Any],
+        classification_label: Optional[str],
+    ) -> List[FraudSignal]:
+        """Use BERT context as assistive context, not as a hard fraud decision."""
+        signals: List[FraudSignal] = []
+        top_matches = semantic_context.get("top_matches") or []
+        if not top_matches:
+            return signals
+
+        top_match = top_matches[0]
+        bert_label = top_match.get("label")
+        confidence = float(top_match.get("confidence") or 0.0)
+        margin = float(semantic_context.get("margin") or 0.0)
+
+        if not classification_label or classification_label == "unknown":
+            signals.append(FraudSignal(
+                name="semantic_context_available",
+                description=f"BERT ziet dit document vooral als '{bert_label}', maar dit is alleen context.",
+                risk_level=RiskLevel.LOW,
+                confidence=min(confidence, 0.6),
+                category="semantic_context",
+                recommendation="Gebruik deze context om handmatig te beoordelen wat het document inhoudt.",
+                details=semantic_context,
+                evidence=[f"Top match: {bert_label} ({confidence * 100:.1f}%)", f"Margin: {margin * 100:.1f}%"],
+            ))
+            return signals
+
+        if bert_label and bert_label != classification_label:
+            severity = RiskLevel.MEDIUM if confidence >= 0.75 and margin >= 0.10 else RiskLevel.LOW
+            signals.append(FraudSignal(
+                name="semantic_context_mismatch",
+                description=f"BERT-context wijkt af: inhoud lijkt op '{bert_label}', classificatie is '{classification_label}'.",
+                risk_level=severity,
+                confidence=min(confidence, 0.85),
+                category="semantic_context",
+                recommendation="Controleer of het document inhoudelijk past bij het gekozen documenttype.",
+                details=semantic_context,
+                evidence=[
+                    f"BERT top match: {bert_label} ({confidence * 100:.1f}%)",
+                    f"Gekozen classificatie: {classification_label}",
+                    f"Margin: {margin * 100:.1f}%",
+                ],
+            ))
+
+        return signals
+
     def _parse_existing_signals(self, existing: Dict[str, Any]) -> List[FraudSignal]:
         """Parse existing fraud signals from document processing."""
         signals = []

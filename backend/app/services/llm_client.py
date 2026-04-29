@@ -35,6 +35,13 @@ class LLMClient:
         self.max_retries = config["max_retries"]
         self.max_tokens = config.get("max_tokens", 2048)
         
+        # Validate base_url format
+        if not self.base_url.startswith(('http://', 'https://')):
+            logger.warning(
+                f"LLM base_url '{self.base_url}' does not start with http:// or https://. "
+                f"This may cause connection errors."
+            )
+        
         logger.info(f"LLMClient configured with provider: {self.provider}, base_url: {self.base_url}, model: {self.model}, max_tokens: {self.max_tokens}")
 
     def _generate_curl_command(self, url: str, payload: Dict[str, Any]) -> str:
@@ -285,6 +292,36 @@ class LLMClient:
                     raise e
                 await asyncio.sleep(1)
 
+            except (httpx.ConnectError, httpx.NetworkError) as e:
+                error_msg = str(e)
+                # Provide more helpful error messages for connection issues
+                if "nodename nor servname provided" in error_msg or "Name or service not known" in error_msg:
+                    logger.error(
+                        f"LLM connection failed (attempt {attempt + 1}/{self.max_retries}): "
+                        f"Cannot resolve hostname in URL '{self.base_url}'. "
+                        f"Please check your {self.provider}_base_url configuration. "
+                        f"Error: {e}"
+                    )
+                elif "Connection refused" in error_msg or "Connection reset" in error_msg:
+                    logger.error(
+                        f"LLM connection failed (attempt {attempt + 1}/{self.max_retries}): "
+                        f"Cannot connect to '{self.base_url}'. "
+                        f"Please ensure the {self.provider} service is running. "
+                        f"Error: {e}"
+                    )
+                else:
+                    logger.error(
+                        f"LLM connection failed (attempt {attempt + 1}/{self.max_retries}): "
+                        f"Cannot reach '{self.base_url}'. Error: {e}"
+                    )
+                if attempt == self.max_retries - 1:
+                    raise LLMClientError(
+                        f"LLM connection failed: Cannot reach {self.provider} service at '{self.base_url}'. "
+                        f"Please check that the service is running and the URL is correct. "
+                        f"Original error: {e}"
+                    )
+                await asyncio.sleep(1)
+            
             except Exception as e:
                 logger.error(f"LLM request failed (attempt {attempt + 1}/{self.max_retries}): {e}")
                 if attempt == self.max_retries - 1:

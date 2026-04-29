@@ -230,9 +230,12 @@ class ExtractionEvidence(BaseModel):
 # Risk signals
 class RiskSignal(BaseModel):
     code: str
-    severity: Literal["low", "medium", "high"]
+    severity: Literal["low", "medium", "high", "critical"]
     message: str
     evidence: str
+    category: Optional[str] = None
+    confidence: Optional[float] = None
+    recommendation: Optional[str] = None
     examples: Optional[Dict[str, Any]] = None
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import shutil
 
-from app.services.fraud_detector import FraudDetector, RiskLevel
+from app.services.fraud_detector import FraudDetector, FraudReport, FraudSignal, RiskLevel
 
 
 @pytest.fixture
@@ -271,3 +271,66 @@ def test_ela_heatmap_visualization_scaled(detector, temp_dir):
     if signal:
         # std_error should be reasonable (not 77x the actual value)
         assert signal.details["std_error"] < 100, "Stats should be on unscaled diff"
+
+
+def test_fraud_report_exposes_canonical_and_legacy_signal_fields():
+    """Canonical fraud reports should support new UI fields and old consumers."""
+    signal = FraudSignal(
+        name="semantic_context_mismatch",
+        description="BERT-context wijkt af van de gekozen classificatie.",
+        risk_level=RiskLevel.MEDIUM,
+        confidence=0.82,
+        category="semantic_context",
+        recommendation="Controleer of het documenttype inhoudelijk klopt.",
+        evidence=["BERT top match: contract (82%)"],
+    )
+    report = FraudReport(
+        document_id=123,
+        filename="test.pdf",
+        overall_risk=RiskLevel.MEDIUM,
+        risk_score=31.0,
+        signals=[signal],
+        summary="Gemiddeld risico",
+        analyzed_at="2026-04-29T19:00:00+00:00",
+        semantic_context={"top_matches": [{"label": "contract", "confidence": 0.82}]},
+    )
+
+    data = report.to_dict()
+    serialized_signal = data["signals"][0]
+
+    assert serialized_signal["code"] == "semantic_context_mismatch"
+    assert serialized_signal["name"] == "semantic_context_mismatch"
+    assert serialized_signal["category"] == "semantic_context"
+    assert serialized_signal["severity"] == "medium"
+    assert serialized_signal["risk_level"] == "medium"
+    assert serialized_signal["recommendation"] == "Controleer of het documenttype inhoudelijk klopt."
+    assert data["semantic_context"]["top_matches"][0]["label"] == "contract"
+
+    risk_data = report.to_risk_analysis_dict()
+    assert risk_data["risk_score"] == 31
+    assert risk_data["signals"][0]["code"] == "semantic_context_mismatch"
+    assert risk_data["signals"][0]["category"] == "semantic_context"
+
+
+def test_bert_semantic_context_is_assistive_mismatch_signal(detector):
+    """BERT disagreement should be context, not a hard critical fraud decision."""
+    semantic_context = {
+        "source": "bert_embeddings",
+        "role": "semantic_context",
+        "model_used": "backoffice",
+        "top_matches": [
+            {"label": "contract", "confidence": 0.84},
+            {"label": "invoice", "confidence": 0.68},
+        ],
+        "confidence": 0.84,
+        "margin": 0.16,
+    }
+
+    signals = detector._analyze_semantic_context(semantic_context, classification_label="invoice")
+
+    assert len(signals) == 1
+    assert signals[0].name == "semantic_context_mismatch"
+    assert signals[0].category == "semantic_context"
+    assert signals[0].risk_level == RiskLevel.MEDIUM
+    assert signals[0].confidence == 0.84
+    assert "contract" in signals[0].description

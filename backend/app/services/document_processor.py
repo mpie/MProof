@@ -113,15 +113,9 @@ class DocumentProcessor:
                 doc_type_confidence=classification.confidence
             )
 
-            # Stage 4: Metadata Extraction (60-85%) and Stage 5: Risk Analysis (85-100%) - run in parallel
+            # Stage 4: Metadata Extraction (60-85%)
             logger.info(f"Document {document.id}: Classification result - doc_type_slug='{classification.doc_type_slug}', confidence={classification.confidence:.2f}, rationale='{classification.rationale}'")
-            
-            # Start risk analysis in parallel (it can work with just ocr_result, extraction_result is optional)
-            risk_analysis_task = asyncio.create_task(
-                self._stage_risk_analysis(document, document_dir, ocr_result, None)
-            )
-            await self._update_progress(document_id, 60, "risk_signals", progress_callback)
-            
+
             # Start metadata extraction
             extraction_result = None
             if classification.doc_type_slug not in ["other", "unknown"]:
@@ -137,27 +131,16 @@ class DocumentProcessor:
                 logger.info(f"Document {document.id}: Skipping metadata extraction for type '{classification.doc_type_slug}' (other/unknown)")
             
             await self._update_progress(document_id, 85, "extracting_metadata", progress_callback)
-            
-            # Wait for risk analysis to complete, then add consistency check if extraction_result is available
-            risk_analysis = await risk_analysis_task
-            
-            # If we have extraction_result, add consistency check to risk analysis
-            if extraction_result:
-                consistency_errors = self._check_consistency(extraction_result.data)
-                if consistency_errors:
-                    from app.models.schemas import RiskSignal
-                    risk_analysis.signals.append(RiskSignal(
-                        code="CONSISTENCY_CHECK_FAILED",
-                        severity="medium",
-                        message="Inconsistent extracted data",
-                        evidence="; ".join(consistency_errors)
-                    ))
-                    risk_analysis.risk_score = min(100, risk_analysis.risk_score + 20)
-                    # Save updated risk analysis
-                    risk_dir = document_dir / "risk"
-                    risk_dir.mkdir(exist_ok=True)
-                    with open(risk_dir / "result.json", "w", encoding="utf-8") as f:
-                        json.dump(risk_analysis.dict(), f, indent=2, ensure_ascii=False)
+
+            # Stage 5: Unified fraud analysis (85-100%)
+            await self._update_progress(document_id, 85, "risk_signals", progress_callback)
+            risk_analysis = await self._stage_unified_fraud_analysis(
+                document,
+                document_dir,
+                ocr_result,
+                classification,
+                extraction_result,
+            )
             
             await self._update_progress(document_id, 100, "completed", progress_callback)
 
@@ -988,20 +971,9 @@ class DocumentProcessor:
             from app.services.bert_classifier import bert_classifier_service
             bert_svc = bert_classifier_service()
             
-            # Build list of models to try: selected model first, then all others
-            models_to_try = []
-            if self.model_name:
-                models_to_try.append(self.model_name)
-            
-            # Add all other available models as fallback
-            available_models = bert_svc.list_available_models()
-            for model in available_models:
-                if model != self.model_name:
-                    models_to_try.append(model)
-            
-            # Also try "default" if not already in list
-            if "default" not in models_to_try:
-                models_to_try.append("default")
+            # BERT is semantic context and last fallback. Do not silently borrow
+            # unrelated model folders for hard classification.
+            models_to_try = [self.model_name] if self.model_name else ["default"]
             
             bert_result = None
             bert_used_model = None
@@ -1455,6 +1427,7 @@ Respond with JSON:
         # Step 1.5: Try BERT classifier (always run to get score, even if NB is good)
         # Try selected model first, then fallback to other available models
         bert_error = None
+        bert_validation_reason = None
         bert_models_tried = []
         try:
             from app.services.bert_classifier import bert_classifier_service
@@ -1493,8 +1466,8 @@ Respond with JSON:
             
             if bert_result:
                 bert_pred = bert_result
-                # Use BERT if: no strong deterministic AND (no NB result OR BERT is significantly better)
-                # BUT: Only use BERT if confidence is high enough (>= 0.5), otherwise return unknown
+                # Use BERT only as last fallback when no stronger classifier produced a result.
+                # It still gets persisted as semantic context even when it does not decide.
                 MIN_CONFIDENCE_FOR_BERT = 0.5  # Minimum confidence to use BERT when NB has no result
                 if not strong_deterministic_result:
                     if not best_pred:
@@ -1505,13 +1478,9 @@ Respond with JSON:
                             logger.info(f"Document {document.id}: Using BERT result (NB had no result, confidence={bert_result.confidence:.2f})")
                         else:
                             logger.info(f"Document {document.id}: BERT result rejected (confidence {bert_result.confidence:.2f} < {MIN_CONFIDENCE_FOR_BERT}, will use unknown)")
-                            bert_pred = None  # Don't use this result
-                    elif bert_result.confidence > best_pred.confidence + 0.1:
-                        # BERT is significantly better than NB
-                        best_pred = bert_result
-                        best_method = "bert"
-                        logger.info(f"Document {document.id}: Using BERT result (better than NB: {bert_result.confidence:.2f} vs {best_pred.confidence:.2f})")
-                    # If BERT is not significantly better, keep NB result
+                            bert_validation_reason = f"confidence {bert_result.confidence:.2f} < {MIN_CONFIDENCE_FOR_BERT}"
+                    else:
+                        logger.info(f"Document {document.id}: Keeping {best_method}; BERT is stored as semantic context only")
                     if best_method == "bert" and bert_used_model != self.model_name:
                         logger.info(f"Document {document.id}: Used BERT model '{bert_used_model}' (fallback from '{self.model_name or 'default'}')")
             else:
@@ -1537,7 +1506,6 @@ Respond with JSON:
         # Only use BERT if confidence is high enough (>= 0.5) when NB has no result
         # If confidence is too low, reject and use unknown instead
         nb_validation_reason = None
-        bert_validation_reason = None
         if best_pred and best_method in ("naive_bayes", "bert"):
             # Check if the predicted type has not: rules that are violated
             # For Naive Bayes: check both not: and kw: rules
@@ -1665,6 +1633,11 @@ Respond with JSON:
                     "label": bert_pred.label,
                     "confidence": float(bert_pred.confidence)
                 }
+                if getattr(bert_pred, "all_scores", None):
+                    all_scores = {k: float(v) for k, v in bert_pred.all_scores.items()}
+                    sorted_scores = sorted(all_scores.values(), reverse=True)
+                    bert_data["all_scores"] = all_scores
+                    bert_data["margin"] = float(sorted_scores[0] - sorted_scores[1]) if len(sorted_scores) > 1 else 0.0
                 if bert_used_model:
                     bert_data["model_used"] = bert_used_model
                 if bert_validation_reason:
@@ -1747,6 +1720,11 @@ Respond with JSON:
                     "label": bert_pred.label,
                     "confidence": float(bert_pred.confidence)
                 }
+                if getattr(bert_pred, "all_scores", None):
+                    all_scores = {k: float(v) for k, v in bert_pred.all_scores.items()}
+                    sorted_scores = sorted(all_scores.values(), reverse=True)
+                    bert_data["all_scores"] = all_scores
+                    bert_data["margin"] = float(sorted_scores[0] - sorted_scores[1]) if len(sorted_scores) > 1 else 0.0
                 if bert_used_model:
                     bert_data["model_used"] = bert_used_model
                 if bert_validation_reason:
@@ -3270,6 +3248,114 @@ IMPORTANT:
 
         return errors
 
+    def _load_semantic_context(self, document_dir: Path) -> Optional[Dict[str, Any]]:
+        """Load BERT classifier output as assistive semantic context."""
+        classification_file = document_dir / "llm" / "classification_local.json"
+        if not classification_file.exists():
+            return None
+
+        try:
+            classification_data = json.loads(classification_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.debug(f"Could not load semantic context: {e}")
+            return None
+
+        bert_data = classification_data.get("bert")
+        if not isinstance(bert_data, dict):
+            return None
+
+        all_scores = bert_data.get("all_scores") or {}
+        if isinstance(all_scores, dict) and all_scores:
+            sorted_scores = sorted(
+                ((label, float(score)) for label, score in all_scores.items()),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        elif bert_data.get("label") and bert_data.get("confidence") is not None:
+            sorted_scores = [(bert_data["label"], float(bert_data["confidence"]))]
+        else:
+            return None
+
+        top_matches = [
+            {"label": label, "confidence": score}
+            for label, score in sorted_scores[:3]
+        ]
+        margin = 0.0
+        if len(sorted_scores) > 1:
+            margin = sorted_scores[0][1] - sorted_scores[1][1]
+
+        return {
+            "source": "bert_embeddings",
+            "role": "semantic_context",
+            "model_used": bert_data.get("model_used") or self.model_name or "default",
+            "status": bert_data.get("status", "available"),
+            "top_matches": top_matches,
+            "confidence": top_matches[0]["confidence"],
+            "margin": margin,
+            "selected_for_classification": classification_data.get("method") == "bert",
+            "summary": f"Inhoud lijkt het meest op '{top_matches[0]['label']}' ({top_matches[0]['confidence'] * 100:.1f}%).",
+        }
+
+    async def _stage_unified_fraud_analysis(
+        self,
+        document: Document,
+        document_dir: Path,
+        ocr_result: OCRResult,
+        classification: ClassificationResult,
+        extraction_result: Optional[ExtractionEvidence],
+    ) -> RiskAnalysis:
+        """Run the canonical fraud analyzer and persist compatible artifacts."""
+        from app.services.fraud_detector import fraud_detector
+
+        original_path = document_dir / "original" / document.original_filename
+        file_bytes = original_path.read_bytes() if original_path.exists() else None
+        semantic_context = self._load_semantic_context(document_dir)
+
+        detector = fraud_detector(llm_client=self.llm)
+        report = await detector.analyze_document(
+            file_bytes=file_bytes,
+            filename=document.original_filename,
+            document_id=document.id,
+            document_dir=document_dir,
+            extracted_text=ocr_result.combined_text,
+            classification_confidence=classification.confidence,
+            classification_label=classification.doc_type_slug,
+            semantic_context=semantic_context,
+        )
+
+        report_dict = report.to_dict()
+        fraud_cache_path = document_dir / "fraud_analysis.json"
+        fraud_cache_path.write_text(json.dumps(report_dict, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        risk_dict = report.to_risk_analysis_dict()
+        risk_dir = document_dir / "risk"
+        risk_dir.mkdir(exist_ok=True)
+        with open(risk_dir / "result.json", "w", encoding="utf-8") as f:
+            json.dump(risk_dict, f, indent=2, ensure_ascii=False)
+
+        risk_signals = [
+            RiskSignal(
+                code=signal["code"],
+                severity=signal["severity"],
+                message=signal["message"],
+                evidence=signal["evidence"],
+                examples={
+                    "category": signal.get("category"),
+                    "confidence": signal.get("confidence"),
+                    "recommendation": signal.get("recommendation"),
+                    "details": signal.get("details", {}),
+                },
+            )
+            for signal in risk_dict["signals"]
+        ]
+
+        if risk_signals:
+            logger.info(f"Document {document.id} fraud analysis: score={risk_dict['risk_score']}, {len(risk_signals)} signal(s) found")
+        else:
+            logger.info(f"Document {document.id} fraud analysis: score={risk_dict['risk_score']}, no signals found")
+
+        return RiskAnalysis(risk_score=risk_dict["risk_score"], signals=risk_signals)
+
     async def _stage_risk_analysis(self, document: Document, document_dir: Path,
                                  ocr_result: OCRResult,
                                  extraction_result: Optional[ExtractionEvidence]) -> RiskAnalysis:
@@ -3556,9 +3642,16 @@ IMPORTANT:
             else:
                 update_data["metadata_evidence_json"] = json.dumps(self._json_serialize(extraction_result.evidence))
         
-        # Store classification scores in metadata_validation_json (reusing existing JSON field)
+        semantic_context = self._load_semantic_context(document_dir)
+
+        # Store classification scores and semantic context in metadata_validation_json (reusing existing JSON field)
         if classification_scores:
-            update_data["metadata_validation_json"] = json.dumps({"classification_scores": classification_scores})
+            validation_payload = {"classification_scores": classification_scores}
+            if semantic_context:
+                validation_payload["semantic_context"] = semantic_context
+            update_data["metadata_validation_json"] = json.dumps(validation_payload)
+        elif semantic_context:
+            update_data["metadata_validation_json"] = json.dumps({"semantic_context": semantic_context})
 
         # Build query with named parameters
         set_parts = [f"{k} = :{k}" for k in update_data.keys()]

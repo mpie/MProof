@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -228,7 +228,7 @@ async def get_document_artifact(
     allowed_paths = [
         "original/", "text/extracted.json", "text/extracted.txt",
         "metadata/result.json", "metadata/validation.json", "metadata/evidence.json",
-        "risk/result.json", "risk/ela_heatmap.png",
+        "risk/result.json", "risk/ela_heatmap.png", "fraud_analysis.json",
         "llm/",
     ]
 
@@ -354,16 +354,12 @@ async def delete_document(document_id: int, db: AsyncSession = Depends(lambda: N
 @router.get("/documents/{document_id}/fraud-analysis")
 async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda: None)):
     """
-    Get comprehensive fraud analysis for a document.
-    
-    Analyzes:
-    - PDF metadata (creator software, timestamps)
-    - Image forensics (ELA manipulation detection)
-    - Text anomalies (unicode, repetition)
-    - Classification confidence
+    Get the canonical fraud analysis for a document.
+
+    The analysis is produced during document processing. This endpoint is
+    intentionally read-only so the UI, DB risk fields, and artifacts stay in sync.
     """
     from app.main import async_session_maker
-    from app.services.fraud_detector import fraud_detector
     
     async with async_session_maker() as session:
         # Get document
@@ -381,75 +377,82 @@ async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
         
-        # Load document file
         doc_dir = Path(settings.data_dir) / "subjects" / str(document.subject_id) / "documents" / str(document.id)
-        original_path = doc_dir / "original" / document.original_filename
-        
-        file_bytes = None
-        if original_path.exists():
-            file_bytes = original_path.read_bytes()
-        
-        # Load extracted text
-        extracted_text = None
-        text_path = doc_dir / "text" / "extracted.txt"
-        if text_path.exists():
-            extracted_text = text_path.read_text(encoding='utf-8', errors='ignore')
-        
-        # Check for cached fraud analysis
         fraud_cache_path = doc_dir / "fraud_analysis.json"
         if fraud_cache_path.exists():
             try:
-                cached_data = json.loads(fraud_cache_path.read_text())
-                # Verify cache is still valid (check if document hasn't been reprocessed)
-                # For now, we'll trust the cache if it exists
-                return cached_data
+                return json.loads(fraud_cache_path.read_text(encoding="utf-8"))
             except Exception as e:
                 logger.warning(f"Failed to load cached fraud analysis: {e}")
-        
-        # Load existing fraud signals from processing
-        existing_signals = {}
-        llm_dir = doc_dir / "llm"
-        
-        # Check for fpdf flag
-        if llm_dir.exists():
-            for json_file in llm_dir.glob("*.json"):
-                try:
-                    data = json.loads(json_file.read_text())
-                    if "fpdf" in data:
-                        existing_signals["fpdf"] = data.get("fpdf")
-                    if "fraud_signals" in data:
-                        existing_signals.update(data["fraud_signals"])
-                except Exception:
-                    pass
-        
-        # Run fraud analysis with LLM client for signal enhancement
-        import app.main as app_main
-        detector = fraud_detector(llm_client=app_main.llm_client)
-        report = await detector.analyze_document(
-            file_bytes=file_bytes,
-            filename=document.original_filename,
-            document_id=document.id,
-            document_dir=doc_dir,
-            extracted_text=extracted_text,
-            classification_confidence=document.doc_type_confidence,
-            existing_signals=existing_signals,
-        )
-        
-        # Cache the result
-        report_dict = report.to_dict()
-        try:
-            fraud_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            fraud_cache_path.write_text(json.dumps(report_dict, indent=2, cls=NumpyJSONEncoder))
-        except Exception as e:
-            logger.warning(f"Failed to cache fraud analysis: {e}")
-        
-        return report_dict
+
+        risk_data = None
+        risk_path = doc_dir / "risk" / "result.json"
+        if risk_path.exists():
+            try:
+                risk_data = json.loads(risk_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"Failed to load risk artifact for fraud fallback: {e}")
+
+        if risk_data is None and document.risk_signals_json:
+            try:
+                risk_data = {
+                    "risk_score": document.risk_score or 0,
+                    "signals": json.loads(document.risk_signals_json),
+                }
+            except Exception:
+                risk_data = None
+
+        if risk_data is None:
+            risk_data = {"risk_score": document.risk_score or 0, "signals": []}
+
+        score = float(risk_data.get("risk_score") or 0)
+        if score >= 70:
+            overall_risk = "critical"
+        elif score >= 50:
+            overall_risk = "high"
+        elif score >= 25:
+            overall_risk = "medium"
+        else:
+            overall_risk = "low"
+
+        signals = []
+        for signal in risk_data.get("signals", []):
+            examples = signal.get("examples") or {}
+            details = signal.get("details") or examples.get("details") or {}
+            category = signal.get("category") or examples.get("category") or "quality_warning"
+            confidence = signal.get("confidence") or examples.get("confidence") or 0.5
+            recommendation = signal.get("recommendation") or examples.get("recommendation") or "Controleer dit signaal handmatig."
+            evidence = signal.get("evidence") or ""
+            signals.append({
+                "code": signal.get("code", "unknown_signal"),
+                "name": signal.get("code", "unknown_signal"),
+                "category": category,
+                "severity": signal.get("severity", "low"),
+                "description": signal.get("message", signal.get("code", "Onbekend signaal")),
+                "message": signal.get("message", signal.get("code", "Onbekend signaal")),
+                "explanation": signal.get("message", signal.get("code", "Onbekend signaal")),
+                "risk_level": signal.get("severity", "low"),
+                "confidence": confidence,
+                "details": details,
+                "evidence": [evidence] if isinstance(evidence, str) and evidence else evidence,
+                "recommendation": recommendation,
+            })
+
+        return {
+            "document_id": document.id,
+            "filename": document.original_filename,
+            "overall_risk": overall_risk,
+            "risk_score": score,
+            "signals": signals,
+            "summary": "Geen verdachte signalen gedetecteerd." if not signals else f"{len(signals)} fraude-indicator(en) beschikbaar.",
+            "analyzed_at": document.updated_at.isoformat() if hasattr(document.updated_at, "isoformat") else str(document.updated_at),
+            "semantic_context": None,
+        }
 
 
 @router.post("/documents/analyze-fraud")
 async def analyze_fraud_upload(
-    file_bytes: bytes,
-    filename: str,
+    file: UploadFile = File(...),
 ):
     """
     Analyze an uploaded file for fraud without saving it.
@@ -458,10 +461,11 @@ async def analyze_fraud_upload(
     from app.services.fraud_detector import fraud_detector
     import app.main as app_main
 
+    file_bytes = await file.read()
     detector = fraud_detector(llm_client=app_main.llm_client)
     report = await detector.analyze_document(
         file_bytes=file_bytes,
-        filename=filename,
+        filename=file.filename or "uploaded-document",
     )
 
     return report.to_dict()

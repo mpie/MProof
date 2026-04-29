@@ -886,7 +886,7 @@ export default function Dashboard() {
                               ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
                               : 'bg-emerald-500/20 border-emerald-500/30 text-emerald-200'
                         }`}>
-                          <span>Fraude:</span>
+                          <span>Forensics:</span>
                           <span className="font-bold">{doc.risk_score}%</span>
                         </div>
                       )}
@@ -1049,12 +1049,14 @@ function ForensicsBadge({ documentId }: { documentId: number }) {
     gcTime: Infinity,
   });
 
-  if (!fraudReport || fraudReport.signals.length === 0) {
+  const actionableSignals = fraudReport?.signals.filter(s => s.risk_level !== 'low') || [];
+
+  if (!fraudReport || actionableSignals.length === 0) {
     return null;
   }
 
-  const criticalOrHigh = fraudReport.signals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
-  const hasCritical = fraudReport.signals.some(s => s.risk_level === 'critical');
+  const criticalOrHigh = actionableSignals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
+  const hasCritical = actionableSignals.some(s => s.risk_level === 'critical');
 
   return (
     <div className={`hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border font-semibold text-xs ${
@@ -1065,7 +1067,7 @@ function ForensicsBadge({ documentId }: { documentId: number }) {
           : 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
     }`}>
       <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3" />
-      <span>Forensics: {fraudReport.signals.length}</span>
+      <span>Forensics: {actionableSignals.length}</span>
       {criticalOrHigh > 0 && (
         <span className="ml-1">({criticalOrHigh} hoog)</span>
       )}
@@ -1083,12 +1085,14 @@ function ForensicsBadgeMobile({ documentId }: { documentId: number }) {
     gcTime: Infinity,
   });
 
-  if (!fraudReport || fraudReport.signals.length === 0) {
+  const actionableSignals = fraudReport?.signals.filter(s => s.risk_level !== 'low') || [];
+
+  if (!fraudReport || actionableSignals.length === 0) {
     return null;
   }
 
-  const criticalOrHigh = fraudReport.signals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
-  const hasCritical = fraudReport.signals.some(s => s.risk_level === 'critical');
+  const criticalOrHigh = actionableSignals.filter(s => s.risk_level === 'critical' || s.risk_level === 'high').length;
+  const hasCritical = actionableSignals.some(s => s.risk_level === 'critical');
 
   return (
     <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border font-semibold text-[9px] ${
@@ -1099,7 +1103,7 @@ function ForensicsBadgeMobile({ documentId }: { documentId: number }) {
           : 'bg-yellow-500/20 border-yellow-500/30 text-yellow-200'
     }`}>
       <FontAwesomeIcon icon={faExclamationTriangle} className="w-2.5 h-2.5" />
-      <span>{fraudReport.signals.length}</span>
+      <span>{actionableSignals.length}</span>
       {criticalOrHigh > 0 && (
         <span className="ml-0.5">({criticalOrHigh})</span>
       )}

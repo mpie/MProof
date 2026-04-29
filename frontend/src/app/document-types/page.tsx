@@ -239,17 +239,12 @@ function DocumentTypesAdminContent() {
     return new Set(selectedModelDetails.document_types?.map(dt => dt.slug) || []);
   }, [selectedModel, selectedModelDetails]);
 
-  // Filter document types based on selected model
-  // - "Standaard" (no model selected): show ALL document types
-  // - Specific model selected: show ONLY document types that have training data in that model
+  // Always show all configured document types. The selected model only affects
+  // the training metadata shown for each type, not whether the type exists.
   const filteredDocumentTypes = useMemo(() => {
     if (!documentTypes) return [];
-    // If no model is selected (Standaard), show all document types
-    if (!selectedModel || !selectedModelDetails) return documentTypes;
-    
-    // If a specific model is selected, only show document types that have training data in that model
-    return documentTypes.filter(dt => modelDocTypeSlugs.has(dt.slug));
-  }, [documentTypes, selectedModel, selectedModelDetails, modelDocTypeSlugs]);
+    return documentTypes;
+  }, [documentTypes]);
 
   const createMutation = useMutation({
     mutationFn: createDocumentType,
@@ -363,7 +358,7 @@ function DocumentTypesAdminContent() {
             </div>
           </div>
           <div className="mt-2 text-xs text-purple-300/70">
-            {selectedModelDetails.document_types?.length || 0} document types · {selectedModelDetails.total_files || 0} training bestanden
+            {selectedModelDetails.document_types?.length || 0} getraind van {documentTypes?.length || 0} document types · {selectedModelDetails.total_files || 0} training bestanden
           </div>
         </div>
       )}
@@ -374,9 +369,9 @@ function DocumentTypesAdminContent() {
           <div className="glass-card p-4 space-y-2">
             <h2 className="text-white font-semibold px-2 pb-2 border-b border-white/10">
               Document Types ({filteredDocumentTypes?.length || 0})
-              {selectedModel && documentTypes && filteredDocumentTypes.length < documentTypes.length && (
+              {selectedModel && selectedModelDetails && documentTypes && (
                 <span className="text-white/40 text-xs font-normal ml-2">
-                  (van {documentTypes.length} totaal)
+                  ({selectedModelDetails.document_types?.length || 0} met trainingdata)
                 </span>
               )}
             </h2>
@@ -417,7 +412,12 @@ function DocumentTypesAdminContent() {
                   </div>
                   <div className="min-w-0">
                     <p className="text-white font-medium truncate">{docType.name}</p>
-                    <p className="text-white/50 text-xs">{docType.fields.length} velden</p>
+                    <p className="text-white/50 text-xs">
+                      {docType.fields.length} velden
+                      {selectedModel && selectedModelDetails && !modelDocTypeSlugs.has(docType.slug) && (
+                        <span className="text-amber-300/70"> · geen trainingdata</span>
+                      )}
+                    </p>
                   </div>
                 </div>
                 <FontAwesomeIcon

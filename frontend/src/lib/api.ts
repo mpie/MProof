@@ -367,20 +367,42 @@ export interface BertClassifierStatus {
 
 export interface RiskSignal {
   code: string;
-  severity: 'low' | 'medium' | 'high';
+  severity: 'low' | 'medium' | 'high' | 'critical';
   message: string;
   evidence: string;
+  category?: string;
+  confidence?: number;
+  recommendation?: string;
+  examples?: Record<string, unknown>;
 }
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
 export interface FraudSignal {
+  code?: string;
   name: string;
+  category?: string;
+  severity?: RiskLevel;
   description: string;
+  message?: string;
+  explanation?: string;
   risk_level: RiskLevel;
   confidence: number;
   details: Record<string, unknown>;
   evidence: string[];
+  recommendation?: string;
+}
+
+export interface SemanticContext {
+  source: string;
+  role: string;
+  model_used: string;
+  status: string;
+  top_matches: Array<{ label: string; confidence: number }>;
+  confidence: number;
+  margin: number;
+  selected_for_classification: boolean;
+  summary: string;
 }
 
 export interface FraudReport {
@@ -391,6 +413,7 @@ export interface FraudReport {
   signals: FraudSignal[];
   summary: string;
   analyzed_at: string;
+  semantic_context?: SemanticContext | null;
 }
 
 // =============================================================================

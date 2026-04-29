@@ -1001,176 +1001,84 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                 </div>
               )}
               
-              {/* Forensics Signals */}
-              {fraudReport && fraudReport.signals.length > 0 && (() => {
-                const filteredSignals = fraudReport.signals.filter(s => s.risk_level?.toLowerCase() !== 'low');
-                if (filteredSignals.length === 0) return null;
-                // Ensure we show all filtered signals (up to 3 in overview)
-                // Filter out any signals without a name to avoid rendering issues
-                const signalsToShow = filteredSignals
-                  .filter(s => s.name) // Only show signals with a name
-                  .slice(0, 3);
-                return (
-                  <div className="mb-3 pb-3 border-b border-white/10">
-                    <div className="text-xs text-white/60 mb-2">
-                      Forensics: {filteredSignals.length} signaal{filteredSignals.length !== 1 ? 'en' : ''} gedetecteerd
-                    </div>
-                    <div className="space-y-1.5">
-                      {signalsToShow.map((signal, i) => (
-                      <div key={`signal-${signal.name || 'unknown'}-${i}-${documentId || 'unknown'}`} className="flex items-start gap-2 text-xs">
-                        <FontAwesomeIcon 
-                          icon={signal.risk_level === 'critical' || signal.risk_level === 'high' ? faExclamationTriangle : faInfoCircle} 
-                          className={`w-3 h-3 mt-0.5 shrink-0 ${
-                            signal.risk_level === 'critical' ? 'text-red-400' :
-                            signal.risk_level === 'high' ? 'text-orange-400' :
-                            signal.risk_level === 'medium' ? 'text-yellow-400' : 'text-green-400'
-                          }`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="text-white font-medium truncate">{signal.name?.replace(/_/g, ' ') || 'Onbekend signaal'}</div>
-                          <div className="text-white/70 text-[10px] line-clamp-1">{signal.description || 'Geen beschrijving'}</div>
-                        </div>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
-                          {Math.round((signal.confidence || 0) * 100)}%
+              {fraudReport?.semantic_context?.top_matches?.length ? (
+                <div className="mb-3 pb-3 border-b border-white/10">
+                  <div className="text-xs text-white/60 mb-2">Documentcontext (BERT)</div>
+                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
+                    <div className="text-blue-200 text-xs mb-2">{fraudReport.semantic_context.summary}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {fraudReport.semantic_context.top_matches.map((match) => (
+                        <span key={match.label} className="text-[10px] bg-blue-500/20 text-blue-100 px-2 py-0.5 rounded">
+                          {formatDocumentTypeName(match.label)} {Math.round(match.confidence * 100)}%
                         </span>
-                      </div>
                       ))}
-                      {filteredSignals.length > signalsToShow.length && (
-                        <div className="text-[10px] text-white/50 pt-1">
-                          +{filteredSignals.length - signalsToShow.length} meer (zie Forensics tab)
-                        </div>
-                      )}
+                    </div>
+                    <div className="text-white/40 text-[10px] mt-2">
+                      Model: {fraudReport.semantic_context.model_used} · margin {Math.round(fraudReport.semantic_context.margin * 100)}%
                     </div>
                   </div>
-                );
-              })()}
-              
-              {(document.risk_signals_json?.length ?? 0) > 0 ? (
-                <div className="space-y-2 mt-3">
-                  <div className="text-xs text-white/60 mb-2">
-                    {document.risk_signals_json?.length || 0} fraude detectie{(document.risk_signals_json?.length || 0) !== 1 ? 's' : ''} gevonden:
-                  </div>
-                  {document.risk_signals_json?.map((signal: RiskSignal, i: number) => {
-                    // Translate risk signal codes to user-friendly explanations
-                    const getSignalExplanation = (code: string, message: string, evidence: string) => {
-                      if (code === 'FILE_METADATA_PROGRAMMATIC') {
-                        return {
-                          title: 'PDF gemaakt met programmatische tool',
-                          description: 'Dit PDF-bestand is gemaakt met een programmatische library (zoals FPDF, TCPDF, of Python). Dit kan legitiem zijn, maar wordt ook vaak gebruikt om documenten te manipuleren of vervalsen.',
-                          recommendation: 'Controleer de inhoud extra goed en vergelijk met het origineel indien mogelijk.'
-                        };
-                      }
-                      if (code === 'FILE_METADATA_SUSPICIOUS') {
-                        return {
-                          title: 'Verdachte PDF maker',
-                          description: 'Dit PDF-bestand is gemaakt met een online converter of tool die vaak gebruikt wordt voor document manipulatie.',
-                          recommendation: 'Wees extra voorzichtig en controleer de authenticiteit van dit document.'
-                        };
-                      }
-                      if (code === 'TEXT_ANOMALY') {
-                        return {
-                          title: 'Tekst afwijkingen gedetecteerd',
-                          description: 'De tekst in dit document bevat ongebruikelijke patronen die kunnen wijzen op manipulatie of vervalsing.',
-                          recommendation: 'Vergelijk de tekst met het origineel en controleer op onregelmatigheden.',
-                          hasExamples: true
-                        };
-                      }
-                      if (code === 'CONSISTENCY_CHECK_FAILED') {
-                        return {
-                          title: 'Inconsistente gegevens',
-                          description: 'De geëxtraheerde gegevens uit dit document bevatten tegenstrijdigheden die kunnen wijzen op manipulatie.',
-                          recommendation: 'Controleer de gegevens handmatig en vergelijk met andere bronnen.'
-                        };
-                      }
-                      return {
-                        title: message,
-                        description: evidence,
-                        recommendation: null
-                      };
-                    };
+                </div>
+              ) : null}
 
-                    const explanation = getSignalExplanation(signal.code, signal.message, signal.evidence);
-                    
-                    const hasExamples = explanation.hasExamples && (signal as any).examples && (
-                      ((signal as any).examples.unicode_examples && (signal as any).examples.unicode_examples.length > 0) ||
-                      ((signal as any).examples.repetition_examples && (signal as any).examples.repetition_examples.length > 0)
-                    );
-                    
-                    return (
-                      <div 
-                        key={i} 
-                        onClick={hasExamples ? () => onShowExamples(i, (signal as any).examples) : undefined}
-                        className={`bg-white/5 rounded-lg p-3 border transition-all relative ${
-                          hasExamples 
-                            ? 'cursor-pointer hover:bg-white/10 hover:border-white/20 group' 
-                            : ''
-                        } ${
-                          signal.severity === 'high' 
-                            ? 'border-red-500/30 bg-red-500/5' 
-                            : signal.severity === 'medium'
+              {fraudReport && fraudReport.signals.length > 0 ? (() => {
+                const actionableSignals = fraudReport.signals.filter(s => s.risk_level?.toLowerCase() !== 'low');
+                const signalsToShow = actionableSignals.slice(0, 4);
+                if (signalsToShow.length === 0) {
+                  return (
+                    <div className="mt-3 text-white/60 text-xs">
+                      Alleen lage context- of kwaliteitswaarschuwingen gevonden. Geen sterke fraude-indicatoren.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2 mt-3">
+                    <div className="text-xs text-white/60 mb-2">
+                      {actionableSignals.length} fraude-indicator{actionableSignals.length !== 1 ? 'en' : ''} gevonden:
+                    </div>
+                    {signalsToShow.map((signal, i) => (
+                      <div
+                        key={`${signal.name}-${i}`}
+                        className={`bg-white/5 rounded-lg p-3 border ${
+                          signal.risk_level === 'critical' || signal.risk_level === 'high'
+                            ? 'border-red-500/30 bg-red-500/5'
+                            : signal.risk_level === 'medium'
                               ? 'border-yellow-500/30 bg-yellow-500/5'
                               : 'border-blue-500/30 bg-blue-500/5'
-                        } ${
-                          hasExamples ? 'pr-8' : ''
                         }`}
                       >
-                        {hasExamples && (
-                          <div className="absolute top-3 right-3 opacity-40 group-hover:opacity-70 transition-opacity">
-                            <FontAwesomeIcon 
-                              icon={faAngleRight} 
-                              className="w-4 h-4 text-white/60" 
-                            />
-                          </div>
-                        )}
-                        <div className="flex items-start gap-2 mb-1.5">
-                          <FontAwesomeIcon 
-                            icon={signal.severity === 'high' ? faExclamationTriangle : faInfoCircle} 
+                        <div className="flex items-start gap-2">
+                          <FontAwesomeIcon
+                            icon={signal.risk_level === 'critical' || signal.risk_level === 'high' ? faExclamationTriangle : faInfoCircle}
                             className={`w-4 h-4 mt-0.5 ${
-                              signal.severity === 'high' ? 'text-red-400' : signal.severity === 'medium' ? 'text-yellow-400' : 'text-blue-400'
-                            }`} 
+                              signal.risk_level === 'critical' || signal.risk_level === 'high' ? 'text-red-400' : 'text-yellow-400'
+                            }`}
                           />
                           <div className="flex-1 min-w-0">
-                            <div className={`font-semibold text-sm mb-1 flex items-center gap-2 flex-wrap ${
-                              signal.severity === 'high' ? 'text-red-300' : signal.severity === 'medium' ? 'text-yellow-300' : 'text-blue-300'
-                            }`}>
-                              {explanation.title}
-                              {hasExamples && (
-                                <div className="flex items-center gap-1.5">
-                                  {(signal as any).examples.unicode_examples && (signal as any).examples.unicode_examples.length > 0 && (
-                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${(signal as any).examples.unicode_examples.length} unicode afwijking${(signal as any).examples.unicode_examples.length !== 1 ? 'en' : ''}`}>
-                                      <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></span>
-                                      <span>{(signal as any).examples.unicode_examples.length}</span>
-                                    </span>
-                                  )}
-                                  {(signal as any).examples.repetition_examples && (signal as any).examples.repetition_examples.length > 0 && (
-                                    <span className="inline-flex items-center gap-1 text-xs font-normal text-white/60 bg-white/10 px-2 py-0.5 rounded-full border border-white/10" title={`${(signal as any).examples.repetition_examples.length} herhalingspatroon${(signal as any).examples.repetition_examples.length !== 1 ? 'en' : ''}`}>
-                                      <span className="w-1.5 h-1.5 bg-orange-400 rounded-full"></span>
-                                      <span>{(signal as any).examples.repetition_examples.length}</span>
-                                    </span>
-                                  )}
-                                  <span className="text-xs font-normal text-white/50 bg-white/10 px-2 py-0.5 rounded-full border border-white/10">
-                                    Klik voor details
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-white/70 text-xs leading-relaxed">
-                              {explanation.description}
-                            </div>
-                            {explanation.recommendation && (
+                            <div className="font-semibold text-sm text-white mb-1">{signal.name.replace(/_/g, ' ')}</div>
+                            <div className="text-white/70 text-xs leading-relaxed">{signal.description}</div>
+                            {signal.recommendation && (
                               <div className="mt-2 pt-2 border-t border-white/10 text-white/60 text-xs italic">
-                                💡 {explanation.recommendation}
+                                {signal.recommendation}
                               </div>
                             )}
                           </div>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
+                            {Math.round(signal.confidence * 100)}%
+                          </span>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              ) : (
+                    ))}
+                    {actionableSignals.length > signalsToShow.length && (
+                      <div className="text-[10px] text-white/50">
+                        +{actionableSignals.length - signalsToShow.length} meer in de Forensics tab
+                      </div>
+                    )}
+                  </div>
+                );
+              })() : (
                 <div className="mt-3 text-white/60 text-xs">
-                  Geen fraude detecties gevonden. Document lijkt schoon.
+                  Geen fraude-indicatoren gevonden. Document lijkt schoon.
                 </div>
               )}
             </div>
@@ -1994,6 +1902,23 @@ function ForensicsTab({ documentId, document, isOpen }: {
         )}
       </div>
 
+      {fraudReport.semantic_context?.top_matches?.length ? (
+        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
+          <h3 className="text-white font-semibold text-base mb-2">Documentcontext (BERT)</h3>
+          <p className="text-blue-100 text-sm mb-3">{fraudReport.semantic_context.summary}</p>
+          <div className="flex flex-wrap gap-2">
+            {fraudReport.semantic_context.top_matches.map((match) => (
+              <span key={match.label} className="text-xs bg-blue-500/20 text-blue-100 px-2 py-1 rounded">
+                {match.label}: {Math.round(match.confidence * 100)}%
+              </span>
+            ))}
+          </div>
+          <p className="text-white/40 text-xs mt-3">
+            BERT is hier context en fallback, geen harde fraudebeslisser. Model: {fraudReport.semantic_context.model_used} · margin {Math.round(fraudReport.semantic_context.margin * 100)}%
+          </p>
+        </div>
+      ) : null}
+
       {/* Signals List - Accordion (only one open at a time) */}
       {filteredSignals.length > 0 ? (
         <div className="space-y-2">
@@ -2037,6 +1962,11 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                       <FontAwesomeIcon icon={getRiskIcon(signal.risk_level)} className="w-3.5 h-3.5 shrink-0" />
                       <span className="font-medium text-xs truncate">{signal.name.replace(/_/g, ' ')}</span>
+                      {signal.category && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
+                          {signal.category.replace(/_/g, ' ')}
+                        </span>
+                      )}
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
                         {Math.round(signal.confidence * 100)}%
                       </span>
@@ -2079,6 +2009,15 @@ function ForensicsTab({ documentId, document, isOpen }: {
                               {e}
                             </span>
                           ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {signal.recommendation && (
+                      <div className="pt-2">
+                        <div className="text-[10px] opacity-60 mb-1">Aanbeveling:</div>
+                        <div className="text-[10px] opacity-80 leading-relaxed bg-black/20 rounded p-2">
+                          {signal.recommendation}
                         </div>
                       </div>
                     )}

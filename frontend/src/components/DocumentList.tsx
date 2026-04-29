@@ -376,14 +376,14 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                 </div>
               )}
 
-              {/* Risk Score */}
+              {/* Fraud indicators score */}
               {document.risk_score != null && (
                 <div className={`px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-medium shrink-0 ${
                   (document.risk_score ?? 0) >= 70 ? 'bg-red-500/20 text-red-400' :
                   (document.risk_score ?? 0) >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
                   'bg-green-500/20 text-green-400'
                 }`}>
-                  Risk: {document.risk_score}
+                  Forensics: {document.risk_score}%
                 </div>
               )}
 
