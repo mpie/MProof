@@ -2920,7 +2920,7 @@ Respond with JSON only:
 
         fields_str = "\n".join(field_descriptions)
 
-        preamble_text = f"\n\n{preamble}" if preamble else ""
+        preamble_text = f"\n\n{preamble.strip()}" if preamble and preamble.strip() else ""
         notes = []
         if has_address_field:
             notes.append("- For address fields: extract a postal address (street, house number, postal code, city). Do not return only a person/company name.")
@@ -2934,8 +2934,10 @@ Respond with JSON only:
         if chunk_num and total_chunks:
             chunk_info = f"""
 NOTE: This is chunk {chunk_num} of {total_chunks} of a large document. 
-- Extract ONLY the metadata you can find in THIS chunk of text.
-- If a field is not present in this chunk, return null for that field.
+- Extract metadata from this chunk using both text and table structure.
+- A field may be present through column headers, row labels, or nearby section titles.
+- When a table row contains values without repeated labels, map the values to the nearest preceding column headers.
+- If a field is not present in text or table context, return null.
 - Do NOT make up values for fields not found in this chunk.
 - The results from all chunks will be merged automatically."""
 
@@ -2951,10 +2953,8 @@ NOTE: This is chunk {chunk_num} of {total_chunks} of a large document.
         extra_notes = ""
         if notes_block.strip():
             extra_notes = f"\n{notes_block.strip()}"
-        if preamble_text.strip():
-            extra_notes += f"\n{preamble_text.strip()}"
         
-        return f"""Extract metadata from this {doc_type} document.{chunk_info}
+        return f"""Extract metadata from this {doc_type} document.{preamble_text}{chunk_info}
 
 Fields to extract:
 {fields_str}{extra_notes}
