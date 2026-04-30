@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, NamedTuple, Set
@@ -1985,6 +1986,807 @@ Respond with JSON:
         
         return chunks
 
+    def _normalize_for_search(self, value: Any) -> str:
+        """Normalize text for generic label/key based chunk selection."""
+        normalized = str(value or "").replace("m²", "m2").replace("M²", "m2")
+        normalized = unicodedata.normalize("NFKD", normalized)
+        normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+        normalized = normalized.lower()
+        normalized = re.sub(r"[_\-]+", " ", normalized)
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    def _search_tokens(self, value: Any) -> List[str]:
+        """Tokenize normalized search text into useful terms."""
+        return [token for token in self._normalize_for_search(value).split() if len(token) >= 2]
+
+    def _build_field_search_terms(self, fields: List[Tuple]) -> Dict[str, Dict[str, Any]]:
+        """Build generic search terms from configured field keys and labels."""
+        term_config: Dict[str, Dict[str, Any]] = {}
+        for key, label, field_type, is_required, enum_values, regex in fields:
+            field_key = self._canonical_field_key(key)
+            key_term = self._normalize_for_search(field_key)
+            label_term = self._normalize_for_search(label)
+            label_without_units = self._normalize_for_search(re.sub(r"\([^)]*\)", " ", str(label or "")))
+            terms = {term for term in [key_term, label_term, label_without_units] if term}
+
+            combined = " ".join(terms)
+            if "m2" in combined or "oppervlakte" in combined or "area" in combined:
+                terms.update({
+                    "m2",
+                    "m 2",
+                    "oppervlakte",
+                    "vloeroppervlak",
+                    "gebruiksoppervlakte",
+                    "floor area",
+                    "area",
+                })
+            if "bouwjaar" in combined or "construction year" in combined or "built year" in combined:
+                terms.update({"bouw jaar", "bouwjaar", "construction year", "built", "built year"})
+
+            term_config[field_key] = {
+                "key": key_term,
+                "label": label_term,
+                "raw_labels": [str(label or ""), str(key or ""), str(label_without_units or "")],
+                "terms": sorted(terms, key=lambda item: (-len(item), item)),
+                "field_type": field_type,
+                "required": bool(is_required),
+                "enum_values": enum_values,
+                "regex": regex,
+            }
+
+        return term_config
+
+    def _build_text_chunks_from_pages(
+        self,
+        pages: List[Dict[str, Any]],
+        fallback_text: str,
+        chunk_size: int,
+        overlap: int,
+    ) -> List[Dict[str, Any]]:
+        """Build ordered page/chunk records for relevance scoring."""
+        chunks: List[Dict[str, Any]] = []
+        if pages:
+            for page_idx, page in enumerate(pages):
+                page_text = str(page.get("text") or "")
+                if not page_text.strip():
+                    continue
+                page_chunks = self._split_text_into_chunks(page_text, chunk_size, overlap)
+                for part_idx, chunk_text in enumerate(page_chunks):
+                    chunks.append({
+                        "chunk_num": len(chunks) + 1,
+                        "page": page_idx,
+                        "part": part_idx,
+                        "text": chunk_text,
+                    })
+
+        if chunks:
+            return chunks
+
+        return [
+            {"chunk_num": index + 1, "page": index, "part": 0, "text": chunk}
+            for index, chunk in enumerate(self._split_text_into_chunks(fallback_text, chunk_size, overlap))
+        ]
+
+    def _words_within_window(self, text_tokens: List[str], label_tokens: List[str], window: int = 10) -> bool:
+        """Return whether all label words occur close together in a token stream."""
+        if not label_tokens or len(label_tokens) < 2:
+            return False
+
+        positions: List[int] = []
+        for label_token in label_tokens:
+            try:
+                positions.append(text_tokens.index(label_token))
+            except ValueError:
+                return False
+
+        return max(positions) - min(positions) <= window
+
+    def _find_field_label_positions(self, text_value: str, field_terms: Dict[str, Dict[str, Any]]) -> Dict[str, List[int]]:
+        """Find raw text positions for configured field labels/keys."""
+        positions_by_field: Dict[str, List[int]] = {}
+        text_lower = text_value.lower()
+        for field_key, config in field_terms.items():
+            positions: List[int] = []
+            labels = list(config.get("raw_labels", [])) + list(config.get("terms", []))
+            for label in labels:
+                label_text = str(label or "").strip()
+                if len(self._normalize_for_search(label_text)) < 2:
+                    continue
+                pattern = r"\b" + r"\s+".join(
+                    re.escape(part)
+                    for part in re.split(r"[\s_\-]+", label_text)
+                    if part
+                ) + r"\b"
+                try:
+                    positions.extend(match.start() for match in re.finditer(pattern, text_value, re.IGNORECASE))
+                except re.error:
+                    label_pos = text_lower.find(label_text.lower())
+                    if label_pos >= 0:
+                        positions.append(label_pos)
+
+            if positions:
+                positions_by_field[field_key] = sorted(set(positions))
+
+        return positions_by_field
+
+    def _has_concrete_value_near_label(
+        self,
+        text_value: str,
+        position: int,
+        field_config: Dict[str, Any],
+        before: int = 40,
+        after: int = 150,
+    ) -> bool:
+        """Detect a concrete value near a label using field-type validation."""
+        window = text_value[max(0, position - before):position + after]
+        kind = self._field_kind(field_config)
+
+        if kind == "enum" and field_config.get("enum_values"):
+            window_norm = self._normalize_for_search(window)
+            return any(
+                self._normalize_for_search(enum_value) in window_norm
+                for enum_value in field_config["enum_values"]
+            )
+
+        if kind == "boolean":
+            return bool(re.search(r"\b(true|false|yes|no|ja|nee)\b", window, re.IGNORECASE))
+
+        if kind == "string":
+            return bool(re.search(r"[:\-]\s*[^\n:;\-]{1,80}", window))
+
+        for number_match in re.finditer(r"\b\d{1,4}(?:[.,]\d{1,3})?\b", window):
+            valid, _, _ = self._validate_candidate_value_for_field(
+                number_match.group(0),
+                field_config,
+                evidence=window,
+            )
+            if valid:
+                return True
+
+        return False
+
+    def _concrete_value_candidates_near_field(
+        self,
+        text_value: str,
+        position: int,
+        field_config: Dict[str, Any],
+        before: int = 120,
+        after: int = 300,
+    ) -> List[Dict[str, Any]]:
+        """Find generic concrete value candidates around a field label/key."""
+        window_start = max(0, position - before)
+        window_end = min(len(text_value), position + after)
+        window = text_value[window_start:window_end]
+        candidates: List[Dict[str, Any]] = []
+        kind = self._field_kind(field_config)
+
+        if kind == "enum" and field_config.get("enum_values"):
+            window_norm = self._normalize_for_search(window)
+            for enum_value in field_config["enum_values"]:
+                enum_norm = self._normalize_for_search(enum_value)
+                if enum_norm and enum_norm in window_norm:
+                    candidates.append({"value": str(enum_value), "kind": "enum", "window": window})
+            return candidates
+
+        if kind == "boolean":
+            for match in re.finditer(r"\b(true|false|yes|no|ja|nee)\b", window, re.IGNORECASE):
+                candidates.append({"value": match.group(0), "kind": "boolean", "window": window})
+            return candidates
+
+        if kind == "string":
+            match = re.search(r"[:\-]\s*([^\n:;\-]{1,80})", window)
+            if match:
+                value = match.group(1).strip()
+                if value and len(value.split()) <= 8:
+                    candidates.append({"value": value, "kind": "string", "window": window})
+            return candidates
+
+        for number_match in re.finditer(r"\b\d{1,5}(?:[.,]\d{1,3})?\b", window):
+            value = number_match.group(0)
+            valid, _, normalized = self._validate_candidate_value_for_field(
+                value,
+                field_config,
+                evidence=window,
+            )
+            if valid:
+                candidates.append({"value": normalized, "kind": kind, "window": window})
+
+        return candidates
+
+    def _is_table_like_text(self, text_value: str) -> bool:
+        """Detect generic table-like structure without document-specific terms."""
+        lines = [line for line in text_value.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+        tableish_lines = 0
+        for line in lines:
+            has_columns = "\t" in line or "|" in line or bool(re.search(r"\S+\s{2,}\S+", line))
+            has_multiple_tokens = len(line.split()) >= 3
+            has_number = bool(re.search(r"\b\d+(?:[.,]\d+)?\b", line))
+            if has_columns or (has_multiple_tokens and has_number):
+                tableish_lines += 1
+        return tableish_lines >= 2
+
+    def _score_metadata_chunk(
+        self,
+        chunk: Dict[str, Any],
+        field_terms: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Score one chunk using configured labels/keys and optional regex signals."""
+        raw_text = str(chunk.get("text") or "")
+        normalized_text = self._normalize_for_search(raw_text)
+        text_tokens = normalized_text.split()
+        field_matches: Dict[str, Dict[str, Any]] = {}
+        score = 0
+        matched_field_count = 0
+        numeric_count = len(re.findall(r"\b\d+(?:[.,]\d+)?\b", raw_text))
+        positions_by_field = self._find_field_label_positions(raw_text, field_terms)
+
+        for field_key, config in field_terms.items():
+            field_score = 0
+            label_score = 0
+            value_score = 0
+            reasons: List[str] = []
+            matched_terms: List[str] = []
+            label_matched = False
+            regex_only = False
+            match_positions: List[int] = positions_by_field.get(field_key, [])
+            concrete_candidates: List[Dict[str, Any]] = []
+
+            label = config.get("label") or ""
+            if label and label in normalized_text:
+                label_score += 100
+                label_matched = True
+                matched_terms.append(label)
+                reasons.append("exact_label:+100")
+            else:
+                best_term = next((term for term in config["terms"] if term and term in normalized_text), "")
+                if best_term:
+                    label_score += 30
+                    label_matched = True
+                    matched_terms.append(best_term)
+                    reasons.append("partial_label:+30")
+
+                label_tokens = self._search_tokens(label)
+                if self._words_within_window(text_tokens, label_tokens):
+                    label_score += 70
+                    label_matched = True
+                    reasons.append("label_words_near:+70")
+
+            key = config.get("key") or ""
+            key_tokens = self._search_tokens(key)
+            if key and (key in normalized_text or self._words_within_window(text_tokens, key_tokens)):
+                label_score += 50
+                matched_terms.append(key)
+                reasons.append("key_match:+50")
+
+            regex = config.get("regex")
+            if regex:
+                try:
+                    if re.search(str(regex), raw_text, re.IGNORECASE):
+                        regex_score = 5
+                        value_score += regex_score
+                        regex_only = not label_matched and key not in normalized_text
+                        reasons.append(f"regex_signal:+{regex_score}")
+                except re.error:
+                    logger.warning(f"Invalid regex for chunk scoring: {regex}")
+
+            if label_matched:
+                for position in match_positions or [0]:
+                    concrete_candidates.extend(self._concrete_value_candidates_near_field(raw_text, position, config))
+                if concrete_candidates:
+                    value_score += 120
+                    reasons.append("label_concrete_value_near:+120")
+                else:
+                    label_score += 20
+                    reasons.append("label_without_concrete_value:+20")
+
+            field_score = label_score + value_score
+
+            if field_score > 0:
+                matched_field_count += 1
+                field_matches[field_key] = {
+                    "score": field_score,
+                    "label_score": label_score,
+                    "value_score": value_score,
+                    "matched_terms": sorted(set(matched_terms)),
+                    "reasons": reasons,
+                    "has_label_context": label_matched,
+                    "regex_only": regex_only,
+                    "match_positions": match_positions,
+                    "concrete_value_candidates": concrete_candidates[:10],
+                }
+                score += field_score
+
+        penalties: List[str] = []
+        usable_length = len(normalized_text)
+        if usable_length < 50:
+            score -= 20
+            penalties.append("short_text:-20")
+        generic_section_terms = [
+            "inhoudsopgave",
+            "table of contents",
+            "disclaimer",
+            "definities",
+            "definitions",
+            "bijlage index",
+            "appendix index",
+        ]
+        if any(term in normalized_text for term in generic_section_terms):
+            score -= 50
+            penalties.append("generic_section:-50")
+        if numeric_count >= 12 and matched_field_count <= 1:
+            score -= 40
+            penalties.append("many_numbers_few_labels:-40")
+        if numeric_count >= 20 and matched_field_count <= 2:
+            score -= 40
+            penalties.append("repeated_records_few_requested_labels:-40")
+        explanation_like = bool(re.search(r"\b(is|betekent|wordt|hiermee|uitleg|explanation|means|defined|definition)\b", normalized_text))
+        if explanation_like and numeric_count == 0 and field_matches:
+            score -= 60
+            penalties.append("explanation_without_concrete_value:-60")
+        value_rich_matches = sum(
+            1
+            for match in field_matches.values()
+            if match.get("value_score", 0) > 0
+        )
+        if len(field_matches) >= 2 and value_rich_matches >= 2:
+            score += 150
+            penalties.append("multiple_labels_values_cluster:+150")
+        weak_match_count = sum(
+            1
+            for match in field_matches.values()
+            if not match.get("has_label_context") or match.get("score", 0) < 70
+        )
+        if usable_length > 2500 and weak_match_count == 1 and len(field_matches) == 1:
+            score -= 30
+            penalties.append("long_one_weak_match:-30")
+        if matched_field_count > 1:
+            score += 20
+            penalties.append("multiple_fields_bonus:+20")
+
+        return {
+            "chunk_num": chunk["chunk_num"],
+            "page": chunk.get("page"),
+            "part": chunk.get("part", 0),
+            "score": score,
+            "field_matches": field_matches,
+            "penalties": penalties,
+            "text_length": len(raw_text),
+        }
+
+    def _should_include_neighbor_chunk(self, chunk: Dict[str, Any], scored: Dict[str, Any]) -> bool:
+        """Only include adjacent context when the selected chunk likely cuts through content."""
+        text_value = str(chunk.get("text") or "").rstrip()
+        if not text_value:
+            return False
+
+        ends_mid_sentence = text_value[-1] not in ".!?:;\n"
+        table_like_end = bool(re.search(r"(\s{2,}|\t|\|)\S*$", text_value[-240:]))
+        text_len = max(len(text_value), 1)
+        near_edge = any(
+            position <= 800 or text_len - position <= 150
+            for match in scored.get("field_matches", {}).values()
+            for position in match.get("match_positions", [])
+        )
+        return ends_mid_sentence or table_like_end or near_edge
+
+    def _select_relevant_metadata_chunks(
+        self,
+        chunks: List[Dict[str, Any]],
+        fields: List[Tuple],
+        top_n: int = 0,
+        per_field_top_n: int = 2,
+        threshold: int = 70,
+        max_context_chars: int = 3500,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Select relevant chunks before metadata LLM extraction."""
+        field_terms = self._build_field_search_terms(fields)
+        scored_chunks = [self._score_metadata_chunk(chunk, field_terms) for chunk in chunks]
+        selected_nums: Set[int] = set()
+        selected_reasons: Dict[int, List[str]] = {}
+        rejected_reasons: Dict[int, List[str]] = {}
+
+        top_chunks = sorted(scored_chunks, key=lambda item: (-item["score"], item["chunk_num"]))[:top_n]
+        for scored in top_chunks:
+            if scored["score"] >= threshold:
+                selected_nums.add(scored["chunk_num"])
+                selected_reasons.setdefault(scored["chunk_num"], []).append("top_overall")
+
+        for field_key in field_terms.keys():
+            field_scored = [
+                scored for scored in scored_chunks
+                if field_key in scored["field_matches"]
+                and scored["field_matches"][field_key]["score"] >= threshold
+                and scored["field_matches"][field_key].get("has_label_context")
+                and scored["field_matches"][field_key].get("label_score", 0) > 0
+                and scored["field_matches"][field_key].get("value_score", 0) > 0
+            ]
+            if field_scored:
+                for scored in sorted(
+                    field_scored,
+                    key=lambda item: (-item["field_matches"][field_key]["score"], item["chunk_num"]),
+                )[:per_field_top_n]:
+                    selected_nums.add(scored["chunk_num"])
+                    selected_reasons.setdefault(scored["chunk_num"], []).append(f"best_for_field:{field_key}")
+                continue
+
+            regex_fallback = [
+                scored for scored in scored_chunks
+                if field_key in scored["field_matches"]
+                and scored["field_matches"][field_key].get("regex_only")
+                and not any(
+                    other.get("field_matches", {}).get(field_key, {}).get("value_score", 0) > 0
+                    and other.get("field_matches", {}).get(field_key, {}).get("label_score", 0) > 0
+                    for other in scored_chunks
+                )
+            ]
+            if regex_fallback:
+                best = max(regex_fallback, key=lambda item: (item["field_matches"][field_key]["score"], -item["chunk_num"]))
+                selected_nums.add(best["chunk_num"])
+                selected_reasons.setdefault(best["chunk_num"], []).append(f"regex_fallback_for_field:{field_key}")
+
+        if not selected_nums and scored_chunks:
+            concrete_scored = [
+                scored for scored in scored_chunks
+                if any(
+                    match.get("label_score", 0) > 0 and match.get("value_score", 0) > 0
+                    for match in scored.get("field_matches", {}).values()
+                )
+            ]
+            best = max(concrete_scored or scored_chunks, key=lambda item: (item["score"], -item["chunk_num"]))
+            selected_nums.add(best["chunk_num"])
+            selected_reasons.setdefault(best["chunk_num"], []).append(
+                "fallback_best_concrete_chunk" if concrete_scored else "fallback_no_concrete_chunk"
+            )
+
+        chunk_by_num = {chunk["chunk_num"]: chunk for chunk in chunks}
+        scored_by_num = {scored["chunk_num"]: scored for scored in scored_chunks}
+        total_chars = sum(len(chunk_by_num[num]["text"]) for num in selected_nums if num in chunk_by_num)
+        for num in sorted(list(selected_nums)):
+            scored = scored_by_num.get(num, {})
+            if not self._should_include_neighbor_chunk(chunk_by_num[num], scored):
+                continue
+            for neighbor_num in (num - 1, num + 1):
+                neighbor = chunk_by_num.get(neighbor_num)
+                if not neighbor or neighbor_num in selected_nums:
+                    continue
+                neighbor_score = scored_by_num.get(neighbor_num, {})
+                neighbor_matches = neighbor_score.get("field_matches", {})
+                if neighbor_matches and all(
+                    match.get("label_score", 0) > 0 and match.get("value_score", 0) <= 0
+                    for match in neighbor_matches.values()
+                ):
+                    rejected_reasons.setdefault(neighbor_num, []).append(f"neighbor_explanation_only_for:{num}")
+                    continue
+                if total_chars + len(neighbor["text"]) > max_context_chars:
+                    rejected_reasons.setdefault(neighbor_num, []).append(f"neighbor_budget_blocked_for:{num}")
+                    continue
+                selected_nums.add(neighbor_num)
+                selected_reasons.setdefault(neighbor_num, []).append(f"context_neighbor_of:{num}")
+                total_chars += len(neighbor["text"])
+
+        selected_priority = {
+            scored["chunk_num"]: scored["score"]
+            for scored in scored_chunks
+        }
+        budgeted_nums: Set[int] = set()
+        budgeted_total = 0
+        for num in sorted(
+            selected_nums,
+            key=lambda item: (-selected_priority.get(item, 0), item),
+        ):
+            chunk = chunk_by_num.get(num)
+            if not chunk:
+                continue
+            chunk_length = len(chunk["text"])
+            if budgeted_nums and budgeted_total + chunk_length > max_context_chars:
+                selected_reasons.setdefault(num, []).append("dropped_prompt_budget")
+                rejected_reasons.setdefault(num, []).append("dropped_prompt_budget")
+                continue
+            budgeted_nums.add(num)
+            budgeted_total += chunk_length
+
+        selected_nums = budgeted_nums or selected_nums
+        selected_chunks = [
+            {
+                **chunk,
+                "matched_fields": scored_by_num.get(chunk["chunk_num"], {}).get("field_matches", {}),
+                "selection_reasons": selected_reasons.get(chunk["chunk_num"], []),
+            }
+            for chunk in chunks
+            if chunk["chunk_num"] in selected_nums
+        ]
+        debug = {
+            "top_n": top_n,
+            "per_field_top_n": per_field_top_n,
+            "threshold": threshold,
+            "max_context_chars": max_context_chars,
+            "original_chunk_count": len(chunks),
+            "selected_chunk_count": len(selected_chunks),
+            "selected_text_chars": sum(len(chunk["text"]) for chunk in selected_chunks),
+            "selected_chunks": [
+                {
+                    "chunk_num": chunk["chunk_num"],
+                    "page": chunk.get("page"),
+                    "part": chunk.get("part", 0),
+                    "reasons": selected_reasons.get(chunk["chunk_num"], []),
+                    "score": next((scored["score"] for scored in scored_chunks if scored["chunk_num"] == chunk["chunk_num"]), 0),
+                    "label_score": sum(
+                        match.get("label_score", 0)
+                        for match in next((scored["field_matches"] for scored in scored_chunks if scored["chunk_num"] == chunk["chunk_num"]), {}).values()
+                    ),
+                    "value_score": sum(
+                        match.get("value_score", 0)
+                        for match in next((scored["field_matches"] for scored in scored_chunks if scored["chunk_num"] == chunk["chunk_num"]), {}).values()
+                    ),
+                    "field_matches": next((scored["field_matches"] for scored in scored_chunks if scored["chunk_num"] == chunk["chunk_num"]), {}),
+                }
+                for chunk in selected_chunks
+            ],
+            "skipped_chunks": [
+                {
+                    "chunk_num": scored["chunk_num"],
+                    "page": scored.get("page"),
+                    "score": scored["score"],
+                    "reason": rejected_reasons.get(scored["chunk_num"], ["below_threshold_or_no_field_label_match"])[0],
+                    "rejected_as_explanation_only": any(
+                        match.get("label_score", 0) > 0 and match.get("value_score", 0) <= 0
+                        for match in scored.get("field_matches", {}).values()
+                    ),
+                }
+                for scored in scored_chunks
+                if scored["chunk_num"] not in selected_nums
+            ],
+            "scores": scored_chunks,
+        }
+        return selected_chunks, debug
+
+    def _deterministic_candidate_extraction(
+        self,
+        chunks: List[Dict[str, Any]],
+        fields: List[Tuple],
+    ) -> Dict[str, Any]:
+        """Extract obvious same-line label/value candidates before using the LLM."""
+        field_terms = self._build_field_search_terms(fields)
+        candidates: Dict[str, List[Dict[str, Any]]] = {
+            self._canonical_field_key(key): []
+            for key, _, _, _, _, _ in fields
+        }
+
+        for chunk in chunks:
+            chunk_index = max(int(chunk["chunk_num"]) - 1, 0)
+            for line in str(chunk.get("text") or "").splitlines():
+                line_text = line.strip()
+                if len(line_text) < 3:
+                    continue
+                for field_key, config in field_terms.items():
+                    raw_labels = [
+                        label for label in config.get("raw_labels", [])
+                        if label and len(self._normalize_for_search(label)) >= 2
+                    ]
+                    value = None
+                    for raw_label in raw_labels:
+                        label_pattern = r"\s+".join(
+                            re.escape(part)
+                            for part in str(raw_label).replace("_", " ").replace("-", " ").split()
+                            if part
+                        )
+                        if not label_pattern:
+                            continue
+                        match = re.search(rf"\b{label_pattern}\b\s*[:\-]\s*(.+)$", line_text, re.IGNORECASE)
+                        if match:
+                            value = match.group(1).strip()
+                            break
+                    if value is None:
+                        continue
+
+                    other_label_patterns = []
+                    for other_key, other_config in field_terms.items():
+                        if other_key == field_key:
+                            continue
+                        for other_label in other_config.get("raw_labels", []):
+                            normalized_other = self._normalize_for_search(other_label)
+                            if len(normalized_other) < 2:
+                                continue
+                            other_label_patterns.append(r"\s+".join(
+                                re.escape(part)
+                                for part in str(other_label).replace("_", " ").replace("-", " ").split()
+                                if part
+                            ))
+                    if other_label_patterns:
+                        next_label = re.search(rf"\s+(?:{'|'.join(other_label_patterns)})\s*[:\-]", value, re.IGNORECASE)
+                        if next_label:
+                            value = value[:next_label.start()].strip()
+
+                    value = value.strip(" :;-")
+                    if not value or len(value) > 60 or len(value.split()) > 6:
+                        continue
+
+                    valid, _, normalized_value = self._validate_candidate_value_for_field(
+                        value,
+                        config,
+                        evidence=line_text,
+                    )
+                    if not valid:
+                        continue
+                    regex = config.get("regex")
+                    if regex:
+                        try:
+                            if re.search(str(regex), str(normalized_value), re.IGNORECASE) is None:
+                                continue
+                        except re.error:
+                            logger.warning(f"Invalid regex for deterministic candidate validation: {regex}")
+                    candidates[field_key].append({
+                        "value": value,
+                        "normalized_value": normalized_value,
+                        "unit": None,
+                        "evidence": line_text,
+                        "chunk_index": chunk_index,
+                        "confidence": 95,
+                        "evidence_type": "exact_label",
+                        "record_role": "unknown",
+                    })
+
+        return {"candidates": candidates}
+
+    def _clip_chunk_text_for_llm(
+        self,
+        chunk: Dict[str, Any],
+        fields: List[Tuple],
+        max_chars: int = 2200,
+    ) -> str:
+        """Clip selected text around the strongest generic data anchor, not a loose label."""
+        text = str(chunk.get("text") or "").strip()
+        if len(text) <= min(3500, max_chars):
+            return text
+
+        field_terms = self._build_field_search_terms(fields)
+        match_positions: List[int] = []
+        for config in field_terms.values():
+            raw_labels = [
+                label for label in config.get("raw_labels", [])
+                if label and len(self._normalize_for_search(label)) >= 2
+            ]
+            for raw_label in raw_labels:
+                label_pattern = r"\s+".join(
+                    re.escape(part)
+                    for part in str(raw_label).replace("_", " ").replace("-", " ").split()
+                    if part
+                )
+                if not label_pattern:
+                    continue
+                for match in re.finditer(rf"\b{label_pattern}\b", text, re.IGNORECASE):
+                    match_positions.append(match.start())
+
+        if not match_positions:
+            return text[:max_chars].rstrip()
+
+        windows = []
+        for position in sorted(set(match_positions)):
+            windows.append((max(0, position - 1500), min(len(text), position + 800)))
+
+        merged_windows: List[Tuple[int, int]] = []
+        for start, end in windows:
+            if not merged_windows or start > merged_windows[-1][1]:
+                merged_windows.append((start, end))
+            else:
+                previous_start, previous_end = merged_windows[-1]
+                merged_windows[-1] = (previous_start, max(previous_end, end))
+
+        def score_window(window: Tuple[int, int]) -> Tuple[int, int]:
+            start, end = window
+            window_text = text[start:end]
+            normalized_window = self._normalize_for_search(window_text)
+            label_count = 0
+            concrete_count = 0
+            for config in field_terms.values():
+                has_label = any(term and term in normalized_window for term in config["terms"])
+                if not has_label:
+                    continue
+                label_count += 1
+                numbers = re.findall(r"\b\d+(?:[.,]\d+)?\b", window_text)
+                if any(
+                    self._validate_candidate_value_for_field(number, config, evidence=window_text)[0]
+                    for number in numbers[:20]
+                ):
+                    concrete_count += 1
+
+            table_like_lines = sum(
+                1
+                for line in window_text.splitlines()
+                if len(re.findall(r"\S+", line)) >= 3 and len(re.findall(r"\d+", line)) >= 1
+            )
+            explanation_penalty = 2 if concrete_count == 0 and re.search(
+                r"\b(is|betekent|wordt|hiermee|uitleg|explanation|means|defined|definition)\b",
+                normalized_window,
+            ) else 0
+            score = (label_count * 10) + (concrete_count * 25) + (table_like_lines * 8) - (explanation_penalty * 20)
+            return score, -start
+
+        best_start, best_end = max(merged_windows, key=score_window)
+        if best_end - best_start > max_chars:
+            best_score_position = max(
+                [position for position in match_positions if best_start <= position <= best_end],
+                key=lambda position: (
+                    score_window((max(best_start, position - 1500), min(best_end, position + 800)))[0],
+                    -position,
+                ),
+            )
+            pre_context = min(1500, max(200, max_chars // 2))
+            best_start = max(0, best_score_position - pre_context)
+            best_end = min(len(text), best_start + max_chars)
+            if best_end - best_start < max_chars:
+                best_start = max(0, best_end - max_chars)
+
+        return text[best_start:best_end].strip()
+
+    def _build_selected_chunks_text(
+        self,
+        selected_chunks: List[Dict[str, Any]],
+        fields: List[Tuple],
+        max_chars: int = 4200,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Build compact selected chunk text for a single LLM request."""
+        parts: List[str] = []
+        debug: List[Dict[str, Any]] = []
+        used_chars = 0
+
+        per_chunk_chars = min(
+            max(600, max_chars - 300),
+            max(1800, min(3000, max_chars // max(len(selected_chunks), 1))),
+        )
+        for chunk in selected_chunks:
+            matched_fields = chunk.get("matched_fields", {})
+            match_summary = []
+            if isinstance(matched_fields, dict):
+                for field_key, match in matched_fields.items():
+                    terms = ", ".join(match.get("matched_terms", [])) if isinstance(match, dict) else ""
+                    match_summary.append(f"{field_key}: {terms}".strip())
+            header = (
+                f"<!-- SYSTEM CHUNK METADATA, NOT DOCUMENT CONTENT: "
+                f"chunk_num={chunk['chunk_num']}; page={int(chunk.get('page', 0)) + 1}; "
+                f"matched_fields={' | '.join(match_summary) if match_summary else 'unknown'} -->\n"
+                "DOCUMENT CHUNK TEXT:\n"
+            )
+            raw_text = str(chunk.get("text") or "")
+            if len(raw_text) <= 3500 and used_chars + len(header) + len(raw_text) + 2 <= max_chars:
+                clipped_text = raw_text.strip()
+            else:
+                clipped_text = self._clip_chunk_text_for_llm(chunk, fields, per_chunk_chars)
+            part = f"{header}{clipped_text}"
+            if parts and used_chars + len(part) + 2 > max_chars:
+                debug.append({
+                    "chunk_num": chunk["chunk_num"],
+                    "original_chars": len(str(chunk.get("text") or "")),
+                    "included_chars": 0,
+                    "reason": "dropped_prompt_budget",
+                })
+                continue
+
+            parts.append(part)
+            used_chars += len(part) + 2
+            debug.append({
+                "chunk_num": chunk["chunk_num"],
+                "original_chars": len(str(chunk.get("text") or "")),
+                "included_chars": len(clipped_text),
+                "reason": "included",
+            })
+
+        return "\n\n".join(parts), debug
+
+    def _all_required_fields_resolved(self, resolved: Optional[Dict[str, Any]], fields: List[Tuple]) -> bool:
+        """Return true when deterministic extraction found all required fields."""
+        if not resolved or not isinstance(resolved.get("data"), dict):
+            return False
+
+        required_keys = [self._canonical_field_key(key) for key, _, _, is_required, _, _ in fields if is_required]
+        if not required_keys:
+            return False
+
+        return all(not self._candidate_value_is_empty(resolved["data"].get(key)) for key in required_keys)
+
     async def _llm_classify_document(self, document_dir: Path, sample_text: str, available_types: List[str]) -> ClassificationResult:
         """Use LLM to classify document type with evidence-driven validation."""
         types_str = ", ".join(available_types)
@@ -2202,7 +3004,7 @@ Respond with JSON only:
             text("SELECT key, label, field_type, required, enum_values, regex FROM document_type_fields WHERE document_type_id = (SELECT id FROM document_types WHERE slug = :slug) ORDER BY id"),
             {"slug": classification.doc_type_slug}
         )
-        fields = result.fetchall()
+        fields = self._normalize_extraction_fields(result.fetchall())
         logger.info(f"Found {len(fields)} fields for document type {classification.doc_type_slug}")
 
         # Get preamble
@@ -2268,9 +3070,16 @@ Respond with JSON only:
         
         if len(filtered_text) > CHUNK_SIZE:
             logger.info(f"Document text is large ({len(filtered_text)} chars), splitting into chunks for extraction")
-            chunks = self._split_text_into_chunks(filtered_text, CHUNK_SIZE, OVERLAP)
+            chunk_records = self._build_text_chunks_from_pages(ocr_result.pages, filtered_text, CHUNK_SIZE, OVERLAP)
+            chunks = [chunk["text"] for chunk in chunk_records]
             total_chunks = len(chunks)
-            logger.info(f"Split into {total_chunks} chunks - processing in PARALLEL")
+            selected_chunks, selection_debug = self._select_relevant_metadata_chunks(chunk_records, fields)
+            processing_mode = "SELECTED_SINGLE_CALL"
+            logger.info(
+                "Split into %s chunks - selected %s relevant chunks for one LLM call",
+                total_chunks,
+                len(selected_chunks),
+            )
             
             # Metadata extraction runs from 60-85%, so we use 60-80% for chunks, 80-85% for merging
             EXTRACTION_START = 60
@@ -2278,84 +3087,176 @@ Respond with JSON only:
             MERGE_START = 80
             MERGE_END = 85
             
-            # Update progress to show parallel extraction starting
-            await self._update_progress(document.id, EXTRACTION_START, f"extracting_metadata_parallel_{total_chunks}_chunks", progress_callback)
+            # Update progress to show multi-chunk extraction starting
+            await self._update_progress(
+                document.id,
+                EXTRACTION_START,
+                f"extracting_metadata_selecting_{len(selected_chunks)}_of_{total_chunks}_chunks",
+                progress_callback,
+            )
             
             with open(llm_dir / "extraction_schema_chunk.json", "w", encoding="utf-8") as f:
                 json.dump(chunk_schema, f, indent=2, ensure_ascii=False)
-            
-            # Build all prompts first and save them
-            prompts_and_schemas = []
-            for i, chunk in enumerate(chunks):
-                chunk_num = i + 1
-                prompt = self._build_extraction_prompt(fields, chunk, classification.doc_type_slug, preamble, chunk_num=chunk_num, total_chunks=total_chunks)
-                
-                # Save chunk prompt
-                with open(llm_dir / f"extraction_prompt_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
-                    f.write(prompt)
-                
-                prompts_and_schemas.append((chunk_num, prompt, chunk_schema))
-            
-            # Process all chunks in parallel
-            async def process_chunk(chunk_num: int, prompt: str, schema: dict):
-                """Process a single chunk and return results."""
-                try:
-                    logger.info(f"Starting parallel chunk {chunk_num}/{total_chunks}")
-                    chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, schema)
-                    
-                    # Log candidate counts for this chunk. The resolver chooses final values later.
-                    if chunk_result and isinstance(chunk_result.get("candidates"), dict):
-                        candidate_counts = {
-                            key: len(value)
-                            for key, value in chunk_result["candidates"].items()
-                            if isinstance(value, list) and value
-                        }
-                        logger.info(f"Chunk {chunk_num}: candidate counts: {candidate_counts}")
-                    
-                    # Save chunk response
-                    with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
-                        f.write(chunk_response_text)
-                    if chunk_curl_command:
-                        with open(llm_dir / f"extraction_curl_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
-                            f.write(chunk_curl_command)
-                    
-                    # Save chunk timing
-                    with open(llm_dir / f"extraction_timing_chunk_{chunk_num}.json", "w", encoding="utf-8") as f:
-                        json.dump({"duration_seconds": chunk_duration, "provider": self.llm.provider, "model": self.llm.model}, f, indent=2, ensure_ascii=False)
-                    
-                    return (chunk_num, chunk_result, chunk_response_text, chunk_duration, None)
-                except Exception as e:
-                    logger.warning(f"Chunk {chunk_num} extraction failed: {e}")
-                    return (chunk_num, None, None, 0, str(e))
-            
-            # Run all chunks in parallel using asyncio.gather
-            parallel_results = await asyncio.gather(*[
-                process_chunk(chunk_num, prompt, schema) 
-                for chunk_num, prompt, schema in prompts_and_schemas
-            ])
-            
-            # Sort results by chunk number and separate successful from failed
-            parallel_results.sort(key=lambda x: x[0])
-            
+
+            with open(llm_dir / "extraction_chunk_selection.json", "w", encoding="utf-8") as f:
+                json.dump(selection_debug, f, indent=2, ensure_ascii=False)
+            logger.info(
+                "Metadata chunk selection: selected chunks %s, skipped %s chunks",
+                [chunk["chunk_num"] for chunk in selected_chunks],
+                len(selection_debug["skipped_chunks"]),
+            )
+
+            await self._update_progress(
+                document.id,
+                63,
+                f"extracting_metadata_deterministic_{len(selected_chunks)}_of_{total_chunks}_chunks",
+                progress_callback,
+            )
+            deterministic_candidates = self._deterministic_candidate_extraction(selected_chunks, fields)
+            deterministic_result = self._resolve_chunk_candidate_results(
+                [(1, deterministic_candidates)],
+                fields,
+                ocr_result.pages,
+            )
+
+            llm_was_skipped = self._all_required_fields_resolved(deterministic_result, fields)
             all_results = []
             chunk_responses = []
             chunk_durations = []
-            
-            for chunk_num, chunk_result, chunk_response_text, chunk_duration, error in parallel_results:
-                if error is None and chunk_result is not None:
-                    all_results.append((chunk_num, chunk_result))
+
+            if llm_was_skipped:
+                logger.info("Skipping LLM metadata extraction: deterministic extraction found all required fields")
+                result = deterministic_result
+                response_text = json.dumps({"skipped_llm": True, "reason": "deterministic_required_fields_found"}, indent=2)
+                with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
+                    f.write(response_text)
+                with open(llm_dir / "extraction_timing.json", "w", encoding="utf-8") as f:
+                    json.dump({
+                        "duration_seconds": 0,
+                        "provider": self.llm.provider,
+                        "model": self.llm.model,
+                        "original_chunk_count": total_chunks,
+                        "selected_chunk_count": len(selected_chunks),
+                        "llm_skipped": True,
+                    }, f, indent=2, ensure_ascii=False)
+            else:
+                selected_text, selected_prompt_debug = self._build_selected_chunks_text(selected_chunks, fields)
+                compact_preamble = preamble
+                if compact_preamble and len(compact_preamble) > 1500:
+                    compact_preamble = compact_preamble[:1500].rstrip()
+                    selection_debug["preamble_truncated_chars"] = len(preamble) - len(compact_preamble)
+                prompt = self._build_extraction_prompt(
+                    fields,
+                    selected_text,
+                    classification.doc_type_slug,
+                    compact_preamble,
+                    chunk_num=1,
+                    total_chunks=1,
+                )
+                for prompt_text_budget in (3000, 2200, 1600):
+                    if len(prompt) <= 11000:
+                        break
+                    selected_text, selected_prompt_debug = self._build_selected_chunks_text(
+                        selected_chunks,
+                        fields,
+                        max_chars=prompt_text_budget,
+                    )
+                    selection_debug["prompt_reduced_to_chars"] = prompt_text_budget
+                    prompt = self._build_extraction_prompt(
+                        fields,
+                        selected_text,
+                        classification.doc_type_slug,
+                        compact_preamble,
+                        chunk_num=1,
+                        total_chunks=1,
+                    )
+                selection_debug["prompt_chunks"] = selected_prompt_debug
+                selection_debug["prompt_text_chars"] = len(selected_text)
+                selection_debug["prompt_chars"] = len(prompt)
+                with open(llm_dir / "extraction_chunk_selection.json", "w", encoding="utf-8") as f:
+                    json.dump(selection_debug, f, indent=2, ensure_ascii=False)
+
+                with open(llm_dir / "extraction_prompt.txt", "w", encoding="utf-8") as f:
+                    f.write(prompt)
+                logger.info(
+                    "Selected chunk prompt size: %s chars document text, %s chars full prompt",
+                    len(selected_text),
+                    len(prompt),
+                )
+
+                try:
+                    await self._update_progress(
+                        document.id,
+                        68,
+                        f"extracting_metadata_llm_selected_{len(selected_chunks)}_of_{total_chunks}_chunks",
+                        progress_callback,
+                    )
+                    logger.info("Starting single-call selected-chunk metadata extraction")
+                    try:
+                        chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, None)
+                    except Exception as parse_error:
+                        logger.warning(f"Selected-chunk candidate extraction failed: {parse_error}")
+                        with open(llm_dir / "extraction_warning_selected_chunks.txt", "w", encoding="utf-8") as f:
+                            f.write(f"Candidate JSON parse failed:\n{parse_error}\n")
+                        context_error = "maximum context length" in str(parse_error).lower() or "reduce the length" in str(parse_error).lower()
+                        if context_error:
+                            selected_text, selected_prompt_debug = self._build_selected_chunks_text(
+                                selected_chunks,
+                                fields,
+                                max_chars=1000,
+                            )
+                            selection_debug["prompt_chunks"] = selected_prompt_debug
+                            selection_debug["prompt_text_chars"] = len(selected_text)
+                            selection_debug["prompt_reduced_after_context_error"] = True
+                            prompt = self._build_extraction_prompt(
+                                fields,
+                                selected_text,
+                                classification.doc_type_slug,
+                                compact_preamble[:800] if compact_preamble else "",
+                                chunk_num=1,
+                                total_chunks=1,
+                            )
+                            selection_debug["prompt_chars"] = len(prompt)
+                            with open(llm_dir / "extraction_prompt.txt", "w", encoding="utf-8") as prompt_file:
+                                prompt_file.write(prompt)
+                            with open(llm_dir / "extraction_chunk_selection.json", "w", encoding="utf-8") as selection_file:
+                                json.dump(selection_debug, selection_file, indent=2, ensure_ascii=False)
+                            chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, None)
+                        else:
+                            repair_prompt = self._build_candidate_json_repair_prompt(prompt)
+                            chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(repair_prompt, None)
+                        with open(llm_dir / "extraction_warning_selected_chunks.txt", "a", encoding="utf-8") as f:
+                            f.write("\nRetry with stricter compact JSON prompt succeeded.\n")
+
+                    chunk_result = self._normalize_candidate_chunk_result(chunk_result, fields, 1, selected_text)
+                    if deterministic_candidates.get("candidates"):
+                        for field_key, candidates in deterministic_candidates["candidates"].items():
+                            if candidates:
+                                chunk_result.setdefault("candidates", {}).setdefault(field_key, []).extend(candidates)
+
+                    all_results.append((1, chunk_result))
                     chunk_responses.append(chunk_response_text)
                     chunk_durations.append(chunk_duration)
-                else:
-                    logger.warning(f"Chunk {chunk_num} failed, skipping in merge")
-            
-            logger.info(f"Parallel extraction complete: {len(all_results)}/{total_chunks} chunks successful")
+                    response_text = chunk_response_text
+
+                    with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
+                        f.write(chunk_response_text)
+                    if chunk_curl_command:
+                        with open(llm_dir / "extraction_curl.txt", "w", encoding="utf-8") as f:
+                            f.write(chunk_curl_command)
+                except Exception as e:
+                    logger.warning(f"Selected-chunk extraction failed: {e}")
+                    with open(llm_dir / "extraction_error.txt", "w", encoding="utf-8") as f:
+                        f.write(f"Selected-chunk extraction failed:\n{e}\n")
+                    raise
             
             # Update progress for merging
             await self._update_progress(document.id, MERGE_START, "extracting_metadata_merging", progress_callback)
             
             # Merge all chunk results
-            if all_results:
+            if result is not None:
+                logger.info("Using deterministic metadata result")
+            elif all_results:
                 logger.info(f"Merging {len(all_results)} chunk results")
                 result = self._resolve_chunk_candidate_results(all_results, fields, ocr_result.pages)
                 if result is None:
@@ -2392,18 +3293,14 @@ Respond with JSON only:
                 await self._update_progress(document.id, MERGE_END, f"extracting_metadata_chunk_done_{total_chunks}", progress_callback)
                 
                 # Combine all response texts for logging
-                response_text = "\n\n--- CHUNK MERGE ---\n\n".join([
-                    f"Chunk {i+1}:\n{r}" for i, r in enumerate(chunk_responses)
-                ])
+                response_text = "\n\n--- SELECTED CHUNK MERGE ---\n\n".join(chunk_responses)
                 
                 # Save merged prompt and response
-                with open(llm_dir / "extraction_prompt.txt", "w", encoding="utf-8") as f:
-                    f.write(f"# Multi-chunk extraction ({len(chunks)} chunks)\n")
-                    for i in range(len(chunks)):
-                        if (llm_dir / f"extraction_prompt_chunk_{i+1}.txt").exists():
-                            f.write(f"\n--- Chunk {i+1} ---\n")
-                            with open(llm_dir / f"extraction_prompt_chunk_{i+1}.txt", "r", encoding="utf-8") as chunk_file:
-                                f.write(chunk_file.read())
+                with open(llm_dir / "extraction_selected_chunks.txt", "w", encoding="utf-8") as f:
+                    f.write(f"# Selected chunks ({len(selected_chunks)} of {len(chunks)})\n")
+                    for chunk in selected_chunks:
+                        f.write(f"\n--- Chunk {chunk['chunk_num']} page {int(chunk.get('page', 0)) + 1} ---\n")
+                        f.write(chunk["text"])
                 
                 with open(llm_dir / "extraction_response.txt", "w", encoding="utf-8") as f:
                     f.write(response_text)
@@ -2414,12 +3311,20 @@ Respond with JSON only:
                     json.dump({
                         "duration_seconds": total_duration,
                         "chunk_count": len(chunk_durations),
+                        "original_chunk_count": total_chunks,
+                        "selected_chunk_count": len(selected_chunks),
                         "chunk_durations": chunk_durations,
                         "provider": self.llm.provider,
                         "model": self.llm.model
                     }, f, indent=2)
                 
-                logger.info(f"LLM metadata extraction completed for document {document_dir.parent.name} ({len(chunks)} chunks merged) in {total_duration:.2f}s total")
+                logger.info(
+                    "LLM metadata extraction completed for document %s (%s selected of %s chunks) in %.2fs total",
+                    document_dir.parent.name,
+                    len(selected_chunks),
+                    len(chunks),
+                    total_duration,
+                )
                 
                 # Save merged result
                 with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
@@ -2429,6 +3334,37 @@ Respond with JSON only:
                         json.dump(self._json_serialize(result["rejected_candidates"]), f, indent=2, ensure_ascii=False)
             else:
                 raise Exception("All chunk extractions failed")
+
+            if result is None:
+                raise Exception("Selected chunk extraction failed: no result obtained")
+
+            expected_field_keys = [self._canonical_field_key(key) for key, _, _, _, _, _ in fields]
+            if "data" in result and isinstance(result["data"], dict):
+                for field_key in expected_field_keys:
+                    if field_key not in result["data"]:
+                        logger.warning(f"Field '{field_key}' missing from selected-chunk result, adding as null")
+                        result["data"][field_key] = None
+
+                unexpected_fields = [k for k in result["data"].keys() if k not in expected_field_keys]
+                if unexpected_fields:
+                    logger.warning(f"Removing unexpected fields from selected-chunk result: {unexpected_fields}")
+                    for unexpected_field in unexpected_fields:
+                        result["data"].pop(unexpected_field, None)
+                        if "evidence" in result and isinstance(result["evidence"], dict):
+                            result["evidence"].pop(unexpected_field, None)
+
+            await self._update_progress(document.id, MERGE_END, f"extracting_metadata_selected_chunks_done_{len(selected_chunks)}_of_{total_chunks}", progress_callback)
+            with open(llm_dir / "extraction_selected_chunks.txt", "w", encoding="utf-8") as f:
+                f.write(f"# Selected chunks ({len(selected_chunks)} of {len(chunks)})\n")
+                for chunk in selected_chunks:
+                    f.write(f"\n--- Chunk {chunk['chunk_num']} page {int(chunk.get('page', 0)) + 1} ---\n")
+                    f.write(chunk["text"])
+
+            with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
+                json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
+            if isinstance(result, dict) and result.get("rejected_candidates"):
+                with open(llm_dir / "extraction_rejected_candidates.json", "w", encoding="utf-8") as f:
+                    json.dump(self._json_serialize(result["rejected_candidates"]), f, indent=2, ensure_ascii=False)
         else:
             # Single chunk - normal processing
             prompt = self._build_extraction_prompt(fields, filtered_text, classification.doc_type_slug, preamble)
@@ -2545,14 +3481,18 @@ Respond with JSON only:
         # Fill in missing quotes from document text
         result = self._fill_missing_quotes(result, ocr_result.pages)
         
-        # Apply regex post-processing to clean extracted values
-        result = self._apply_regex_filters(result, fields, llm_dir)
+        # Single-chunk legacy extraction may still need regex cleanup. Multi-chunk
+        # candidate extraction uses regex only as candidate validation before resolve.
+        if total_chunks:
+            logger.info("Skipping regex post-processing for multi-chunk candidate extraction")
+        else:
+            result = self._apply_regex_filters(result, fields, llm_dir)
         
         # Validate evidence spans
         await self._update_progress(document.id, 80, f"extracting_metadata_validating{post_stage_suffix}", progress_callback)
         # Normalize extraction data to ensure correct structure
         # Pass expected fields to filter out unexpected fields during normalization
-        expected_field_keys = {key for key, _, _, _, _, _ in fields}
+        expected_field_keys = {self._canonical_field_key(key) for key, _, _, _, _, _ in fields}
         logger.info(f"Expected fields for validation: {sorted(expected_field_keys)}")
         normalized_result = self._normalize_extraction_data(result, expected_fields=expected_field_keys)
         
@@ -2849,13 +3789,223 @@ Respond with JSON only:
         await self._update_progress(document.id, 85, "extracting_metadata_complete", progress_callback)
         return evidence_data
 
+    def _canonical_field_key(self, field_key: Any) -> str:
+        """Normalize known field key variants before prompting and resolving."""
+        key = str(field_key)
+        aliases = {
+            "energylabel": "energielabel",
+        }
+        return aliases.get(key, key)
+
+    def _normalize_extraction_fields(self, fields: List[Tuple]) -> List[Tuple]:
+        """Normalize extraction field keys while preserving all field metadata."""
+        normalized_fields = []
+        for key, label, field_type, is_required, enum_values, regex in fields:
+            normalized_fields.append((
+                self._canonical_field_key(key),
+                label,
+                field_type,
+                is_required,
+                enum_values,
+                regex,
+            ))
+
+        return normalized_fields
+
     def _empty_extraction_result(self, fields: List[Tuple]) -> Dict[str, Any]:
         """Build an empty extraction result for the configured field list."""
-        field_keys = [key for key, _, _, _, _, _ in fields]
+        field_keys = [self._canonical_field_key(key) for key, _, _, _, _, _ in fields]
         return {
             "data": {field_key: None for field_key in field_keys},
             "evidence": {field_key: [] for field_key in field_keys},
         }
+
+    def _candidate_from_value(
+        self,
+        value: Any,
+        evidence: Any,
+        chunk_index: int,
+        confidence: float = 60,
+        evidence_type: str = "semantic",
+        record_role: str = "unknown",
+    ) -> Dict[str, Any]:
+        """Create a candidate object from loose or legacy extraction output."""
+        quote = ""
+        if isinstance(evidence, str):
+            quote = evidence
+        elif isinstance(evidence, list) and evidence:
+            first_evidence = evidence[0]
+            if isinstance(first_evidence, dict):
+                quote = str(first_evidence.get("quote") or "")
+            else:
+                quote = str(first_evidence or "")
+        elif isinstance(evidence, dict):
+            quote = str(evidence.get("quote") or "")
+
+        if not quote and value is not None:
+            quote = str(value)
+
+        return {
+            "value": "" if value is None else str(value),
+            "normalized_value": "" if value is None else str(value),
+            "unit": None,
+            "evidence": quote,
+            "chunk_index": chunk_index,
+            "confidence": confidence,
+            "evidence_type": evidence_type,
+            "record_role": record_role,
+        }
+
+    def _strip_system_chunk_metadata(self, chunk_text: str) -> str:
+        """Remove non-document chunk metadata comments before evidence repair."""
+        text_value = str(chunk_text or "")
+        text_value = re.sub(r"<!--\s*SYSTEM CHUNK METADATA.*?-->\s*", "", text_value, flags=re.DOTALL)
+        text_value = text_value.replace("DOCUMENT CHUNK TEXT:\n", "")
+        return text_value
+
+    def _repair_candidate_evidence_from_chunk(
+        self,
+        candidate: Dict[str, Any],
+        chunk_text: str,
+    ) -> Dict[str, Any]:
+        """Repair LLM evidence by expanding around the value in original chunk text."""
+        if not chunk_text:
+            return candidate
+        if self._candidate_value_matches_evidence(
+            candidate.get("value"),
+            candidate.get("normalized_value"),
+            candidate.get("evidence"),
+        ):
+            return candidate
+
+        source_text = self._strip_system_chunk_metadata(chunk_text)
+        value_candidates = [
+            str(candidate.get("value") or "").strip(),
+            str(candidate.get("normalized_value") or "").strip(),
+        ]
+        value_candidates = [value for value in value_candidates if value and not self._candidate_value_is_empty(value)]
+
+        for value in value_candidates:
+            match = re.search(re.escape(value), source_text, re.IGNORECASE)
+            if not match:
+                continue
+
+            value_line_start = source_text.rfind("\n", 0, match.start()) + 1
+            value_line_end = source_text.find("\n", match.end())
+            if value_line_end < 0:
+                value_line_end = len(source_text)
+
+            all_lines = source_text.splitlines()
+            char_cursor = 0
+            value_line_index = 0
+            for index, line in enumerate(all_lines):
+                next_cursor = char_cursor + len(line) + 1
+                if char_cursor <= match.start() < next_cursor:
+                    value_line_index = index
+                    break
+                char_cursor = next_cursor
+
+            start_line = max(0, value_line_index - 6)
+            end_line = min(len(all_lines), value_line_index + 3)
+            table_lines = [line.strip() for line in all_lines[start_line:end_line] if line.strip()]
+            has_header_context = any(re.search(r"[A-Za-zÀ-ÿ]", line) for line in table_lines[: max(1, value_line_index - start_line)])
+            if has_header_context and len(table_lines) >= 2:
+                repaired_evidence = "\n".join(table_lines)
+            else:
+                start = max(0, match.start() - 300)
+                end = min(len(source_text), match.end() + 300)
+                repaired_evidence = source_text[start:end].strip()
+
+            repaired = {
+                **candidate,
+                "evidence": repaired_evidence,
+                "evidence_repair": {
+                    "original_evidence": candidate.get("evidence"),
+                    "repaired_evidence": repaired_evidence,
+                    "repair_reason": "value_found_nearby_in_chunk",
+                },
+            }
+            return repaired
+
+        return candidate
+
+    def _normalize_candidate_chunk_result(
+        self,
+        chunk_result: Dict[str, Any],
+        fields: List[Tuple],
+        chunk_num: int,
+        chunk_text: str = "",
+    ) -> Dict[str, Any]:
+        """Coerce LLM chunk output into the candidate-only shape expected by the resolver."""
+        field_keys = [self._canonical_field_key(key) for key, _, _, _, _, _ in fields]
+        chunk_index = chunk_num - 1
+        normalized_candidates = {field_key: [] for field_key in field_keys}
+
+        if not isinstance(chunk_result, dict):
+            return {"candidates": normalized_candidates}
+
+        candidates = chunk_result.get("candidates")
+        if isinstance(candidates, dict):
+            for field_key in field_keys:
+                raw_candidates = candidates.get(field_key, [])
+                if field_key == "energielabel" and not raw_candidates:
+                    raw_candidates = candidates.get("energylabel", [])
+                if raw_candidates is None:
+                    continue
+                if not isinstance(raw_candidates, list):
+                    raw_candidates = [raw_candidates]
+
+                for raw_candidate in raw_candidates:
+                    if isinstance(raw_candidate, dict):
+                        candidate = {
+                            "value": raw_candidate.get("value"),
+                            "normalized_value": raw_candidate.get("normalized_value"),
+                            "unit": raw_candidate.get("unit"),
+                            "evidence": str(raw_candidate.get("evidence") or ""),
+                            "chunk_index": chunk_index,
+                            "confidence": raw_candidate.get("confidence", 0),
+                            "evidence_type": raw_candidate.get("evidence_type", "ambiguous"),
+                            "record_role": raw_candidate.get("record_role", "unknown"),
+                        }
+                    else:
+                        candidate = self._candidate_from_value(raw_candidate, raw_candidate, chunk_index, confidence=50, evidence_type="ambiguous")
+
+                    if not self._candidate_value_is_empty(candidate["value"]):
+                        candidate = self._repair_candidate_evidence_from_chunk(candidate, chunk_text)
+                        normalized_candidates[field_key].append(candidate)
+
+            return {"candidates": normalized_candidates}
+
+        data = chunk_result.get("data")
+        if isinstance(data, dict):
+            evidence = chunk_result.get("evidence", {})
+            if not isinstance(evidence, dict):
+                evidence = {}
+
+            for field_key in field_keys:
+                value = data.get(field_key)
+                evidence_value = evidence.get(field_key)
+                if field_key == "energielabel" and value is None:
+                    value = data.get("energylabel")
+                    evidence_value = evidence.get("energylabel")
+                if self._candidate_value_is_empty(value):
+                    continue
+
+                normalized_candidates[field_key].append(
+                    self._repair_candidate_evidence_from_chunk(
+                        self._candidate_from_value(
+                            value,
+                            evidence_value,
+                            chunk_index,
+                            confidence=55,
+                            evidence_type="semantic",
+                            record_role="unknown",
+                        ),
+                        chunk_text,
+                    )
+                )
+
+        return {"candidates": normalized_candidates}
 
     def _normalize_candidate_label(self, value: Any, allowed_values: Set[str], default: str) -> str:
         """Normalize a bounded candidate label returned by the LLM."""
@@ -2883,6 +4033,7 @@ Respond with JSON only:
             "not found",
             "not_found",
             "niet gevonden",
+            "niet opgenomen",
             "unknown",
             "onbekend",
             "-",
@@ -2890,22 +4041,236 @@ Respond with JSON only:
         }
         return value_str.lower() in placeholder_values
 
-    def _candidate_fits_field_type(self, value: Any, field_type: str, enum_values: Any) -> bool:
-        """Validate a candidate value against the configured field type."""
-        if self._candidate_value_is_empty(value):
+    def _candidate_evidence_is_invalid(self, evidence: Any) -> bool:
+        """Return whether evidence is empty or explicitly says no value was found."""
+        if evidence is None:
+            return True
+
+        evidence_str = str(evidence).strip()
+        if not evidence_str:
+            return True
+
+        invalid_fragments = [
+            "niet opgenomen",
+            "not found",
+            "niet gevonden",
+            "n/a",
+        ]
+        evidence_lower = evidence_str.lower()
+        return any(fragment in evidence_lower for fragment in invalid_fragments)
+
+    def _compact_for_candidate_match(self, value: Any) -> str:
+        """Normalize text for clear value/evidence containment checks."""
+        return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+    def _candidate_value_matches_evidence(self, value: Any, normalized_value: Any, evidence: Any) -> bool:
+        """Check whether a raw or normalized value is clearly supported by exact evidence."""
+        evidence_str = str(evidence or "")
+        evidence_lower = evidence_str.lower()
+        for candidate_value in (value, normalized_value):
+            if self._candidate_value_is_empty(candidate_value):
+                continue
+
+            value_str = str(candidate_value).strip()
+            if value_str.lower() in evidence_lower:
+                return True
+
+            compact_value = self._compact_for_candidate_match(value_str)
+            compact_evidence = self._compact_for_candidate_match(evidence_str)
+            if compact_value and compact_value in compact_evidence:
+                return True
+
+        return False
+
+    def _field_kind(self, field_config: Dict[str, Any]) -> str:
+        """Infer a generic validation kind from configured field metadata."""
+        field_type = str(field_config.get("field_type") or "text").lower()
+        key_label = self._normalize_for_search(f"{field_config.get('key', '')} {field_config.get('label', '')}")
+
+        if field_type in {"boolean", "bool"}:
+            return "boolean"
+        if field_type == "enum":
+            return "enum"
+        if field_type == "date":
+            return "date"
+        if any(term in key_label.split() for term in {"jaar", "year"}) or "bouwjaar" in key_label:
+            return "year"
+        if any(term in key_label for term in ["m2", "sqm", "area", "oppervlakte", "vloeroppervlak", "gebruiksoppervlakte"]):
+            return "area"
+        if field_type == "number":
+            return "number"
+        if field_type == "iban":
+            return "iban"
+        return "string"
+
+    def _normalize_candidate_number(self, value: Any) -> Optional[str]:
+        """Normalize a human numeric value without treating dates/codes as numbers."""
+        value_str = str(value or "").strip()
+        if not value_str:
+            return None
+        if re.search(r"[A-Za-z]", value_str):
+            return None
+        if re.search(r"\d+[/-]\d+", value_str):
+            return None
+
+        cleaned = re.sub(r"\s+", "", value_str)
+        cleaned = re.sub(r"^[^\d+-]+|[^\d]+$", "", cleaned)
+        if not cleaned:
+            return None
+
+        if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+", cleaned):
+            cleaned = cleaned.replace(".", "")
+        elif "," in cleaned and "." in cleaned:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        elif "," in cleaned:
+            cleaned = cleaned.replace(",", ".")
+
+        if not re.fullmatch(r"[+-]?\d+(\.\d+)?", cleaned):
+            return None
+        return cleaned
+
+    def _evidence_has_label_context(self, field_config: Dict[str, Any], evidence: Any) -> bool:
+        """Check whether evidence contains the configured key/label context."""
+        evidence_norm = self._normalize_for_search(evidence)
+        if not evidence_norm:
             return False
 
-        if field_type == "number":
-            return self._parse_amount(value) is not None
-        if field_type == "date":
-            return self._parse_date(value) is not None
-        if field_type == "iban":
-            return self._validate_iban(str(value))
-        if field_type == "enum" and enum_values:
-            value_str = str(value).strip().lower()
-            return any(value_str == str(enum_value).strip().lower() for enum_value in enum_values)
+        label = self._normalize_for_search(field_config.get("label"))
+        key = self._normalize_for_search(field_config.get("key"))
+        if label and label in evidence_norm:
+            return True
+        if key and key in evidence_norm:
+            return True
 
-        return True
+        label_tokens = self._search_tokens(label)
+        evidence_tokens = evidence_norm.split()
+        return self._words_within_window(evidence_tokens, label_tokens, window=10)
+
+    def _validate_candidate_value_for_field(
+        self,
+        value: Any,
+        field_config: Dict[str, Any],
+        evidence: Any = "",
+        unit: Any = None,
+    ) -> Tuple[bool, Optional[str], Any]:
+        """Hard-validate and optionally normalize a candidate before scoring."""
+        if self._candidate_value_is_empty(value):
+            return False, "empty_or_placeholder_value", value
+
+        value_str = str(value).strip()
+        evidence_str = str(evidence or "")
+        evidence_norm = self._normalize_for_search(evidence_str)
+        kind = self._field_kind(field_config)
+
+        if kind == "year":
+            if re.search(r"\d+[/-]\d+", value_str):
+                return False, "year_value_looks_like_date", value
+            match = re.fullmatch(r"\d{4}", value_str)
+            if not match:
+                return False, "year_must_be_four_digits", value
+            year = int(value_str)
+            if year < 1600 or year > datetime.now().year + 1:
+                return False, "year_out_of_range", value
+            value_pos = evidence_norm.find(value_str)
+            date_label_positions = [
+                evidence_norm.find(label)
+                for label in ("datum", "date")
+                if evidence_norm.find(label) >= 0
+            ]
+            if value_pos >= 0 and any(abs(value_pos - label_pos) <= 30 for label_pos in date_label_positions):
+                return False, "year_evidence_has_date_label", value
+            if re.search(r"\b\d{4}\s?[a-z]{2}\b", evidence_norm):
+                return False, "year_evidence_has_postcode", value
+            document_label_positions = [
+                evidence_norm.find(label)
+                for label in ("documentnummer", "document number", "nummer", "number", "reference", "referentie", "id")
+                if evidence_norm.find(label) >= 0
+            ]
+            if value_pos >= 0 and any(abs(value_pos - label_pos) <= 35 for label_pos in document_label_positions):
+                return False, "year_evidence_has_document_number_label", value
+            return True, None, value_str
+
+        if kind == "number":
+            normalized_number = self._normalize_candidate_number(value_str)
+            if normalized_number is None:
+                return False, "number_invalid", value
+            return True, None, normalized_number
+
+        if kind == "area":
+            normalized_number = self._normalize_candidate_number(value_str)
+            if normalized_number is None:
+                return False, "area_not_numeric", value
+            if re.search(r"[€$£]|eur|euro|amount|bedrag|prijs|price", evidence_norm):
+                return False, "area_looks_like_amount", value
+            if re.search(r"\d+[/-]\d+", value_str):
+                return False, "area_looks_like_date", value
+            compact_digits = re.sub(r"\D", "", value_str)
+            if len(compact_digits) >= 7:
+                return False, "area_looks_like_phone_or_document_number", value
+            if re.search(r"\b\d{4}\s?[a-z]{2}\b", evidence_norm):
+                return False, "area_evidence_has_postcode", value
+
+            unit_norm = self._normalize_for_search(unit)
+            has_area_context = any(term in f"{evidence_norm} {unit_norm}" for term in [
+                "m2",
+                "sqm",
+                "area",
+                "oppervlakte",
+                "vloeroppervlak",
+                "gebruiksoppervlakte",
+            ])
+            if not has_area_context:
+                return False, "area_missing_unit_or_context", value
+            return True, None, normalized_number
+
+        if kind == "enum":
+            enum_values = field_config.get("enum_values")
+            if enum_values:
+                value_lower = value_str.lower()
+                if not any(value_lower == str(enum_value).strip().lower() for enum_value in enum_values):
+                    return False, "enum_value_not_allowed", value
+            return True, None, value_str
+
+        if kind == "boolean":
+            bool_value = self._normalize_for_search(value_str)
+            explicit_true = {"true", "yes", "ja", "waar", "1"}
+            explicit_false = {"false", "no", "nee", "onwaar", "0"}
+            if bool_value in explicit_true:
+                return True, None, True
+            if bool_value in explicit_false:
+                return True, None, False
+            return False, "boolean_not_explicit", value
+
+        if kind == "date":
+            if self._parse_date(value_str) is None:
+                return False, "date_invalid", value
+            return True, None, value_str
+
+        if kind == "iban":
+            if not self._validate_iban(value_str):
+                return False, "iban_invalid", value
+            return True, None, value_str
+
+        if self._candidate_value_is_empty(value_str):
+            return False, "string_empty_or_placeholder", value
+
+        regex = field_config.get("regex")
+        if regex:
+            try:
+                if re.search(str(regex), value_str, re.IGNORECASE) is None:
+                    return False, "regex_mismatch", value
+            except re.error:
+                logger.warning(f"Invalid regex for candidate validation: {regex}")
+
+        return True, None, value_str
+
+    def _candidate_fits_field_type(self, value: Any, field_type: str, enum_values: Any, regex: Any = None) -> bool:
+        """Validate a candidate value against the configured field type."""
+        valid, _, _ = self._validate_candidate_value_for_field(
+            value,
+            {"field_type": field_type, "enum_values": enum_values, "regex": regex},
+        )
+        return valid
 
     def _candidate_final_value(self, candidate: Dict[str, Any]) -> Any:
         """Return the normalized value when available, otherwise the raw value."""
@@ -2953,31 +4318,68 @@ Respond with JSON only:
             "quote": quote,
         }]
 
-    def _score_candidate(
-        self,
-        candidate: Dict[str, Any],
-        field_type: str,
-        enum_values: Any,
-        value_frequency: Dict[str, int],
-        evidence_frequency: Dict[str, int],
-    ) -> Tuple[int, List[str]]:
-        """Score a candidate using generic evidence, role, position and validation signals."""
-        score = 0
+    def _validate_candidate(self, candidate: Dict[str, Any], field_config: Dict[str, Any]) -> Optional[str]:
+        """Validate one candidate after LLM output and normalization."""
+        allowed_evidence_types = {"exact_label", "table_context", "nearby_label", "semantic", "ambiguous"}
+        allowed_record_roles = {"primary", "secondary", "example", "background", "unknown"}
+
+        if self._candidate_value_is_empty(candidate.get("value")):
+            return "empty_value"
+        if self._candidate_value_is_empty(candidate.get("normalized_value")):
+            return "empty_normalized_value"
+        if self._candidate_evidence_is_invalid(candidate.get("evidence")):
+            return "invalid_evidence"
+        if candidate.get("evidence_type") not in allowed_evidence_types:
+            return "invalid_evidence_type"
+        if candidate.get("record_role") not in allowed_record_roles:
+            return "invalid_record_role"
+        if candidate.get("confidence", 0) <= 0:
+            return "non_positive_confidence"
+        valid_value, invalid_reason, normalized_value = self._validate_candidate_value_for_field(
+            candidate.get("selected_value"),
+            field_config,
+            evidence=candidate.get("evidence"),
+            unit=candidate.get("unit"),
+        )
+        if not valid_value:
+            return invalid_reason or "field_type_mismatch"
+        regex = field_config.get("regex")
+        if regex:
+            try:
+                if re.search(str(regex), str(candidate.get("selected_value")), re.IGNORECASE) is None:
+                    return "regex_mismatch"
+            except re.error:
+                logger.warning(f"Invalid regex for candidate validation: {regex}")
+        candidate["selected_value"] = normalized_value
+        candidate["normalized_value"] = normalized_value
+        if not self._candidate_value_matches_evidence(
+            candidate.get("value"),
+            candidate.get("normalized_value"),
+            candidate.get("evidence"),
+        ):
+            return "value_not_in_evidence"
+
+        return None
+
+    def _score_candidate(self, candidate: Dict[str, Any], field_config: Dict[str, Any]) -> Tuple[float, List[str]]:
+        """Score a hard-validated candidate using evidence and field context first."""
+        score = 60.0
         reasons = []
+        reasons.append("valid_field_type:+60")
 
         evidence_type_scores = {
-            "exact_label": 50,
-            "table_context": 45,
-            "nearby_label": 35,
-            "semantic": 20,
-            "ambiguous": 5,
+            "exact_label": 60,
+            "table_context": 40,
+            "nearby_label": 30,
+            "semantic": 10,
+            "ambiguous": 0,
         }
         record_role_scores = {
-            "primary": 30,
-            "unknown": 10,
+            "primary": 10,
+            "unknown": 0,
             "secondary": -20,
-            "example": -35,
-            "background": -50,
+            "example": -20,
+            "background": -20,
         }
 
         evidence_type = candidate["evidence_type"]
@@ -2988,54 +4390,18 @@ Respond with JSON only:
         score += record_role_score
         reasons.extend([f"evidence_type:{evidence_type_score}", f"record_role:{record_role_score}"])
 
+        if self._evidence_has_label_context(field_config, candidate.get("evidence")):
+            score += 60
+            reasons.append("exact_label_context:+60")
+
+        confidence_score = min(20, max(0, float(candidate["confidence"]) / 5))
+        score += confidence_score
+        reasons.append(f"confidence_scaled:+{confidence_score:.1f}")
+
         chunk_index = candidate["chunk_index"]
-        if chunk_index == 0:
-            score += 15
-            reasons.append("position:+15")
-        elif chunk_index == 1:
-            score += 10
-            reasons.append("position:+10")
-        elif chunk_index == 2:
-            score += 5
-            reasons.append("position:+5")
-
-        if self._candidate_fits_field_type(candidate["selected_value"], field_type, enum_values):
-            score += 20
-            reasons.append("field_type:+20")
-
-        if not self._candidate_value_is_empty(candidate.get("normalized_value")):
-            score += 10
-            reasons.append("normalized:+10")
-
-        value_key = str(candidate["selected_value"]).strip().lower()
-        if value_frequency.get(value_key, 0) > 1:
-            score += 10
-            reasons.append("same_value:+10")
-
-        evidence_key = str(candidate.get("evidence") or "").strip().lower()
-        if evidence_key and evidence_frequency.get(evidence_key, 0) > 1:
-            score += 5
-            reasons.append("same_evidence:+5")
-
-        evidence = str(candidate.get("evidence") or "").strip()
-        value = str(candidate.get("value") or "").strip()
-        normalized_value = str(candidate.get("normalized_value") or "").strip()
-        if not evidence:
-            score -= 100
-            reasons.append("missing_evidence:-100")
-        elif value and value.lower() not in evidence.lower() and (
-            not normalized_value or normalized_value.lower() not in evidence.lower()
-        ):
-            score -= 40
-            reasons.append("evidence_without_value:-40")
-
-        if candidate["confidence"] < 50:
-            score -= 20
-            reasons.append("low_confidence:-20")
-
-        if self._candidate_value_is_empty(candidate.get("value")):
-            score -= 100
-            reasons.append("empty_or_placeholder:-100")
+        position_score = max(0, 5 - min(chunk_index, 5))
+        score += position_score
+        reasons.append(f"position:+{position_score}")
 
         return score, reasons
 
@@ -3044,24 +4410,24 @@ Respond with JSON only:
         chunk_results: List[Tuple[int, Dict[str, Any]]],
         fields: List[Tuple],
         pages: Optional[List[Dict[str, Any]]] = None,
-        threshold: int = 50,
+        threshold: int = 100,
     ) -> Optional[Dict[str, Any]]:
         """Resolve candidate-only chunk extraction results into final field values."""
         if not chunk_results:
             return None
 
         field_config = {
-            key: {
+            self._canonical_field_key(key): {
+                "key": self._canonical_field_key(key),
+                "label": label,
                 "field_type": field_type,
                 "enum_values": enum_values,
+                "regex": regex,
             }
-            for key, _, field_type, _, enum_values, _ in fields
+            for key, label, field_type, _, enum_values, regex in fields
         }
         field_keys = list(field_config.keys())
         candidates_by_field: Dict[str, List[Dict[str, Any]]] = {field_key: [] for field_key in field_keys}
-        allowed_evidence_types = {"exact_label", "table_context", "nearby_label", "semantic", "ambiguous"}
-        allowed_record_roles = {"primary", "secondary", "example", "background", "unknown"}
-
         for chunk_num, chunk_result in chunk_results:
             if not isinstance(chunk_result, dict):
                 continue
@@ -3073,6 +4439,8 @@ Respond with JSON only:
             chunk_index = chunk_num - 1
             for field_key in field_keys:
                 raw_candidates = candidates.get(field_key, [])
+                if field_key == "energielabel" and not raw_candidates:
+                    raw_candidates = candidates.get("energylabel", [])
                 if not isinstance(raw_candidates, list):
                     continue
 
@@ -3094,16 +4462,8 @@ Respond with JSON only:
                         "evidence": str(raw_candidate.get("evidence") or ""),
                         "chunk_index": chunk_index,
                         "confidence": confidence,
-                        "evidence_type": self._normalize_candidate_label(
-                            raw_candidate.get("evidence_type"),
-                            allowed_evidence_types,
-                            "ambiguous",
-                        ),
-                        "record_role": self._normalize_candidate_label(
-                            raw_candidate.get("record_role"),
-                            allowed_record_roles,
-                            "unknown",
-                        ),
+                        "evidence_type": str(raw_candidate.get("evidence_type") or "").strip().lower(),
+                        "record_role": str(raw_candidate.get("record_role") or "").strip().lower(),
                     }
                     candidate["selected_value"] = self._candidate_final_value(candidate)
                     candidates_by_field[field_key].append(candidate)
@@ -3115,36 +4475,42 @@ Respond with JSON only:
             if not candidates:
                 continue
 
-            value_frequency: Dict[str, int] = {}
-            evidence_frequency: Dict[str, int] = {}
-            for candidate in candidates:
-                value_key = str(candidate["selected_value"]).strip().lower()
-                evidence_key = str(candidate.get("evidence") or "").strip().lower()
-                if value_key:
-                    value_frequency[value_key] = value_frequency.get(value_key, 0) + 1
-                if evidence_key:
-                    evidence_frequency[evidence_key] = evidence_frequency.get(evidence_key, 0) + 1
-
-            config = field_config[field_key]
             scored_candidates = []
+            config = field_config[field_key]
             for candidate in candidates:
-                score, reasons = self._score_candidate(
-                    candidate,
-                    config["field_type"],
-                    config["enum_values"],
-                    value_frequency,
-                    evidence_frequency,
-                )
+                reject_reason = self._validate_candidate(candidate, config)
+                if reject_reason:
+                    scored_candidates.append({
+                        **candidate,
+                        "score": None,
+                        "rejection_reason": reject_reason,
+                        "rejected_reason": reject_reason,
+                    })
+                    continue
+
+                score, reasons = self._score_candidate(candidate, config)
                 scored_candidate = {
                     **candidate,
                     "score": score,
                     "score_reasons": reasons,
+                    "has_label_context": self._evidence_has_label_context(config, candidate.get("evidence")),
                 }
                 scored_candidates.append(scored_candidate)
 
-            scored_candidates.sort(key=lambda item: (-item["score"], item["chunk_index"]))
-            selected = scored_candidates[0]
-            rejected = scored_candidates[1:]
+            valid_candidates = [candidate for candidate in scored_candidates if candidate.get("score") is not None]
+            if not valid_candidates:
+                rejected_candidates[field_key] = scored_candidates
+                continue
+
+            valid_candidates.sort(
+                key=lambda item: (
+                    -item["score"],
+                    not item.get("has_label_context", False),
+                    item["chunk_index"],
+                )
+            )
+            selected = valid_candidates[0]
+            rejected = [candidate for candidate in scored_candidates if candidate is not selected]
 
             if selected["score"] >= threshold and not self._candidate_value_is_empty(selected["selected_value"]):
                 resolved["data"][field_key] = selected["selected_value"]
@@ -3152,8 +4518,19 @@ Respond with JSON only:
             else:
                 rejected = scored_candidates
 
+            rejected = [candidate for candidate in scored_candidates if candidate is not selected]
+            if selected["score"] < threshold:
+                rejected = scored_candidates
+
             if rejected:
-                rejected_candidates[field_key] = rejected
+                rejected_candidates[field_key] = sorted(
+                    rejected,
+                    key=lambda item: (
+                        item.get("score") is None,
+                        -(item.get("score") or -9999),
+                        item["chunk_index"],
+                    ),
+                )
 
         if rejected_candidates:
             resolved["rejected_candidates"] = rejected_candidates
@@ -3180,7 +4557,8 @@ Respond with JSON only:
         }
         candidates_properties = {}
         for key, _, _, _, _, _ in fields:
-            candidates_properties[key] = {
+            field_key = self._canonical_field_key(key)
+            candidates_properties[field_key] = {
                 "type": "array",
                 "items": {
                     "type": "object",
@@ -3209,6 +4587,18 @@ Respond with JSON only:
                 }
             },
         }
+
+    def _build_candidate_json_repair_prompt(self, original_prompt: str) -> str:
+        """Build a stricter retry prompt for candidate extraction JSON parsing failures."""
+        return f"""{original_prompt}
+
+Your previous response was invalid JSON. Retry now.
+Return exactly one compact JSON object.
+No markdown. No comments. No trailing commas. No incomplete strings.
+If uncertain, return empty arrays for the affected fields.
+Do not start a candidate object unless you can complete every required property.
+Every candidate object must be complete and use this exact property order:
+value, normalized_value, unit, evidence, chunk_index, confidence, evidence_type, record_role."""
 
     def _build_extraction_schema(self, fields: List[Tuple]) -> Dict[str, Any]:
         """Build JSON schema for metadata extraction."""
@@ -3311,11 +4701,14 @@ Respond with JSON only:
             chunk_info = f"""
 NOTE: This is chunk {chunk_num} of {total_chunks} of a large document. Its zero-based chunk_index is {chunk_index}.
 
-Extract candidate values only. Do not choose the final document-level value.
-For each requested field, return all plausible values found in this chunk.
-Use labels, nearby text, table headers, row labels and section structure.
+Return possible candidates per field only. Do not choose the final document-level value.
+The application will collect all candidates from all chunks and resolve the best value per field later.
+Use text, labels, nearby text, table headers, row labels and section structure.
+Only return candidates that truly appear in this chunk's text or table structure.
 For each candidate, include exact evidence, evidence_type, confidence and record_role.
-If no candidate is found for a field, return an empty array for that field.
+For table_context candidates, evidence must include both the relevant headers and the row/value line. The candidate value must literally appear inside evidence.
+If nothing is found for a field, return an empty array for that field.
+Do not create placeholder candidates.
 Do not use regex as the extraction method.
 
 Determine record_role per candidate from document structure and relative position, not fixed document-type keywords:
@@ -3332,7 +4725,7 @@ Structural guidance:
 - Candidates in tables may be primary when the table describes the first or central record."""
 
         # Build actual field keys for the JSON structure
-        field_keys = [key for key, _, _, _, _, _ in fields]
+        field_keys = [self._canonical_field_key(key) for key, _, _, _, _, _ in fields]
         
         # Build a concrete JSON template with the actual field names
         data_template = ", ".join([f'"{k}": null' for k in field_keys])
@@ -3352,13 +4745,25 @@ Structural guidance:
             output_instruction = "Return JSON in this exact candidate-only format:"
             important_notes = [
                 f"- Return candidates for ALL fields listed above: {field_list}",
+                "- Give possible candidates only. Never choose the definitive document value.",
+                "- Use text, labels, nearby text and table structure to find candidates.",
+                "- Only return candidates that really occur in this chunk.",
                 "- Every candidate must include value, normalized_value, unit, evidence, chunk_index, confidence, evidence_type and record_role",
                 "- evidence must be an exact quote from this chunk",
+                "- For table_context candidates, evidence must include both the relevant headers and the row/value line. The candidate value must literally appear inside evidence.",
+                "- Do not return candidates with an empty value; use an empty array for that field instead",
+                "- Empty values, null-like values and placeholders are never valid candidates",
+                "- Do not return background text as a candidate unless it contains a concrete value for the field",
+                "- Return an empty array when no candidate is found. Do not create placeholder candidates.",
+                "- Never return candidates with empty value. Never use evidence like 'not found' or 'niet opgenomen'.",
+                "- evidence_type and record_role must use only the allowed enum values.",
                 "- confidence is 0-100",
                 "- evidence_type must be exactly one of: exact_label, table_context, nearby_label, semantic, ambiguous",
                 "- record_role must be exactly one of: primary, secondary, example, background, unknown",
                 "- The LLM must not choose final document-level values; the resolver will do that after all chunks",
                 "- Do NOT add fields that are not in the list above",
+                "- Return compact valid JSON only: no markdown, no comments, no trailing commas, no incomplete strings",
+                "- If you cannot complete a candidate object, omit it and leave that field as []",
             ]
         extra_notes = ""
         if notes_block.strip():

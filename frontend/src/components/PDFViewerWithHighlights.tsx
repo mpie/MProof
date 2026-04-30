@@ -35,6 +35,8 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
   const [pageEvidence, setPageEvidence] = useState<Map<number, PageEvidence>>(new Map());
   const [showHighlights, setShowHighlights] = useState<boolean>(true);
   const [showEvidenceOverlay, setShowEvidenceOverlay] = useState<boolean>(true);
+  const [textLayerRenderTick, setTextLayerRenderTick] = useState<number>(0);
+  const [didJumpToEvidence, setDidJumpToEvidence] = useState<boolean>(false);
 
   // Set up PDF.js worker on client side only
   useEffect(() => {
@@ -49,9 +51,10 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
     const evidencePerPage = new Map<number, PageEvidence>();
     
     Object.entries(evidence).forEach(([fieldName, items]) => {
-      if (Array.isArray(items)) {
-        items.forEach(item => {
-          if (item.quote && item.page !== undefined && item.page !== null && item.start !== undefined && item.end !== undefined) {
+      const evidenceItems = Array.isArray(items) ? items : items ? [items as EvidenceItem] : [];
+      if (evidenceItems.length > 0) {
+        evidenceItems.forEach(item => {
+          if (item.quote && item.page !== undefined && item.page !== null) {
             // Handle both number and string page values, convert 0-indexed to 1-indexed
             const rawPage = typeof item.page === 'string' ? parseInt(item.page, 10) : item.page;
             const pageNum = rawPage + 1;
@@ -71,7 +74,18 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
     });
 
     setPageEvidence(evidencePerPage);
+    setDidJumpToEvidence(false);
   }, [evidence]);
+
+  useEffect(() => {
+    if (didJumpToEvidence || pageEvidence.size === 0) return;
+
+    const firstEvidencePage = Array.from(pageEvidence.keys()).sort((a, b) => a - b)[0];
+    if (firstEvidencePage && firstEvidencePage !== currentPage) {
+      setCurrentPage(firstEvidencePage);
+    }
+    setDidJumpToEvidence(true);
+  }, [currentPage, didJumpToEvidence, pageEvidence]);
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
@@ -108,8 +122,20 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
       const pageElement = document.querySelector(`.react-pdf__Page[data-page-number="${currentPage}"]`);
       if (!pageElement) return;
       
-      const textLayer = pageElement.querySelector('.react-pdf__Page__textContent');
-      if (!textLayer) return;
+      const textLayer = pageElement.querySelector('.react-pdf__Page__textContent, .textLayer');
+      pageElement.querySelectorAll('.pdf-highlight-box, .pdf-highlight-fallback').forEach(element => element.remove());
+      if (!textLayer) {
+        if (showHighlights && pageEv && pageEv.items.length > 0) {
+          pageEv.items.slice(0, 3).forEach((item, index) => {
+            const fallback = document.createElement('div');
+            fallback.className = 'pdf-highlight-fallback';
+            fallback.textContent = item.fieldName.replace(/_/g, ' ');
+            fallback.style.top = `${12 + index * 30}px`;
+            pageElement.appendChild(fallback);
+          });
+        }
+        return;
+      }
       
       // First, remove existing highlights by restoring original text
       const allSpans = textLayer.querySelectorAll('span, mark');
@@ -135,6 +161,9 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
       spans.forEach((span: HTMLSpanElement) => {
         const text = span.textContent || '';
         if (text.trim()) {
+          if (textRanges.length > 0) {
+            cumulativePos += 1; // Separator between PDF text spans for quote matching.
+          }
           const start = cumulativePos;
           const end = cumulativePos + text.length;
           textRanges.push({ span, start, end, originalText: text });
@@ -142,7 +171,18 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
         }
       });
 
-      const pageText = textRanges.map(range => range.originalText).join('');
+      if (textRanges.length === 0) {
+        pageEv.items.slice(0, 3).forEach((item, index) => {
+          const fallback = document.createElement('div');
+          fallback.className = 'pdf-highlight-fallback';
+          fallback.textContent = item.fieldName.replace(/_/g, ' ');
+          fallback.style.top = `${12 + index * 30}px`;
+          pageElement.appendChild(fallback);
+        });
+        return;
+      }
+
+      const pageText = textRanges.map(range => range.originalText).join(' ');
       const normalizeWithMap = (value: string) => {
         let normalized = '';
         const indexMap: number[] = [];
@@ -189,6 +229,31 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
         return -1;
       };
 
+      const findTokenRanges = (quote: string) => {
+        const tokens = Array.from(new Set(
+          quote
+            .match(/[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9.,:/-]*/g)
+            ?.map(token => token.trim())
+            .filter(token => token.length >= 2) || []
+        ));
+        const ranges: Array<{ start: number; end: number }> = [];
+        const lowerPageText = pageText.toLowerCase();
+
+        tokens.forEach(token => {
+          let start = lowerPageText.indexOf(token.toLowerCase());
+          while (start >= 0) {
+            const end = start + token.length;
+            if (!overlapsUsedRange(start, end)) {
+              ranges.push({ start, end });
+              break;
+            }
+            start = lowerPageText.indexOf(token.toLowerCase(), start + 1);
+          }
+        });
+
+        return ranges;
+      };
+
       pageEv.items.forEach(item => {
         const quote = item.quote?.trim();
         let matchStart = -1;
@@ -227,42 +292,49 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
 
         if (matchStart >= 0 && matchEnd > matchStart) {
           reserveRange(matchStart, matchEnd);
+        } else if (quote) {
+          findTokenRanges(quote).forEach(range => reserveRange(range.start, range.end));
         }
       });
 
-      textRanges.forEach(({ span, start, end, originalText }) => {
+      if (highlightRanges.length === 0) {
+        pageEv.items.slice(0, 3).forEach((item, index) => {
+          const fallback = document.createElement('div');
+          fallback.className = 'pdf-highlight-fallback';
+          fallback.textContent = item.fieldName.replace(/_/g, ' ');
+          fallback.style.top = `${12 + index * 30}px`;
+          pageElement.appendChild(fallback);
+        });
+        return;
+      }
+
+      const pageRect = pageElement.getBoundingClientRect();
+      textRanges.forEach(({ span, start, end }) => {
         const localRanges = highlightRanges
           .filter(range => range.start < end && range.end > start)
           .map(range => ({
             start: Math.max(0, range.start - start),
-            end: Math.min(originalText.length, range.end - start),
+            end: Math.max(0, range.end - start),
           }))
           .sort((a, b) => a.start - b.start);
 
-        if (localRanges.length === 0 || span.textContent !== originalText) return;
+        if (localRanges.length === 0) return;
 
-        span.textContent = '';
-        let cursor = 0;
-        localRanges.forEach(range => {
-          if (range.start > cursor) {
-            span.appendChild(document.createTextNode(originalText.substring(cursor, range.start)));
-          }
+        const spanRect = span.getBoundingClientRect();
+        if (spanRect.width <= 0 || spanRect.height <= 0) return;
 
-          const highlightSpan = document.createElement('mark');
-          highlightSpan.className = 'pdf-highlight';
-          highlightSpan.textContent = originalText.substring(range.start, range.end);
-          span.appendChild(highlightSpan);
-          cursor = range.end;
-        });
-
-        if (cursor < originalText.length) {
-          span.appendChild(document.createTextNode(originalText.substring(cursor)));
-        }
+        const highlightBox = document.createElement('div');
+        highlightBox.className = 'pdf-highlight-box';
+        highlightBox.style.left = `${spanRect.left - pageRect.left}px`;
+        highlightBox.style.top = `${spanRect.top - pageRect.top}px`;
+        highlightBox.style.width = `${spanRect.width}px`;
+        highlightBox.style.height = `${spanRect.height}px`;
+        pageElement.appendChild(highlightBox);
       });
     }, 150);
     
     return () => clearTimeout(timeout);
-  }, [currentPage, pageEvidence, showHighlights]);
+  }, [currentPage, pageEvidence, showHighlights, scale, pageWidth, textLayerRenderTick]);
 
   const currentPageEv = pageEvidence.get(currentPage);
   const currentPageItems = currentPageEv?.items || [];
@@ -366,7 +438,8 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
               width={pageWidth}
               renderTextLayer={true}
               renderAnnotationLayer={false}
-              className="shadow-2xl"
+              onRenderTextLayerSuccess={() => setTextLayerRenderTick(tick => tick + 1)}
+          className="shadow-2xl"
             />
           </Document>
         </div>
@@ -446,6 +519,32 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
           border-radius: 2px;
           box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
         }
+
+        .pdf-highlight-box {
+          position: absolute;
+          z-index: 8;
+          pointer-events: none;
+          background-color: rgba(59, 130, 246, 0.35);
+          border: 1px solid rgba(96, 165, 250, 0.9);
+          border-radius: 3px;
+          box-shadow: 0 0 10px rgba(59, 130, 246, 0.55);
+          mix-blend-mode: multiply;
+        }
+
+        .pdf-highlight-fallback {
+          position: absolute;
+          right: 12px;
+          z-index: 9;
+          pointer-events: none;
+          max-width: calc(100% - 24px);
+          padding: 5px 8px;
+          border-radius: 999px;
+          background: rgba(37, 99, 235, 0.9);
+          color: white;
+          font-size: 11px;
+          font-weight: 600;
+          box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+        }
         
         .react-pdf__Page__textContent {
           opacity: 0.8;
@@ -457,6 +556,10 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
         
         .react-pdf__Page__canvas {
           border-radius: 8px;
+        }
+
+        .react-pdf__Page {
+          position: relative !important;
         }
       `}</style>
     </div>

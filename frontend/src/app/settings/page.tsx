@@ -2548,7 +2548,7 @@ function LLMTab() {
             <div>LLM_PROVIDER=ollama</div>
             <div className="mt-2 text-green-400"># Ollama instellingen</div>
             <div>OLLAMA_BASE_URL=http://localhost:11434</div>
-            <div>OLLAMA_MODEL=llama3.2:3b</div>
+            <div>OLLAMA_MODEL=mistral:latest</div>
             <div className="mt-2 text-green-400"># vLLM instellingen</div>
             <div>VLLM_BASE_URL=http://localhost:8000</div>
             <div>VLLM_MODEL=llama3.2:3b</div>

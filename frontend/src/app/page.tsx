@@ -340,6 +340,30 @@ export default function Dashboard() {
 
   const stageLabel = (stage?: string, progress?: number): string => {
     if (!stage) return '';
+
+    const selectedMatch = stage.match(/^extracting_metadata_selecting_(\d+)_of_(\d+)_chunks$/);
+    if (selectedMatch) {
+      const [, selectedChunks, totalChunks] = selectedMatch;
+      return `Extractie (${selectedChunks}/${totalChunks} relevante chunks geselecteerd)`;
+    }
+
+    const deterministicMatch = stage.match(/^extracting_metadata_deterministic_(\d+)_of_(\d+)_chunks$/);
+    if (deterministicMatch) {
+      const [, selectedChunks, totalChunks] = deterministicMatch;
+      return `Extractie (deterministic op ${selectedChunks}/${totalChunks} chunks)`;
+    }
+
+    const llmSelectedMatch = stage.match(/^extracting_metadata_llm_selected_(\d+)_of_(\d+)_chunks$/);
+    if (llmSelectedMatch) {
+      const [, selectedChunks, totalChunks] = llmSelectedMatch;
+      return `Extractie (LLM analyseert ${selectedChunks}/${totalChunks} chunks)`;
+    }
+
+    const selectedDoneMatch = stage.match(/^extracting_metadata_selected_chunks_done_(\d+)_of_(\d+)$/);
+    if (selectedDoneMatch) {
+      const [, selectedChunks, totalChunks] = selectedDoneMatch;
+      return `Extractie (${selectedChunks}/${totalChunks} geselecteerde chunks verwerkt)`;
+    }
     
     // Handle chunk stages: extracting_metadata_chunk_1_3 → Extractie (chunk 1/3)
     const chunkMatch = stage.match(/^extracting_metadata_chunk_(\d+)_(\d+)$/);

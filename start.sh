@@ -17,22 +17,52 @@ if ! curl -s http://localhost:11434/api/tags > /dev/null; then
     echo
 fi
 
+BACKEND_PYTHON="python3"
+if command -v pyenv >/dev/null 2>&1; then
+    PYENV_311_PREFIX="$(pyenv prefix 3.11.8 2>/dev/null || true)"
+    if [ -x "$PYENV_311_PREFIX/bin/python" ]; then
+        BACKEND_PYTHON="$PYENV_311_PREFIX/bin/python"
+    fi
+fi
+BACKEND_PYTHON_VERSION="$($BACKEND_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+echo "Using backend Python: $($BACKEND_PYTHON --version)"
+
+# Recreate an incompatible virtual environment instead of trying to build old pins on Python 3.13.
+if [ -d "backend/venv" ]; then
+    VENV_PYTHON_VERSION="$(backend/venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
+    if [ "$VENV_PYTHON_VERSION" != "$BACKEND_PYTHON_VERSION" ]; then
+        echo "Backend virtual environment uses Python $VENV_PYTHON_VERSION, expected $BACKEND_PYTHON_VERSION. Recreating..."
+        rm -rf backend/venv
+    fi
+fi
+
 # Check if virtual environment exists for backend
 if [ ! -d "backend/venv" ]; then
     echo "Setting up Python virtual environment..."
     cd backend
-    python3 -m venv venv
+    "$BACKEND_PYTHON" -m venv venv
     source venv/bin/activate
     pip install -r requirements.txt
     pip install greenlet==3.0.3  # Extra zekerheid
     cd ..
     echo "✓ Backend virtual environment ready"
+else
+    cd backend
+    source venv/bin/activate
+    if ! python -c "import pydantic_settings" >/dev/null 2>&1; then
+        echo "Backend virtual environment is missing dependencies. Installing requirements..."
+        pip install -r requirements.txt
+        pip install greenlet==3.0.3  # Extra zekerheid
+        echo "✓ Backend dependencies updated"
+    fi
+    cd ..
 fi
 
 # Activate virtual environment and run tests
 echo "Running backend tests..."
 cd backend
 source venv/bin/activate
+mkdir -p data
 PYTHONPATH="$(pwd):$PYTHONPATH" python test_basic.py
 # Tests may fail due to model differences, but core functionality works
 echo "✓ Core functionality verified - system ready to start"

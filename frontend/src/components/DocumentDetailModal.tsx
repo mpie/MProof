@@ -47,7 +47,7 @@ function DocumentViewerModal({
   const isPDF = mimeType === 'application/pdf';
   const isImage = mimeType.startsWith('image/');
   const isWord = mimeType.includes('word') || mimeType.includes('msword') || filename.toLowerCase().endsWith('.doc') || filename.toLowerCase().endsWith('.docx');
-  const hasEvidence = evidence && Object.keys(evidence).length > 0;
+  const hasEvidence = evidence && Object.values(evidence).some(items => Array.isArray(items) && items.length > 0);
 
   const handleDownload = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -94,22 +94,12 @@ function DocumentViewerModal({
 
         {/* Viewer Content */}
         <div className="flex-1 overflow-hidden bg-black/30">
-          {isPDF && hasEvidence ? (
-            // Use custom PDF viewer with highlights when we have evidence
+          {isPDF ? (
+            // Use custom PDF viewer for PDFs; it enables highlights when evidence is available.
             <PDFViewerWithHighlights 
               url={documentUrl} 
-              evidence={evidence}
+              evidence={evidence || {}}
             />
-          ) : isPDF ? (
-            // Fall back to iframe for PDFs without evidence
-            <div className="w-full h-full p-2 sm:p-4">
-              <iframe
-                src={`${documentUrl}#toolbar=1&navpanes=1&scrollbar=1&view=FitH`}
-                className="w-full h-full min-h-[80vh] rounded-lg border border-white/10 bg-white"
-                title={filename}
-                style={{ colorScheme: 'light' }}
-              />
-            </div>
           ) : isImage ? (
             <div className="w-full h-full p-2 sm:p-4 flex items-center justify-center">
               <img
@@ -156,6 +146,30 @@ function formatDocumentTypeName(slug: string): string {
 
 function formatStage(stage: string | undefined): string {
   if (!stage) return '';
+  const selectedMatch = stage.match(/^extracting_metadata_selecting_(\d+)_of_(\d+)_chunks$/);
+  if (selectedMatch) {
+    const [, selectedChunks, totalChunks] = selectedMatch;
+    return `Metadata: ${selectedChunks}/${totalChunks} relevante chunks geselecteerd`;
+  }
+
+  const deterministicMatch = stage.match(/^extracting_metadata_deterministic_(\d+)_of_(\d+)_chunks$/);
+  if (deterministicMatch) {
+    const [, selectedChunks, totalChunks] = deterministicMatch;
+    return `Metadata: deterministic extractie op ${selectedChunks}/${totalChunks} chunks`;
+  }
+
+  const llmSelectedMatch = stage.match(/^extracting_metadata_llm_selected_(\d+)_of_(\d+)_chunks$/);
+  if (llmSelectedMatch) {
+    const [, selectedChunks, totalChunks] = llmSelectedMatch;
+    return `Metadata: LLM analyseert ${selectedChunks}/${totalChunks} geselecteerde chunks`;
+  }
+
+  const selectedDoneMatch = stage.match(/^extracting_metadata_selected_chunks_done_(\d+)_of_(\d+)$/);
+  if (selectedDoneMatch) {
+    const [, selectedChunks, totalChunks] = selectedDoneMatch;
+    return `Metadata: ${selectedChunks}/${totalChunks} geselecteerde chunks verwerkt`;
+  }
+
   // Replace all underscores with spaces and capitalize words
   return stage
     .replace(/_/g, ' ')
@@ -221,6 +235,17 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
       return doc && (doc.status === 'processing' || doc.status === 'queued') ? 2000 : false;
     },
   });
+
+  const documentEvidence = document?.metadata_evidence_json as Record<string, any[]> | undefined;
+  const hasDocumentEvidence = !!documentEvidence && Object.values(documentEvidence).some(items => Array.isArray(items) && items.length > 0);
+  const { data: viewerEvidenceArtifact } = useQuery({
+    queryKey: ['document-viewer-evidence-artifact', documentId],
+    queryFn: () => getDocumentArtifactJson<Record<string, any[]>>(documentId!, 'metadata/evidence.json'),
+    enabled: !!documentId && isOpen && document?.status === 'done' && !hasDocumentEvidence,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const viewerEvidence = hasDocumentEvidence ? documentEvidence : viewerEvidenceArtifact;
 
   const { data: extractedText, isLoading: textLoading } = useQuery({
     queryKey: ['document-text', documentId],
@@ -416,7 +441,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                 {(document?.status === 'processing' || document?.status === 'queued') && (
                   <span className="flex items-center gap-1.5 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full animate-pulse">
                     <FontAwesomeIcon icon={faSpinner} className="w-3 h-3 animate-spin" />
-                    <span>{document.stage || 'Verwerken...'}</span>
+                    <span>{formatStage(document.stage) || 'Verwerken...'}</span>
                     {document.progress > 0 && <span>({document.progress}%)</span>}
                   </span>
                 )}
@@ -625,7 +650,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
           filename={document?.original_filename || ''}
           mimeType={document?.mime_type || ''}
           onDownload={() => downloadArtifact(documentViewerPath, document?.original_filename || 'document')}
-          evidence={document?.metadata_evidence_json as Record<string, any[]> | undefined}
+          evidence={viewerEvidence}
         />
       )}
     </>
@@ -1330,8 +1355,8 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     });
   };
 
-  // Only fetch LLM artifacts when document is done - prevents 404 errors for pending/processing docs
-  const isDone = document?.status === 'done';
+  // Fetch LLM artifacts for completed and failed runs so extraction errors are visible in the UI.
+  const canFetchArtifacts = document?.status === 'done' || document?.status === 'error';
   
   const { data, isLoading } = useQuery({
     queryKey: ['document-llm', documentId],
@@ -1343,6 +1368,24 @@ function LLMTab({ documentId, document, downloadArtifact }: {
       const safeJson = async <T,>(path: string): Promise<T | null> => {
         try { return await getDocumentArtifactJson<T>(documentId, path); }
         catch { return null; }
+      };
+      const safeChunkArtifacts = async (kind: 'error' | 'warning') => {
+        const paths = Array.from({ length: 50 }, (_, index) => {
+          const chunkNum = index + 1;
+          return {
+            chunkNum,
+            path: `llm/extraction_${kind}_chunk_${chunkNum}.txt`,
+          };
+        });
+        const results = await Promise.all(
+          paths.map(async ({ chunkNum, path }) => ({
+            chunkNum,
+            path,
+            content: await safeText(path),
+          }))
+        );
+
+        return results.filter((item): item is { chunkNum: number; path: string; content: string } => !!item.content);
       };
 
       const classification = {
@@ -1359,12 +1402,14 @@ function LLMTab({ documentId, document, downloadArtifact }: {
         response: await safeText('llm/extraction_response.txt'),
         result: await safeJson<Record<string, any>>('llm/extraction_result.json'),
         error: await safeText('llm/extraction_error.txt'),
+        chunkErrors: await safeChunkArtifacts('error'),
+        chunkWarnings: await safeChunkArtifacts('warning'),
         timing: await safeJson<Record<string, any>>('llm/extraction_timing.json'),
         skipped: await safeJson<Record<string, any>>('llm/extraction_skipped.json'),
       };
       return { classification, extraction };
     },
-    enabled: !!documentId && isDone,
+    enabled: !!documentId && canFetchArtifacts,
     retry: false,
     staleTime: 0, // Always refetch to get latest prompts (especially after rerun)
     refetchOnMount: 'always', // Force refetch when component mounts
@@ -1372,7 +1417,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
   });
 
   // Show appropriate message based on document status - BEFORE any data fetching
-  if (!isDone) {
+  if (!canFetchArtifacts) {
     if (document?.status === 'processing') {
       return (
         <div className="p-4">
@@ -1423,7 +1468,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     );
   }
 
-  const hasData = data?.classification.prompt || data?.classification.result || data?.classification.deterministic || data?.classification.local || data?.extraction.prompt || data?.extraction.result || data?.extraction.skipped;
+  const hasData = data?.classification.prompt || data?.classification.result || data?.classification.deterministic || data?.classification.local || data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.chunkErrors?.length || data?.extraction.chunkWarnings?.length || data?.extraction.skipped;
 
   if (!hasData) {
     return (
@@ -1552,7 +1597,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
       )}
 
       {/* Extraction */}
-      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.skipped) && (
+      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.chunkErrors?.length || data?.extraction.chunkWarnings?.length || data?.extraction.skipped) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-white font-medium text-sm flex items-center space-x-2">
@@ -1588,6 +1633,70 @@ function LLMTab({ documentId, document, downloadArtifact }: {
           {data.extraction.error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded p-2 text-xs text-red-300">
               <strong>Error:</strong> {data.extraction.error.substring(0, 200)}...
+            </div>
+          )}
+
+          {data.extraction.chunkWarnings && data.extraction.chunkWarnings.length > 0 && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-yellow-300 text-xs font-semibold">Chunk warnings</div>
+                  <div className="text-yellow-200/70 text-[11px]">
+                    {data.extraction.chunkWarnings.length} chunk{data.extraction.chunkWarnings.length === 1 ? '' : 's'} had schema fallback, maar zijn niet definitief gefaald.
+                  </div>
+                </div>
+                <span className="text-[10px] text-yellow-200/60 bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-0.5">
+                  fallback ok
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {data.extraction.chunkWarnings.map((chunkWarning) => (
+                  <CollapsiblePromptBlock
+                    key={chunkWarning.path}
+                    id={`ext-chunk-warning-${chunkWarning.chunkNum}`}
+                    title={`Chunk ${chunkWarning.chunkNum} warning`}
+                    content={chunkWarning.content}
+                    downloadPath={chunkWarning.path}
+                    downloadName={`extraction_warning_chunk_${chunkWarning.chunkNum}.txt`}
+                    description="Schema poging faalde, fallback kon doorgaan"
+                    isExpanded={expandedSections.has(`ext-chunk-warning-${chunkWarning.chunkNum}`)}
+                    onToggle={() => toggleSection(`ext-chunk-warning-${chunkWarning.chunkNum}`)}
+                    onDownload={downloadArtifact}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {data.extraction.chunkErrors && data.extraction.chunkErrors.length > 0 && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-red-300 text-xs font-semibold">Chunk errors</div>
+                  <div className="text-red-200/70 text-[11px]">
+                    {data.extraction.chunkErrors.length} chunk{data.extraction.chunkErrors.length === 1 ? '' : 's'} met extractiefouten gevonden.
+                  </div>
+                </div>
+                <span className="text-[10px] text-red-200/60 bg-red-500/10 border border-red-500/20 rounded px-2 py-0.5">
+                  zichtbaar bij status error
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                {data.extraction.chunkErrors.map((chunkError) => (
+                  <CollapsiblePromptBlock
+                    key={chunkError.path}
+                    id={`ext-chunk-error-${chunkError.chunkNum}`}
+                    title={`Chunk ${chunkError.chunkNum} error`}
+                    content={chunkError.content}
+                    downloadPath={chunkError.path}
+                    downloadName={`extraction_error_chunk_${chunkError.chunkNum}.txt`}
+                    description="Schema/fallback fout voor deze chunk"
+                    isExpanded={expandedSections.has(`ext-chunk-error-${chunkError.chunkNum}`)}
+                    onToggle={() => toggleSection(`ext-chunk-error-${chunkError.chunkNum}`)}
+                    onDownload={downloadArtifact}
+                  />
+                ))}
+              </div>
             </div>
           )}
 

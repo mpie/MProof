@@ -9,7 +9,7 @@ python-multipart==0.0.6
 # python-magic removed - using extension-based fallback
 pypdf==6.6.0
 pdfminer.six==20221105
-PyMuPDF==1.23.6
+PyMuPDF==1.27.2.3
 pytesseract==0.3.10
 Pillow>=10.0.0  # Image processing for OCR and fraud detection
 python-docx==1.1.0

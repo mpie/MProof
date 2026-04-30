@@ -341,6 +341,315 @@ class TestDocumentProcessor:
         assert "Header line 1" in sample
         assert "Header line 2" in sample
 
+    def test_normalize_for_search_handles_units_and_separators(self, processor):
+        """Search normalization should make labels and OCR text comparable."""
+        normalized = processor._normalize_for_search("Oppervlakte_m² - Bouw-Jaar")
+
+        assert normalized == "oppervlakte m2 bouw jaar"
+
+    def test_select_relevant_metadata_chunks_uses_field_labels(self, processor):
+        """Large documents should select label-relevant chunks instead of all chunks."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, r"\b\d{4}\b"),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        chunks = [
+            {"chunk_num": 1, "page": 0, "part": 0, "text": "Inhoudsopgave\nDisclaimer\nDefinities"},
+            {"chunk_num": 2, "page": 1, "part": 0, "text": "Algemene uitleg zonder metadata labels. " * 80},
+            {"chunk_num": 3, "page": 2, "part": 0, "text": "Objectgegevens\nBouwjaar: 1930\nOppervlakte (m2): 62"},
+            {"chunk_num": 4, "page": 3, "part": 0, "text": "Bijlage index\nReferenties"},
+        ]
+
+        selected, debug = processor._select_relevant_metadata_chunks(
+            chunks,
+            fields,
+            top_n=2,
+            threshold=40,
+            max_context_chars=2000,
+        )
+
+        selected_nums = [chunk["chunk_num"] for chunk in selected]
+        assert 3 in selected_nums
+        assert len(selected) < len(chunks)
+        assert debug["original_chunk_count"] == 4
+        assert debug["selected_chunk_count"] == len(selected)
+        assert debug["scores"][2]["field_matches"]["bouwjaar"]["score"] >= 100
+
+    def test_select_relevant_metadata_chunks_prefers_per_field_label_matches(self, processor):
+        """Regex-only chunks should not be selected when field-label chunks exist."""
+        fields = [("bouwjaar", "Bouwjaar", "number", False, None, r"\b\d{4}\b")]
+        chunks = [
+            {"chunk_num": 1, "page": 0, "part": 0, "text": "Documentnummer: 2024"},
+            {"chunk_num": 2, "page": 1, "part": 0, "text": "Objectgegevens\nBouwjaar: 1930"},
+        ]
+
+        selected, debug = processor._select_relevant_metadata_chunks(chunks, fields)
+
+        assert 2 in [chunk["chunk_num"] for chunk in selected]
+        selected_reason_by_chunk = {
+            chunk["chunk_num"]: chunk["reasons"]
+            for chunk in debug["selected_chunks"]
+        }
+        assert selected_reason_by_chunk[2] == ["best_for_field:bouwjaar"]
+        assert "regex_fallback_for_field:bouwjaar" not in selected_reason_by_chunk.get(1, [])
+
+    def test_deterministic_candidate_extraction_same_line_labels(self, processor):
+        """Obvious same-line labels should become candidates before the LLM."""
+        fields = [("bouwjaar", "Bouwjaar", "number", True, None, r"\b\d{4}\b")]
+        chunks = [
+            {"chunk_num": 3, "page": 2, "part": 0, "text": "Objectgegevens\nBouwjaar: 1930\n"},
+        ]
+
+        candidates = processor._deterministic_candidate_extraction(chunks, fields)
+        resolved = processor._resolve_chunk_candidate_results([(3, candidates)], fields)
+
+        assert candidates["candidates"]["bouwjaar"][0]["value"] == "1930"
+        assert resolved["data"]["bouwjaar"] == "1930"
+        assert processor._all_required_fields_resolved(resolved, fields) is True
+
+    def test_deterministic_candidate_rejects_date_as_year(self, processor):
+        """A date value must not become a year candidate for a year-like field."""
+        fields = [("bouwjaar", "Bouwjaar", "number", False, None, r"\b\d{4}\b")]
+        chunks = [
+            {"chunk_num": 1, "page": 0, "part": 0, "text": "Bouwjaar: 26/03/2026"},
+        ]
+
+        candidates = processor._deterministic_candidate_extraction(chunks, fields)
+
+        assert candidates["candidates"]["bouwjaar"] == []
+
+    def test_candidate_validation_rejects_document_number_as_year(self, processor):
+        """Document/reference numbers should not validate as year fields."""
+        field_config = {
+            "key": "bouwjaar",
+            "label": "Bouwjaar",
+            "field_type": "number",
+            "enum_values": None,
+            "regex": r"\b\d{4}\b",
+        }
+
+        valid, reason, _ = processor._validate_candidate_value_for_field(
+            "2024",
+            field_config,
+            evidence="Documentnummer: 2024",
+        )
+
+        assert valid is False
+        assert reason == "year_evidence_has_document_number_label"
+
+    def test_candidate_validation_rejects_postcode_as_area(self, processor):
+        """Postcodes should not validate as area fields."""
+        field_config = {
+            "key": "oppervlakte_m2",
+            "label": "Oppervlakte (m2)",
+            "field_type": "number",
+            "enum_values": None,
+            "regex": None,
+        }
+
+        valid, reason, _ = processor._validate_candidate_value_for_field(
+            "1234",
+            field_config,
+            evidence="Postcode: 1234 AB",
+            unit="m2",
+        )
+
+        assert valid is False
+        assert reason == "area_evidence_has_postcode"
+
+    def test_build_selected_chunks_text_respects_prompt_budget(self, processor):
+        """Selected chunk text should be clipped before creating the LLM prompt."""
+        fields = [("bouwjaar", "Bouwjaar", "number", False, None, None)]
+        chunks = [
+            {
+                "chunk_num": 1,
+                "page": 0,
+                "part": 0,
+                "text": ("Algemene tekst " * 300) + "\nBouwjaar: 1930\n" + ("Meer tekst " * 300),
+            },
+            {
+                "chunk_num": 2,
+                "page": 1,
+                "part": 0,
+                "text": ("Andere tekst " * 500) + "\nBouwjaar: 1931\n",
+            },
+        ]
+
+        selected_text, debug = processor._build_selected_chunks_text(chunks, fields, max_chars=1600)
+
+        assert len(selected_text) <= 1600
+        assert "Bouwjaar" in selected_text
+        assert debug[0]["included_chars"] < debug[0]["original_chars"]
+
+    def test_clip_prefers_metadata_table_block_over_later_explanation(self, processor):
+        """Clipping should preserve the real data block before later label explanations."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        data_block = (
+            "Objectgegevens:\n"
+            "Type woning: Etage-portiekwoning\n"
+            "Onderdelen Bouwjaar Oppervlakte (m²) Aantal\n"
+            "Woning 1930 62\n"
+            "Balkon/terras 1930 3\n"
+        )
+        text = (
+            "Intro tekst\n" * 30
+            + data_block
+            + "Algemene toelichting\n" * 80
+            + "Bouwjaar: Het bouwjaar van uw woning wordt gebruikt voor uitleg.\n"
+            + "Oppervlakte: De oppervlakte is een definitie zonder concrete waarde.\n"
+        )
+        chunks = [{"chunk_num": 1, "page": 0, "part": 0, "text": text}]
+
+        selected_text, _ = processor._build_selected_chunks_text(chunks, fields, max_chars=2200)
+
+        assert data_block.strip() in selected_text
+        assert "Bouwjaar: Het bouwjaar van uw woning" not in selected_text
+
+    def test_score_metadata_chunk_prefers_concrete_value_context_over_explanation(self, processor):
+        """A label with concrete values should beat a definition-only label chunk."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        field_terms = processor._build_field_search_terms(fields)
+
+        data_score = processor._score_metadata_chunk({
+            "chunk_num": 1,
+            "page": 0,
+            "part": 0,
+            "text": "Onderdelen Bouwjaar Oppervlakte (m²) Aantal\nWoning 1930 62",
+        }, field_terms)
+        explanation_score = processor._score_metadata_chunk({
+            "chunk_num": 2,
+            "page": 1,
+            "part": 0,
+            "text": "Bouwjaar: Het bouwjaar van uw woning wordt gebruikt voor algemene uitleg.",
+        }, field_terms)
+
+        assert data_score["score"] > explanation_score["score"]
+        assert data_score["score"] >= 70
+        assert data_score["field_matches"]["bouwjaar"]["value_score"] > 0
+        assert explanation_score["field_matches"]["bouwjaar"]["value_score"] == 0
+
+    def test_select_relevant_metadata_chunks_rejects_explanation_only_labels(self, processor):
+        """Definition-only label chunks should not beat concrete table value chunks."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        chunks = [
+            {
+                "chunk_num": 1,
+                "page": 0,
+                "part": 0,
+                "text": (
+                    "Objectgegevens:\n"
+                    "Type woning: Etage-portiekwoning\n"
+                    "Onderdelen Bouwjaar Oppervlakte (m²) Aantal\n"
+                    "Woning 1930 62\n"
+                    "Balkon/terras 1930 3\n"
+                ),
+            },
+            {
+                "chunk_num": 2,
+                "page": 1,
+                "part": 0,
+                "text": (
+                    "Bouwjaar: Het bouwjaar van uw woning is van belang voor de uitleg.\n"
+                    "Oppervlakte: Bij het bepalen van de oppervlakte geldt algemene toelichting.\n"
+                ),
+            },
+        ]
+
+        selected, debug = processor._select_relevant_metadata_chunks(chunks, fields)
+
+        selected_nums = [chunk["chunk_num"] for chunk in selected]
+        assert 1 in selected_nums
+        assert 2 not in selected_nums
+        skipped_explanation = next(item for item in debug["skipped_chunks"] if item["chunk_num"] == 2)
+        assert skipped_explanation["rejected_as_explanation_only"] is True
+
+    def test_build_selected_chunks_text_keeps_short_full_page_with_objectgegevens(self, processor):
+        """Short selected pages should be sent whole so table context before labels is preserved."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        expected_block = (
+            "Objectgegevens:\n"
+            "Type woning: Etage-portiekwoning\n"
+            "Onderdelen Bouwjaar Oppervlakte (m²) Aantal\n"
+            "Woning 1930 62\n"
+            "Balkon/terras 1930 3\n"
+        )
+        chunks = [{"chunk_num": 1, "page": 0, "part": 0, "text": expected_block + "\nExtra korte context"}]
+
+        selected_text, _ = processor._build_selected_chunks_text(chunks, fields, max_chars=3500)
+
+        assert expected_block.strip() in selected_text
+        assert "SYSTEM CHUNK METADATA, NOT DOCUMENT CONTENT" in selected_text
+        assert "DOCUMENT CHUNK TEXT:" in selected_text
+
+    def test_normalize_candidate_chunk_result_repairs_table_evidence(self, processor):
+        """Header-only table evidence should be expanded around the value in chunk text."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte (m2)", "number", False, None, None),
+        ]
+        chunk_text = (
+            "Objectgegevens:\n"
+            "Type woning: Etage-portiekwoning\n"
+            "Onderdelen\n"
+            "Bouwjaar\n"
+            "Oppervlakte (m²)\n"
+            "Aantal\n"
+            "Woning\n"
+            "1930\n"
+            "62\n"
+            "Balkon/terras\n"
+            "1930\n"
+            "3\n"
+        )
+        chunk_result = {
+            "candidates": {
+                "bouwjaar": [{
+                    "value": "1930",
+                    "normalized_value": "1930",
+                    "unit": None,
+                    "evidence": "Onderdelen\nBouwjaar\nOppervlakte (m²)",
+                    "chunk_index": 0,
+                    "confidence": 90,
+                    "evidence_type": "table_context",
+                    "record_role": "unknown",
+                }],
+                "oppervlakte_m2": [{
+                    "value": "62",
+                    "normalized_value": "62",
+                    "unit": "m2",
+                    "evidence": "Onderdelen\nBouwjaar\nOppervlakte (m²)",
+                    "chunk_index": 0,
+                    "confidence": 90,
+                    "evidence_type": "table_context",
+                    "record_role": "unknown",
+                }],
+            },
+        }
+
+        normalized = processor._normalize_candidate_chunk_result(chunk_result, fields, 1, chunk_text)
+        resolved = processor._resolve_chunk_candidate_results([(1, normalized)], fields)
+        repaired_bouwjaar = normalized["candidates"]["bouwjaar"][0]
+        repaired_oppervlakte = normalized["candidates"]["oppervlakte_m2"][0]
+
+        assert "Woning" in repaired_bouwjaar["evidence"]
+        assert "1930" in repaired_bouwjaar["evidence"]
+        assert "62" in repaired_oppervlakte["evidence"]
+        assert repaired_bouwjaar["evidence_repair"]["repair_reason"] == "value_found_nearby_in_chunk"
+        assert resolved["data"]["bouwjaar"] == "1930"
+        assert resolved["data"]["oppervlakte_m2"] == "62"
+
     def test_candidate_resolver_keeps_primary_table_values(self, processor):
         """Primary table candidates should beat later repeated records."""
         fields = [
@@ -513,6 +822,43 @@ class TestDocumentProcessor:
         assert resolved["data"]["code"] == "A-42"
         assert resolved["rejected_candidates"]["code"][0]["value"] == "X-1"
 
+    def test_candidate_resolver_rejects_invalid_high_confidence_year(self, processor):
+        """High LLM confidence must not rescue an invalid field type."""
+        fields = [("bouwjaar", "Bouwjaar", "number", False, None, r"\b\d{4}\b")]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "bouwjaar": [
+                        {
+                            "value": "26/03/2026",
+                            "normalized_value": "26/03/2026",
+                            "unit": None,
+                            "evidence": "Bouwjaar: 26/03/2026",
+                            "chunk_index": 0,
+                            "confidence": 99,
+                            "evidence_type": "exact_label",
+                            "record_role": "primary",
+                        },
+                        {
+                            "value": "1930",
+                            "normalized_value": "1930",
+                            "unit": None,
+                            "evidence": "Bouwjaar: 1930",
+                            "chunk_index": 0,
+                            "confidence": 70,
+                            "evidence_type": "exact_label",
+                            "record_role": "unknown",
+                        },
+                    ],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields)
+
+        assert resolved["data"]["bouwjaar"] == "1930"
+        assert resolved["rejected_candidates"]["bouwjaar"][0]["rejection_reason"] == "year_value_looks_like_date"
+
     def test_chunk_prompt_requests_candidates_without_regex_instruction(self, processor):
         """Chunk extraction prompt should request candidates and avoid regex instructions."""
         fields = [("code", "Code", "text", False, None, r"CODE-\d+")]
@@ -526,8 +872,207 @@ class TestDocumentProcessor:
         )
 
         assert '"candidates": {"code": []}' in prompt
-        assert "Extract candidate values only" in prompt
+        assert "Return possible candidates per field only" in prompt
+        assert "Give possible candidates only" in prompt
+        assert "Only return candidates that really occur in this chunk" in prompt
+        assert "Do not create placeholder candidates" in prompt
         assert "Do not use regex as the extraction method" in prompt
+        assert "Pattern:" not in prompt
+
+    def test_normalize_candidate_chunk_result_converts_legacy_data_output(self, processor):
+        """Legacy data/evidence chunk output should become resolver candidates."""
+        fields = [("code", "Code", "text", False, None, None)]
+        chunk_result = {
+            "data": {"code": "A-42"},
+            "evidence": {"code": [{"page": 0, "start": 0, "end": 10, "quote": "Code: A-42"}]},
+        }
+
+        normalized = processor._normalize_candidate_chunk_result(chunk_result, fields, chunk_num=2)
+
+        candidate = normalized["candidates"]["code"][0]
+        assert candidate["value"] == "A-42"
+        assert candidate["evidence"] == "Code: A-42"
+        assert candidate["chunk_index"] == 1
+        assert candidate["record_role"] == "unknown"
+
+    def test_candidate_resolver_rejects_placeholder_candidates(self, processor):
+        """Placeholder candidates should stay empty and resolve to null."""
+        fields = [("energielabel", "Energielabel", "text", False, None, None)]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "energylabel": [{
+                        "value": "",
+                        "normalized_value": "",
+                        "unit": None,
+                        "evidence": "niet opgenomen in chunk",
+                        "chunk_index": 0,
+                        "confidence": 50,
+                        "evidence_type": "ambiguous",
+                        "record_role": "background",
+                    }],
+                },
+            }),
+        ]
+
+        normalized = processor._normalize_candidate_chunk_result(chunk_results[0][1], fields, chunk_num=1)
+        resolved = processor._resolve_chunk_candidate_results([(1, normalized)], fields)
+
+        assert normalized["candidates"]["energielabel"] == []
+        assert resolved["data"]["energielabel"] is None
+
+    def test_candidate_resolver_prefers_stronger_later_evidence(self, processor):
+        """A later candidate can win when its evidence score is stronger."""
+        fields = [("value", "Value", "text", False, None, None)]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "Value: first\n\nValue: second",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "value": [{
+                        "value": "first",
+                        "normalized_value": "first",
+                        "unit": None,
+                        "evidence": "Value: first",
+                        "chunk_index": 0,
+                        "confidence": 70,
+                        "evidence_type": "nearby_label",
+                        "record_role": "primary",
+                    }],
+                },
+            }),
+            (2, {
+                "candidates": {
+                    "value": [{
+                        "value": "second",
+                        "normalized_value": "second",
+                        "unit": None,
+                        "evidence": "Value: second",
+                        "chunk_index": 1,
+                        "confidence": 90,
+                        "evidence_type": "exact_label",
+                        "record_role": "primary",
+                    }],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields, pages)
+
+        assert resolved["data"]["value"] == "second"
+
+    def test_candidate_resolver_expected_generic_document_shape(self, processor):
+        """Resolver should produce the expected generic final data shape."""
+        fields = [
+            ("bouwjaar", "Bouwjaar", "number", False, None, None),
+            ("energylabel", "Energielabel", "text", False, None, None),
+            ("oppervlakte_m2", "Oppervlakte", "number", False, None, None),
+            ("locatie_beoordeling", "Locatie", "text", False, None, None),
+        ]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "Attributes: bouwjaar oppervlakte_m2\nMain 1930 62\n\nniet opgenomen in chunk",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "bouwjaar": [{
+                        "value": "1930",
+                        "normalized_value": "1930",
+                        "unit": None,
+                        "evidence": "Main 1930 62",
+                        "chunk_index": 0,
+                        "confidence": 90,
+                        "evidence_type": "table_context",
+                        "record_role": "primary",
+                    }],
+                    "energylabel": [{
+                        "value": "",
+                        "normalized_value": "",
+                        "unit": None,
+                        "evidence": "niet opgenomen in chunk",
+                        "chunk_index": 0,
+                        "confidence": 50,
+                        "evidence_type": "ambiguous",
+                        "record_role": "background",
+                    }],
+                    "oppervlakte_m2": [{
+                        "value": "62",
+                        "normalized_value": "62",
+                        "unit": "m2",
+                        "evidence": "Main 1930 62",
+                        "chunk_index": 0,
+                        "confidence": 90,
+                        "evidence_type": "table_context",
+                        "record_role": "primary",
+                    }],
+                    "locatie_beoordeling": [],
+                },
+            }),
+        ]
+
+        normalized = processor._normalize_candidate_chunk_result(chunk_results[0][1], fields, chunk_num=1)
+        resolved = processor._resolve_chunk_candidate_results([(1, normalized)], fields, pages)
+
+        assert resolved["data"] == {
+            "bouwjaar": "1930",
+            "energielabel": None,
+            "oppervlakte_m2": "62",
+            "locatie_beoordeling": None,
+        }
+
+    def test_candidate_resolver_uses_regex_only_for_validation(self, processor):
+        """Regex should reject invalid candidates without being used in the prompt."""
+        fields = [("code", "Code", "text", False, None, r"^CODE-\d+$")]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "Code: OTHER-123\nCode: CODE-456",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "code": [
+                        {
+                            "value": "OTHER-123",
+                            "normalized_value": "OTHER-123",
+                            "unit": None,
+                            "evidence": "Code: OTHER-123",
+                            "chunk_index": 0,
+                            "confidence": 95,
+                            "evidence_type": "exact_label",
+                            "record_role": "primary",
+                        },
+                        {
+                            "value": "CODE-456",
+                            "normalized_value": "CODE-456",
+                            "unit": None,
+                            "evidence": "Code: CODE-456",
+                            "chunk_index": 0,
+                            "confidence": 80,
+                            "evidence_type": "exact_label",
+                            "record_role": "primary",
+                        },
+                    ],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields, pages)
+        prompt = processor._build_extraction_prompt(
+            fields,
+            "Code: CODE-456",
+            "generic-document",
+            chunk_num=1,
+            total_chunks=1,
+        )
+
+        assert resolved["data"]["code"] == "CODE-456"
+        assert resolved["rejected_candidates"]["code"][0]["rejected_reason"] == "regex_mismatch"
         assert "Pattern:" not in prompt
 
     def test_evidence_supported_by_text_exact_match(self, processor):

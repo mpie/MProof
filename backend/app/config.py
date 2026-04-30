@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # Ollama Configuration
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:3b"
+    ollama_model: str = "mistral:latest"
     ollama_timeout: float = 180.0
     ollama_max_retries: int = 3
     ollama_max_tokens: int = 8192  # Ollama handles this better

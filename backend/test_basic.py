@@ -29,6 +29,7 @@ from sqlalchemy.orm import sessionmaker
 async def test_database():
     """Test database connection and setup."""
     print("Testing database connection...")
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
     engine = create_async_engine(settings.database_url, echo=False)
 
