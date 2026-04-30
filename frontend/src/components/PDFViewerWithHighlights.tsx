@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faSearchPlus, faSearchMinus, faExpand, faChevronLeft, faChevronRight, faHighlighter, faEye, faEyeSlash, faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
+import { faSearchPlus, faSearchMinus, faExpand, faChevronLeft, faChevronRight, faHighlighter, faEyeSlash, faChevronDown, faChevronUp } from '@fortawesome/free-solid-svg-icons';
 
 interface EvidenceItem {
   page: number;
@@ -12,9 +12,12 @@ interface EvidenceItem {
   quote: string;
 }
 
+interface EvidenceQuote extends EvidenceItem {
+  fieldName: string;
+}
+
 interface PageEvidence {
-  items: EvidenceItem[];
-  charRanges: Array<{ start: number; end: number }>;
+  items: EvidenceQuote[];
 }
 
 interface PDFViewerWithHighlightsProps {
@@ -41,11 +44,9 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
     }
   }, []);
 
-  // Collect evidence per page with start/end positions
+  // Collect evidence per page. The UI highlights by quote text, not by OCR offsets.
   useEffect(() => {
     const evidencePerPage = new Map<number, PageEvidence>();
-    
-    console.log('[PDFViewer] Processing evidence:', evidence);
     
     Object.entries(evidence).forEach(([fieldName, items]) => {
       if (Array.isArray(items)) {
@@ -54,25 +55,21 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
             // Handle both number and string page values, convert 0-indexed to 1-indexed
             const rawPage = typeof item.page === 'string' ? parseInt(item.page, 10) : item.page;
             const pageNum = rawPage + 1;
-            
-            console.log(`[PDFViewer] Field "${fieldName}" -> page ${rawPage} (display: ${pageNum}), start: ${item.start}, end: ${item.end}`);
+            const evidenceItem = { ...item, fieldName };
             
             const existing = evidencePerPage.get(pageNum);
             if (existing) {
-              existing.items.push(item);
-              existing.charRanges.push({ start: item.start, end: item.end });
+              existing.items.push(evidenceItem);
             } else {
               evidencePerPage.set(pageNum, {
-                items: [item],
-                charRanges: [{ start: item.start, end: item.end }]
+                items: [evidenceItem],
               });
             }
           }
         });
       }
     });
-    
-    console.log('[PDFViewer] Pages with evidence:', Array.from(evidencePerPage.keys()));
+
     setPageEvidence(evidencePerPage);
   }, [evidence]);
 
@@ -101,7 +98,8 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
   const goToPrevPage = () => setCurrentPage(p => Math.max(p - 1, 1));
   const goToNextPage = () => setCurrentPage(p => Math.min(p + 1, numPages));
 
-  // Apply highlights to text layer after rendering using start/end positions
+  // Apply highlights to text layer after rendering. Prefer quote matching over OCR offsets,
+  // because OCR offsets often do not line up with React-PDF's text layer.
   useEffect(() => {
     const pageEv = pageEvidence.get(currentPage);
     
@@ -113,23 +111,21 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
       const textLayer = pageElement.querySelector('.react-pdf__Page__textContent');
       if (!textLayer) return;
       
-      // First, remove all existing highlights by restoring original text
+      // First, remove existing highlights by restoring original text
       const allSpans = textLayer.querySelectorAll('span, mark');
       allSpans.forEach((element: Element) => {
         if (element.tagName === 'MARK' && element.classList.contains('pdf-highlight')) {
-          // Replace mark with its text content
           const parent = element.parentNode;
           if (parent) {
             const textNode = document.createTextNode(element.textContent || '');
             parent.replaceChild(textNode, element);
-            // Normalize to merge adjacent text nodes
             parent.normalize();
           }
         }
       });
       
       // If highlights are disabled, we're done
-      if (!showHighlights || !pageEv || pageEv.charRanges.length === 0) return;
+      if (!showHighlights || !pageEv || pageEv.items.length === 0) return;
       
       // Collect all text spans and calculate their character positions
       const spans = textLayer.querySelectorAll('span');
@@ -145,34 +141,123 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
           cumulativePos = end;
         }
       });
-      
-      // Apply highlights based on evidence ranges
-      pageEv.charRanges.forEach(range => {
-        textRanges.forEach(({ span, start, end, originalText }) => {
-          // Check if this span overlaps with the evidence range
-          if (range.start < end && range.end > start) {
-            const highlightStart = Math.max(0, range.start - start);
-            const highlightEnd = Math.min(originalText.length, range.end - start);
-            
-            if (highlightStart < highlightEnd && span.textContent === originalText) {
-              // Only apply if span hasn't been modified yet
-              const before = originalText.substring(0, highlightStart);
-              const matched = originalText.substring(highlightStart, highlightEnd);
-              const after = originalText.substring(highlightEnd);
-              
-              // Create highlight wrapper
-              const highlightSpan = document.createElement('mark');
-              highlightSpan.className = 'pdf-highlight';
-              highlightSpan.textContent = matched;
-              
-              // Replace the span content
-              span.textContent = '';
-              if (before) span.appendChild(document.createTextNode(before));
-              span.appendChild(highlightSpan);
-              if (after) span.appendChild(document.createTextNode(after));
+
+      const pageText = textRanges.map(range => range.originalText).join('');
+      const normalizeWithMap = (value: string) => {
+        let normalized = '';
+        const indexMap: number[] = [];
+        let previousWasSpace = false;
+
+        Array.from(value).forEach((char, index) => {
+          if (/\s/.test(char)) {
+            if (!previousWasSpace && normalized.length > 0) {
+              normalized += ' ';
+              indexMap.push(index);
+            }
+            previousWasSpace = true;
+            return;
+          }
+
+          normalized += char.toLowerCase();
+          indexMap.push(index);
+          previousWasSpace = false;
+        });
+
+        return { normalized: normalized.trim(), indexMap };
+      };
+
+      const normalizedPage = normalizeWithMap(pageText);
+      const usedRanges: Array<{ start: number; end: number }> = [];
+      const highlightRanges: Array<{ start: number; end: number }> = [];
+
+      const overlapsUsedRange = (start: number, end: number) =>
+        usedRanges.some(range => start < range.end && end > range.start);
+
+      const reserveRange = (start: number, end: number) => {
+        usedRanges.push({ start, end });
+        highlightRanges.push({ start, end });
+      };
+
+      const findAvailableIndex = (text: string, search: string) => {
+        let start = text.indexOf(search);
+        while (start >= 0) {
+          const end = start + search.length;
+          if (!overlapsUsedRange(start, end)) return start;
+          start = text.indexOf(search, start + 1);
+        }
+
+        return -1;
+      };
+
+      pageEv.items.forEach(item => {
+        const quote = item.quote?.trim();
+        let matchStart = -1;
+        let matchEnd = -1;
+
+        if (quote) {
+          const exactStart = findAvailableIndex(pageText, quote);
+          if (exactStart >= 0) {
+            matchStart = exactStart;
+            matchEnd = exactStart + quote.length;
+          } else {
+            const lowerStart = findAvailableIndex(pageText.toLowerCase(), quote.toLowerCase());
+            if (lowerStart >= 0) {
+              matchStart = lowerStart;
+              matchEnd = lowerStart + quote.length;
+            } else {
+              const normalizedQuote = normalizeWithMap(quote).normalized;
+              let normalizedStart = normalizedQuote ? normalizedPage.normalized.indexOf(normalizedQuote) : -1;
+              while (normalizedStart >= 0) {
+                const rawStart = normalizedPage.indexMap[normalizedStart];
+                const rawEnd = normalizedPage.indexMap[normalizedStart + normalizedQuote.length - 1] + 1;
+                if (!overlapsUsedRange(rawStart, rawEnd)) {
+                  matchStart = rawStart;
+                  matchEnd = rawEnd;
+                  break;
+                }
+
+                normalizedStart = normalizedPage.normalized.indexOf(normalizedQuote, normalizedStart + 1);
+              }
             }
           }
+        } else if (item.start > 0 && item.end > item.start) {
+          matchStart = item.start;
+          matchEnd = item.end;
+        }
+
+        if (matchStart >= 0 && matchEnd > matchStart) {
+          reserveRange(matchStart, matchEnd);
+        }
+      });
+
+      textRanges.forEach(({ span, start, end, originalText }) => {
+        const localRanges = highlightRanges
+          .filter(range => range.start < end && range.end > start)
+          .map(range => ({
+            start: Math.max(0, range.start - start),
+            end: Math.min(originalText.length, range.end - start),
+          }))
+          .sort((a, b) => a.start - b.start);
+
+        if (localRanges.length === 0 || span.textContent !== originalText) return;
+
+        span.textContent = '';
+        let cursor = 0;
+        localRanges.forEach(range => {
+          if (range.start > cursor) {
+            span.appendChild(document.createTextNode(originalText.substring(cursor, range.start)));
+          }
+
+          const highlightSpan = document.createElement('mark');
+          highlightSpan.className = 'pdf-highlight';
+          highlightSpan.textContent = originalText.substring(range.start, range.end);
+          span.appendChild(highlightSpan);
+          cursor = range.end;
         });
+
+        if (cursor < originalText.length) {
+          span.appendChild(document.createTextNode(originalText.substring(cursor)));
+        }
       });
     }, 150);
     
@@ -180,7 +265,7 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
   }, [currentPage, pageEvidence, showHighlights]);
 
   const currentPageEv = pageEvidence.get(currentPage);
-  const currentPageQuotes = currentPageEv?.items.map(item => item.quote) || [];
+  const currentPageItems = currentPageEv?.items || [];
 
   return (
     <div className="flex flex-col h-full bg-gray-900" ref={containerRef}>
@@ -249,9 +334,9 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
             >
               <FontAwesomeIcon icon={showHighlights ? faHighlighter : faEyeSlash} className="w-4 h-4" />
             </button>
-            {currentPageQuotes.length > 0 && (
+            {currentPageItems.length > 0 && (
               <span className="text-white/60 text-xs">
-                {currentPageQuotes.length}
+                {currentPageItems.length}
               </span>
             )}
           </div>
@@ -259,22 +344,22 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
       </div>
 
       {/* PDF Content */}
-      <div className="flex-1 overflow-auto p-4 flex justify-center">
-        <Document
-          file={url}
-          onLoadSuccess={onDocumentLoadSuccess}
-          loading={
-            <div className="flex items-center justify-center h-64">
-              <div className="text-white/60">PDF laden...</div>
-            </div>
-          }
-          error={
-            <div className="flex items-center justify-center h-64">
-              <div className="text-red-400">Fout bij laden van PDF</div>
-            </div>
-          }
-        >
-          <div className="relative">
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-auto p-4 flex justify-center">
+          <Document
+            file={url}
+            onLoadSuccess={onDocumentLoadSuccess}
+            loading={
+              <div className="flex items-center justify-center h-64">
+                <div className="text-white/60">PDF laden...</div>
+              </div>
+            }
+            error={
+              <div className="flex items-center justify-center h-64">
+                <div className="text-red-400">Fout bij laden van PDF</div>
+              </div>
+            }
+          >
             <Page
               pageNumber={currentPage}
               scale={scale}
@@ -283,48 +368,52 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
               renderAnnotationLayer={false}
               className="shadow-2xl"
             />
-            
-            {/* Evidence overlay - moved to top and made collapsible */}
-            {currentPageQuotes.length > 0 && (
-              <div className="absolute top-4 left-4 right-4 z-10">
-                <div className="bg-blue-500/20 backdrop-blur-sm rounded-lg border border-blue-500/40 overflow-hidden">
-                  <button
-                    onClick={() => setShowEvidenceOverlay(!showEvidenceOverlay)}
-                    className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-500/10 transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <FontAwesomeIcon icon={faHighlighter} className="text-blue-400 w-3.5 h-3.5" />
-                      <span className="text-white text-xs font-bold drop-shadow-lg" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.8), 0 0 8px rgba(0,0,0,0.6)' }}>
-                        Gevonden evidence ({currentPageQuotes.length})
-                      </span>
-                    </div>
-                    <FontAwesomeIcon 
-                      icon={showEvidenceOverlay ? faChevronUp : faChevronDown} 
-                      className="text-white/60 w-3 h-3" 
-                    />
-                  </button>
-                  {showEvidenceOverlay && (
-                    <div className="px-3 pb-3 pt-1 max-h-32 overflow-y-auto">
-                      <div className="flex flex-col gap-1.5">
-                        {currentPageQuotes.map((quote, i) => (
-                          <div 
-                            key={i} 
-                            className="text-[10px] bg-blue-500/30 text-white px-2 py-1.5 rounded border border-blue-500/40"
-                          >
-                            <span className="font-medium text-blue-200 drop-shadow-md" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>#{i + 1}:</span>{" "}
-                            <span className="text-white/90 drop-shadow-md" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
-                              {quote.length > 60 ? `"${quote.substring(0, 60)}..."` : `"${quote}"`}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+          </Document>
+        </div>
+
+        {currentPageItems.length > 0 && (
+          <aside className="lg:w-80 lg:max-w-80 max-h-48 lg:max-h-none overflow-hidden bg-gray-900/95 border-t lg:border-t-0 lg:border-l border-white/10">
+            <button
+              onClick={() => setShowEvidenceOverlay(!showEvidenceOverlay)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <FontAwesomeIcon icon={faHighlighter} className="text-blue-400 w-3.5 h-3.5 flex-shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-white text-sm font-semibold">Evidence op pagina {currentPage}</div>
+                  <div className="text-white/45 text-[11px]">{currentPageItems.length} bron{currentPageItems.length === 1 ? '' : 'nen'}</div>
                 </div>
               </div>
+              <FontAwesomeIcon 
+                icon={showEvidenceOverlay ? faChevronUp : faChevronDown} 
+                className="text-white/60 w-3 h-3 flex-shrink-0" 
+              />
+            </button>
+
+            {showEvidenceOverlay && (
+              <div className="px-4 pb-4 space-y-2 overflow-y-auto max-h-36 lg:max-h-[calc(100%-64px)]">
+                {currentPageItems.map((item, i) => (
+                  <div 
+                    key={`${item.fieldName}-${i}`}
+                    className="rounded-lg border border-blue-500/20 bg-blue-500/10 p-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-[10px] uppercase tracking-wide text-blue-300 font-semibold truncate">
+                        {item.fieldName.replace(/_/g, ' ')}
+                      </span>
+                      <span className="text-[10px] text-white/35 flex-shrink-0">
+                        #{i + 1}
+                      </span>
+                    </div>
+                    <p className="text-xs text-white/85 leading-relaxed break-words">
+                      "{item.quote.length > 140 ? `${item.quote.substring(0, 140)}...` : item.quote}"
+                    </p>
+                  </div>
+                ))}
+              </div>
             )}
-          </div>
-        </Document>
+          </aside>
+        )}
       </div>
 
       {/* Page thumbnails / quick nav for pages with highlights */}

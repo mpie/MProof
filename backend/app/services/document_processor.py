@@ -2243,6 +2243,7 @@ Respond with JSON only:
 
         # Build schema
         schema = self._build_extraction_schema(fields)
+        chunk_schema = self._build_extraction_schema(fields, include_context_type=True)
         
         llm_dir = document_dir / "llm"
         llm_dir.mkdir(exist_ok=True)
@@ -2280,6 +2281,9 @@ Respond with JSON only:
             # Update progress to show parallel extraction starting
             await self._update_progress(document.id, EXTRACTION_START, f"extracting_metadata_parallel_{total_chunks}_chunks", progress_callback)
             
+            with open(llm_dir / "extraction_schema_chunk.json", "w", encoding="utf-8") as f:
+                json.dump(chunk_schema, f, indent=2, ensure_ascii=False)
+            
             # Build all prompts first and save them
             prompts_and_schemas = []
             for i, chunk in enumerate(chunks):
@@ -2290,7 +2294,7 @@ Respond with JSON only:
                 with open(llm_dir / f"extraction_prompt_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
                     f.write(prompt)
                 
-                prompts_and_schemas.append((chunk_num, prompt, schema))
+                prompts_and_schemas.append((chunk_num, prompt, chunk_schema))
             
             # Process all chunks in parallel
             async def process_chunk(chunk_num: int, prompt: str, schema: dict):
@@ -2302,7 +2306,8 @@ Respond with JSON only:
                     # Log what was found in this chunk
                     if chunk_result and "data" in chunk_result:
                         found_fields = [k for k, v in chunk_result["data"].items() if v is not None]
-                        logger.info(f"Chunk {chunk_num}: found {len(found_fields)} fields: {found_fields}")
+                        context_type = self._normalize_chunk_context_type(chunk_result.get("context_type"))
+                        logger.info(f"Chunk {chunk_num}: context={context_type}, found {len(found_fields)} fields: {found_fields}")
                     
                     # Save chunk response
                     with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
@@ -2335,7 +2340,7 @@ Respond with JSON only:
             
             for chunk_num, chunk_result, chunk_response_text, chunk_duration, error in parallel_results:
                 if error is None and chunk_result is not None:
-                    all_results.append(chunk_result)
+                    all_results.append((chunk_num, chunk_result))
                     chunk_responses.append(chunk_response_text)
                     chunk_durations.append(chunk_duration)
                 else:
@@ -2349,15 +2354,19 @@ Respond with JSON only:
             # Merge all chunk results
             if all_results:
                 logger.info(f"Merging {len(all_results)} chunk results")
-                result = self.llm._merge_json_objects(all_results)
+                result = self._merge_chunk_extraction_results(all_results, fields)
                 if result is None:
                     logger.warning("Failed to merge chunk results, using first chunk")
-                    result = all_results[0]
+                    result = all_results[0][1]
                 else:
                     # Log merged result
                     if "data" in result:
                         merged_fields = [k for k, v in result["data"].items() if v is not None]
                         logger.info(f"Merged result: {len(merged_fields)} fields with values: {merged_fields}")
+                    rejected_candidates = result.get("rejected_candidates", {})
+                    if rejected_candidates:
+                        rejected_count = sum(len(candidates) for candidates in rejected_candidates.values())
+                        logger.info(f"Rejected {rejected_count} lower-priority chunk candidates during merge")
                 
                 # Ensure all expected fields are present in merged result
                 expected_field_keys = [key for key, _, _, _, _, _ in fields]
@@ -2412,6 +2421,9 @@ Respond with JSON only:
                 # Save merged result
                 with open(llm_dir / "extraction_result.json", "w", encoding="utf-8") as f:
                     json.dump(self._json_serialize(result), f, indent=2, ensure_ascii=False)
+                if isinstance(result, dict) and result.get("rejected_candidates"):
+                    with open(llm_dir / "extraction_rejected_candidates.json", "w", encoding="utf-8") as f:
+                        json.dump(self._json_serialize(result["rejected_candidates"]), f, indent=2, ensure_ascii=False)
             else:
                 raise Exception("All chunk extractions failed")
         else:
@@ -2834,7 +2846,114 @@ Respond with JSON only:
         await self._update_progress(document.id, 85, "extracting_metadata_complete", progress_callback)
         return evidence_data
 
-    def _build_extraction_schema(self, fields: List[Tuple]) -> Dict[str, Any]:
+    def _normalize_chunk_context_type(self, context_type: Any) -> str:
+        """Normalize chunk context labels for generic multi-chunk merging."""
+        if isinstance(context_type, str):
+            normalized = context_type.strip().lower()
+            if normalized in {"primary_record", "related_record", "background_text", "unknown"}:
+                return normalized
+
+        return "unknown"
+
+    def _chunk_context_priority(self, context_type: Any) -> int:
+        """Return merge priority for a chunk context."""
+        priorities = {
+            "primary_record": 100,
+            "unknown": 50,
+            "related_record": 10,
+            "background_text": 0,
+        }
+        return priorities[self._normalize_chunk_context_type(context_type)]
+
+    def _merge_chunk_extraction_results(
+        self,
+        chunk_results: List[Tuple[int, Dict[str, Any]]],
+        fields: List[Tuple],
+    ) -> Optional[Dict[str, Any]]:
+        """Merge chunk extraction results by generic record-context priority."""
+        if not chunk_results:
+            return None
+
+        expected_field_keys = [key for key, _, _, _, _, _ in fields]
+        merged_data = {field_key: None for field_key in expected_field_keys}
+        merged_evidence = {field_key: [] for field_key in expected_field_keys}
+        selected_candidates: Dict[str, Dict[str, Any]] = {}
+        rejected_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        chunk_contexts = []
+
+        for chunk_num, chunk_result in chunk_results:
+            if not isinstance(chunk_result, dict):
+                continue
+
+            context_type = self._normalize_chunk_context_type(chunk_result.get("context_type"))
+            priority = self._chunk_context_priority(context_type)
+            chunk_contexts.append({
+                "chunk": chunk_num,
+                "context_type": context_type,
+                "priority": priority,
+            })
+
+            data = chunk_result.get("data", {})
+            evidence = chunk_result.get("evidence", {})
+            if not isinstance(data, dict):
+                continue
+            if not isinstance(evidence, dict):
+                evidence = {}
+
+            for field_key in expected_field_keys:
+                value = data.get(field_key)
+                if value is None:
+                    continue
+
+                candidate = {
+                    "chunk": chunk_num,
+                    "context_type": context_type,
+                    "priority": priority,
+                    "value": value,
+                    "evidence": evidence.get(field_key, []),
+                }
+                current = selected_candidates.get(field_key)
+
+                if (
+                    current is None
+                    or priority > current["priority"]
+                    or (priority == current["priority"] and chunk_num < current["chunk"])
+                ):
+                    if current is not None:
+                        rejected_candidates.setdefault(field_key, []).append(current)
+                    selected_candidates[field_key] = candidate
+                else:
+                    rejected_candidates.setdefault(field_key, []).append(candidate)
+
+        for field_key, candidate in selected_candidates.items():
+            merged_data[field_key] = candidate["value"]
+            merged_evidence[field_key] = candidate["evidence"]
+
+        chosen_context_type = "unknown"
+        if selected_candidates:
+            best_candidate = max(
+                selected_candidates.values(),
+                key=lambda candidate: (candidate["priority"], -candidate["chunk"]),
+            )
+            chosen_context_type = best_candidate["context_type"]
+        elif chunk_contexts:
+            best_context = max(
+                chunk_contexts,
+                key=lambda candidate: (candidate["priority"], -candidate["chunk"]),
+            )
+            chosen_context_type = best_context["context_type"]
+
+        result = {
+            "context_type": chosen_context_type,
+            "data": merged_data,
+            "evidence": merged_evidence,
+        }
+        if rejected_candidates:
+            result["rejected_candidates"] = rejected_candidates
+
+        return result
+
+    def _build_extraction_schema(self, fields: List[Tuple], include_context_type: bool = False) -> Dict[str, Any]:
         """Build JSON schema for metadata extraction."""
         properties = {}
         required = []
@@ -2870,21 +2989,32 @@ Respond with JSON only:
                 }
             }
 
+        schema_required = ["data", "evidence"]
+        schema_properties = {
+            "data": {
+                "type": "object",
+                "properties": properties,
+                "required": required
+            },
+            "evidence": {
+                "type": "object",
+                "properties": evidence_properties,
+                "required": list(evidence_properties.keys())
+            }
+        }
+
+        if include_context_type:
+            schema_required.insert(0, "context_type")
+            schema_properties["context_type"] = {
+                "type": "string",
+                "enum": ["primary_record", "related_record", "background_text", "unknown"],
+                "description": "Classifies whether this chunk describes the document's primary record, a related record, background text, or unclear context."
+            }
+
         return {
             "type": "object",
-            "required": ["data", "evidence"],
-            "properties": {
-                "data": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required
-                },
-                "evidence": {
-                    "type": "object",
-                    "properties": evidence_properties,
-                    "required": list(evidence_properties.keys())
-                }
-            }
+            "required": schema_required,
+            "properties": schema_properties
         }
 
     def _build_extraction_prompt(self, fields: List[Tuple], text: str, doc_type: str, preamble: str = "", chunk_num: int = None, total_chunks: int = None) -> str:
@@ -2931,9 +3061,17 @@ Respond with JSON only:
         
         # Add chunk info if multi-chunk
         chunk_info = ""
+        is_chunk = bool(chunk_num and total_chunks)
         if chunk_num and total_chunks:
             chunk_info = f"""
 NOTE: This is chunk {chunk_num} of {total_chunks} of a large document. 
+- Classify the chunk:
+  - primary_record if the text describes the main subject of the document.
+  - related_record if the text describes other objects, people, companies, transactions, references, attachments, examples, historical records, or related entities.
+  - background_text if the text only contains explanations, definitions, conditions, general rules, or disclaimers.
+  - unknown if the context is unclear.
+- Extract only values that belong to the main subject of the document.
+- If this chunk clearly describes related_record or background_text, return null for business fields.
 - Extract metadata from this chunk using both text and table structure.
 - A field may be present through column headers, row labels, or nearby section titles.
 - When a table row contains values without repeated labels, map the values to the nearest preceding column headers.
@@ -2946,6 +3084,11 @@ NOTE: This is chunk {chunk_num} of {total_chunks} of a large document.
         
         # Build a concrete JSON template with the actual field names
         data_template = ", ".join([f'"{k}": null' for k in field_keys])
+        json_template = f'{{"data": {{{data_template}}}, "evidence": {{}}}}'
+        context_type_note = ""
+        if is_chunk:
+            json_template = f'{{"context_type": "unknown", "data": {{{data_template}}}, "evidence": {{}}}}'
+            context_type_note = "\n- Set context_type to exactly one of: primary_record, related_record, background_text, unknown"
         
         # Build field list for clarity
         field_list = ", ".join([f'"{k}"' for k in field_keys])
@@ -2963,10 +3106,10 @@ Document text:
 {text}
 
 Return JSON in this exact format (replace null with actual values, keep null if not found):
-{{"data": {{{data_template}}}, "evidence": {{}}}}
+{json_template}
 
 IMPORTANT:
-- Extract ALL fields listed above: {field_list}
+- Extract ALL fields listed above: {field_list}{context_type_note}
 - Replace null with the actual extracted value for each field
 - If a field is not found in the document, keep it as null
 - Do NOT add fields that are not in the list above
