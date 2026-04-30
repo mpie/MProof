@@ -2243,7 +2243,7 @@ Respond with JSON only:
 
         # Build schema
         schema = self._build_extraction_schema(fields)
-        chunk_schema = self._build_extraction_schema(fields, include_context_type=True)
+        chunk_schema = self._build_candidate_extraction_schema(fields)
         
         llm_dir = document_dir / "llm"
         llm_dir.mkdir(exist_ok=True)
@@ -2303,11 +2303,14 @@ Respond with JSON only:
                     logger.info(f"Starting parallel chunk {chunk_num}/{total_chunks}")
                     chunk_result, chunk_response_text, chunk_curl_command, chunk_duration = await self.llm.generate_json_with_raw(prompt, schema)
                     
-                    # Log what was found in this chunk
-                    if chunk_result and "data" in chunk_result:
-                        found_fields = [k for k, v in chunk_result["data"].items() if v is not None]
-                        context_type = self._normalize_chunk_context_type(chunk_result.get("context_type"))
-                        logger.info(f"Chunk {chunk_num}: context={context_type}, found {len(found_fields)} fields: {found_fields}")
+                    # Log candidate counts for this chunk. The resolver chooses final values later.
+                    if chunk_result and isinstance(chunk_result.get("candidates"), dict):
+                        candidate_counts = {
+                            key: len(value)
+                            for key, value in chunk_result["candidates"].items()
+                            if isinstance(value, list) and value
+                        }
+                        logger.info(f"Chunk {chunk_num}: candidate counts: {candidate_counts}")
                     
                     # Save chunk response
                     with open(llm_dir / f"extraction_response_chunk_{chunk_num}.txt", "w", encoding="utf-8") as f:
@@ -2354,10 +2357,10 @@ Respond with JSON only:
             # Merge all chunk results
             if all_results:
                 logger.info(f"Merging {len(all_results)} chunk results")
-                result = self._merge_chunk_extraction_results(all_results, fields)
+                result = self._resolve_chunk_candidate_results(all_results, fields, ocr_result.pages)
                 if result is None:
                     logger.warning("Failed to merge chunk results, using first chunk")
-                    result = all_results[0][1]
+                    result = self._empty_extraction_result(fields)
                 else:
                     # Log merged result
                     if "data" in result:
@@ -2846,114 +2849,368 @@ Respond with JSON only:
         await self._update_progress(document.id, 85, "extracting_metadata_complete", progress_callback)
         return evidence_data
 
-    def _normalize_chunk_context_type(self, context_type: Any) -> str:
-        """Normalize chunk context labels for generic multi-chunk merging."""
-        if isinstance(context_type, str):
-            normalized = context_type.strip().lower()
-            if normalized in {"primary_record", "related_record", "background_text", "unknown"}:
+    def _empty_extraction_result(self, fields: List[Tuple]) -> Dict[str, Any]:
+        """Build an empty extraction result for the configured field list."""
+        field_keys = [key for key, _, _, _, _, _ in fields]
+        return {
+            "data": {field_key: None for field_key in field_keys},
+            "evidence": {field_key: [] for field_key in field_keys},
+        }
+
+    def _normalize_candidate_label(self, value: Any, allowed_values: Set[str], default: str) -> str:
+        """Normalize a bounded candidate label returned by the LLM."""
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in allowed_values:
                 return normalized
 
-        return "unknown"
+        return default
 
-    def _chunk_context_priority(self, context_type: Any) -> int:
-        """Return merge priority for a chunk context."""
-        priorities = {
-            "primary_record": 100,
-            "unknown": 50,
-            "related_record": 10,
-            "background_text": 0,
+    def _candidate_value_is_empty(self, value: Any) -> bool:
+        """Return whether a candidate value is empty or a placeholder."""
+        if value is None:
+            return True
+
+        value_str = str(value).strip()
+        if not value_str:
+            return True
+
+        placeholder_values = {
+            "null",
+            "none",
+            "n/a",
+            "na",
+            "not found",
+            "not_found",
+            "niet gevonden",
+            "unknown",
+            "onbekend",
+            "-",
+            "--",
         }
-        return priorities[self._normalize_chunk_context_type(context_type)]
+        return value_str.lower() in placeholder_values
 
-    def _merge_chunk_extraction_results(
+    def _candidate_fits_field_type(self, value: Any, field_type: str, enum_values: Any) -> bool:
+        """Validate a candidate value against the configured field type."""
+        if self._candidate_value_is_empty(value):
+            return False
+
+        if field_type == "number":
+            return self._parse_amount(value) is not None
+        if field_type == "date":
+            return self._parse_date(value) is not None
+        if field_type == "iban":
+            return self._validate_iban(str(value))
+        if field_type == "enum" and enum_values:
+            value_str = str(value).strip().lower()
+            return any(value_str == str(enum_value).strip().lower() for enum_value in enum_values)
+
+        return True
+
+    def _candidate_final_value(self, candidate: Dict[str, Any]) -> Any:
+        """Return the normalized value when available, otherwise the raw value."""
+        normalized_value = candidate.get("normalized_value")
+        if not self._candidate_value_is_empty(normalized_value):
+            return normalized_value
+
+        return candidate.get("value")
+
+    def _find_evidence_span(self, evidence: str, pages: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Locate an exact evidence quote in OCR pages for downstream highlighting."""
+        quote = evidence.strip()
+        if not quote:
+            return []
+
+        if pages:
+            for page_idx, page in enumerate(pages):
+                page_text = page.get("text", "")
+                start = page_text.find(quote)
+                if start >= 0:
+                    return [{
+                        "page": page_idx,
+                        "start": start,
+                        "end": start + len(quote),
+                        "quote": quote,
+                    }]
+
+            quote_lower = quote.lower()
+            for page_idx, page in enumerate(pages):
+                page_text = page.get("text", "")
+                start = page_text.lower().find(quote_lower)
+                if start >= 0:
+                    matched_quote = page_text[start:start + len(quote)]
+                    return [{
+                        "page": page_idx,
+                        "start": start,
+                        "end": start + len(matched_quote),
+                        "quote": matched_quote,
+                    }]
+
+        return [{
+            "page": 0,
+            "start": 0,
+            "end": len(quote),
+            "quote": quote,
+        }]
+
+    def _score_candidate(
+        self,
+        candidate: Dict[str, Any],
+        field_type: str,
+        enum_values: Any,
+        value_frequency: Dict[str, int],
+        evidence_frequency: Dict[str, int],
+    ) -> Tuple[int, List[str]]:
+        """Score a candidate using generic evidence, role, position and validation signals."""
+        score = 0
+        reasons = []
+
+        evidence_type_scores = {
+            "exact_label": 50,
+            "table_context": 45,
+            "nearby_label": 35,
+            "semantic": 20,
+            "ambiguous": 5,
+        }
+        record_role_scores = {
+            "primary": 30,
+            "unknown": 10,
+            "secondary": -20,
+            "example": -35,
+            "background": -50,
+        }
+
+        evidence_type = candidate["evidence_type"]
+        record_role = candidate["record_role"]
+        evidence_type_score = evidence_type_scores[evidence_type]
+        record_role_score = record_role_scores[record_role]
+        score += evidence_type_score
+        score += record_role_score
+        reasons.extend([f"evidence_type:{evidence_type_score}", f"record_role:{record_role_score}"])
+
+        chunk_index = candidate["chunk_index"]
+        if chunk_index == 0:
+            score += 15
+            reasons.append("position:+15")
+        elif chunk_index == 1:
+            score += 10
+            reasons.append("position:+10")
+        elif chunk_index == 2:
+            score += 5
+            reasons.append("position:+5")
+
+        if self._candidate_fits_field_type(candidate["selected_value"], field_type, enum_values):
+            score += 20
+            reasons.append("field_type:+20")
+
+        if not self._candidate_value_is_empty(candidate.get("normalized_value")):
+            score += 10
+            reasons.append("normalized:+10")
+
+        value_key = str(candidate["selected_value"]).strip().lower()
+        if value_frequency.get(value_key, 0) > 1:
+            score += 10
+            reasons.append("same_value:+10")
+
+        evidence_key = str(candidate.get("evidence") or "").strip().lower()
+        if evidence_key and evidence_frequency.get(evidence_key, 0) > 1:
+            score += 5
+            reasons.append("same_evidence:+5")
+
+        evidence = str(candidate.get("evidence") or "").strip()
+        value = str(candidate.get("value") or "").strip()
+        normalized_value = str(candidate.get("normalized_value") or "").strip()
+        if not evidence:
+            score -= 100
+            reasons.append("missing_evidence:-100")
+        elif value and value.lower() not in evidence.lower() and (
+            not normalized_value or normalized_value.lower() not in evidence.lower()
+        ):
+            score -= 40
+            reasons.append("evidence_without_value:-40")
+
+        if candidate["confidence"] < 50:
+            score -= 20
+            reasons.append("low_confidence:-20")
+
+        if self._candidate_value_is_empty(candidate.get("value")):
+            score -= 100
+            reasons.append("empty_or_placeholder:-100")
+
+        return score, reasons
+
+    def _resolve_chunk_candidate_results(
         self,
         chunk_results: List[Tuple[int, Dict[str, Any]]],
         fields: List[Tuple],
+        pages: Optional[List[Dict[str, Any]]] = None,
+        threshold: int = 50,
     ) -> Optional[Dict[str, Any]]:
-        """Merge chunk extraction results by generic record-context priority."""
+        """Resolve candidate-only chunk extraction results into final field values."""
         if not chunk_results:
             return None
 
-        expected_field_keys = [key for key, _, _, _, _, _ in fields]
-        merged_data = {field_key: None for field_key in expected_field_keys}
-        merged_evidence = {field_key: [] for field_key in expected_field_keys}
-        selected_candidates: Dict[str, Dict[str, Any]] = {}
-        rejected_candidates: Dict[str, List[Dict[str, Any]]] = {}
-        chunk_contexts = []
+        field_config = {
+            key: {
+                "field_type": field_type,
+                "enum_values": enum_values,
+            }
+            for key, _, field_type, _, enum_values, _ in fields
+        }
+        field_keys = list(field_config.keys())
+        candidates_by_field: Dict[str, List[Dict[str, Any]]] = {field_key: [] for field_key in field_keys}
+        allowed_evidence_types = {"exact_label", "table_context", "nearby_label", "semantic", "ambiguous"}
+        allowed_record_roles = {"primary", "secondary", "example", "background", "unknown"}
 
         for chunk_num, chunk_result in chunk_results:
             if not isinstance(chunk_result, dict):
                 continue
 
-            context_type = self._normalize_chunk_context_type(chunk_result.get("context_type"))
-            priority = self._chunk_context_priority(context_type)
-            chunk_contexts.append({
-                "chunk": chunk_num,
-                "context_type": context_type,
-                "priority": priority,
-            })
-
-            data = chunk_result.get("data", {})
-            evidence = chunk_result.get("evidence", {})
-            if not isinstance(data, dict):
+            candidates = chunk_result.get("candidates", {})
+            if not isinstance(candidates, dict):
                 continue
-            if not isinstance(evidence, dict):
-                evidence = {}
 
-            for field_key in expected_field_keys:
-                value = data.get(field_key)
-                if value is None:
+            chunk_index = chunk_num - 1
+            for field_key in field_keys:
+                raw_candidates = candidates.get(field_key, [])
+                if not isinstance(raw_candidates, list):
                     continue
 
-                candidate = {
-                    "chunk": chunk_num,
-                    "context_type": context_type,
-                    "priority": priority,
-                    "value": value,
-                    "evidence": evidence.get(field_key, []),
+                for raw_candidate in raw_candidates:
+                    if not isinstance(raw_candidate, dict):
+                        continue
+
+                    confidence_raw = raw_candidate.get("confidence", 0)
+                    try:
+                        confidence = float(confidence_raw)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+
+                    candidate = {
+                        "field_key": field_key,
+                        "value": raw_candidate.get("value"),
+                        "normalized_value": raw_candidate.get("normalized_value"),
+                        "unit": raw_candidate.get("unit"),
+                        "evidence": str(raw_candidate.get("evidence") or ""),
+                        "chunk_index": chunk_index,
+                        "confidence": confidence,
+                        "evidence_type": self._normalize_candidate_label(
+                            raw_candidate.get("evidence_type"),
+                            allowed_evidence_types,
+                            "ambiguous",
+                        ),
+                        "record_role": self._normalize_candidate_label(
+                            raw_candidate.get("record_role"),
+                            allowed_record_roles,
+                            "unknown",
+                        ),
+                    }
+                    candidate["selected_value"] = self._candidate_final_value(candidate)
+                    candidates_by_field[field_key].append(candidate)
+
+        resolved = self._empty_extraction_result(fields)
+        rejected_candidates: Dict[str, List[Dict[str, Any]]] = {}
+
+        for field_key, candidates in candidates_by_field.items():
+            if not candidates:
+                continue
+
+            value_frequency: Dict[str, int] = {}
+            evidence_frequency: Dict[str, int] = {}
+            for candidate in candidates:
+                value_key = str(candidate["selected_value"]).strip().lower()
+                evidence_key = str(candidate.get("evidence") or "").strip().lower()
+                if value_key:
+                    value_frequency[value_key] = value_frequency.get(value_key, 0) + 1
+                if evidence_key:
+                    evidence_frequency[evidence_key] = evidence_frequency.get(evidence_key, 0) + 1
+
+            config = field_config[field_key]
+            scored_candidates = []
+            for candidate in candidates:
+                score, reasons = self._score_candidate(
+                    candidate,
+                    config["field_type"],
+                    config["enum_values"],
+                    value_frequency,
+                    evidence_frequency,
+                )
+                scored_candidate = {
+                    **candidate,
+                    "score": score,
+                    "score_reasons": reasons,
                 }
-                current = selected_candidates.get(field_key)
+                scored_candidates.append(scored_candidate)
 
-                if (
-                    current is None
-                    or priority > current["priority"]
-                    or (priority == current["priority"] and chunk_num < current["chunk"])
-                ):
-                    if current is not None:
-                        rejected_candidates.setdefault(field_key, []).append(current)
-                    selected_candidates[field_key] = candidate
-                else:
-                    rejected_candidates.setdefault(field_key, []).append(candidate)
+            scored_candidates.sort(key=lambda item: (-item["score"], item["chunk_index"]))
+            selected = scored_candidates[0]
+            rejected = scored_candidates[1:]
 
-        for field_key, candidate in selected_candidates.items():
-            merged_data[field_key] = candidate["value"]
-            merged_evidence[field_key] = candidate["evidence"]
+            if selected["score"] >= threshold and not self._candidate_value_is_empty(selected["selected_value"]):
+                resolved["data"][field_key] = selected["selected_value"]
+                resolved["evidence"][field_key] = self._find_evidence_span(selected["evidence"], pages)
+            else:
+                rejected = scored_candidates
 
-        chosen_context_type = "unknown"
-        if selected_candidates:
-            best_candidate = max(
-                selected_candidates.values(),
-                key=lambda candidate: (candidate["priority"], -candidate["chunk"]),
-            )
-            chosen_context_type = best_candidate["context_type"]
-        elif chunk_contexts:
-            best_context = max(
-                chunk_contexts,
-                key=lambda candidate: (candidate["priority"], -candidate["chunk"]),
-            )
-            chosen_context_type = best_context["context_type"]
+            if rejected:
+                rejected_candidates[field_key] = rejected
 
-        result = {
-            "context_type": chosen_context_type,
-            "data": merged_data,
-            "evidence": merged_evidence,
-        }
         if rejected_candidates:
-            result["rejected_candidates"] = rejected_candidates
+            resolved["rejected_candidates"] = rejected_candidates
 
-        return result
+        return resolved
 
-    def _build_extraction_schema(self, fields: List[Tuple], include_context_type: bool = False) -> Dict[str, Any]:
+    def _build_candidate_extraction_schema(self, fields: List[Tuple]) -> Dict[str, Any]:
+        """Build JSON schema for candidate-only chunk extraction."""
+        candidate_properties = {
+            "value": {"type": "string"},
+            "normalized_value": {"type": "string"},
+            "unit": {"type": ["string", "null"]},
+            "evidence": {"type": "string"},
+            "chunk_index": {"type": "integer"},
+            "confidence": {"type": "number"},
+            "evidence_type": {
+                "type": "string",
+                "enum": ["exact_label", "table_context", "nearby_label", "semantic", "ambiguous"],
+            },
+            "record_role": {
+                "type": "string",
+                "enum": ["primary", "secondary", "example", "background", "unknown"],
+            },
+        }
+        candidates_properties = {}
+        for key, _, _, _, _, _ in fields:
+            candidates_properties[key] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "value",
+                        "normalized_value",
+                        "unit",
+                        "evidence",
+                        "chunk_index",
+                        "confidence",
+                        "evidence_type",
+                        "record_role",
+                    ],
+                    "properties": candidate_properties,
+                },
+            }
+
+        return {
+            "type": "object",
+            "required": ["candidates"],
+            "properties": {
+                "candidates": {
+                    "type": "object",
+                    "properties": candidates_properties,
+                    "required": list(candidates_properties.keys()),
+                }
+            },
+        }
+
+    def _build_extraction_schema(self, fields: List[Tuple]) -> Dict[str, Any]:
         """Build JSON schema for metadata extraction."""
         properties = {}
         required = []
@@ -2989,32 +3246,21 @@ Respond with JSON only:
                 }
             }
 
-        schema_required = ["data", "evidence"]
-        schema_properties = {
-            "data": {
-                "type": "object",
-                "properties": properties,
-                "required": required
-            },
-            "evidence": {
-                "type": "object",
-                "properties": evidence_properties,
-                "required": list(evidence_properties.keys())
-            }
-        }
-
-        if include_context_type:
-            schema_required.insert(0, "context_type")
-            schema_properties["context_type"] = {
-                "type": "string",
-                "enum": ["primary_record", "related_record", "background_text", "unknown"],
-                "description": "Classifies whether this chunk describes the document's primary record, a related record, background text, or unclear context."
-            }
-
         return {
             "type": "object",
-            "required": schema_required,
-            "properties": schema_properties
+            "required": ["data", "evidence"],
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                },
+                "evidence": {
+                    "type": "object",
+                    "properties": evidence_properties,
+                    "required": list(evidence_properties.keys())
+                }
+            }
         }
 
     def _build_extraction_prompt(self, fields: List[Tuple], text: str, doc_type: str, preamble: str = "", chunk_num: int = None, total_chunks: int = None) -> str:
@@ -3042,8 +3288,6 @@ Respond with JSON only:
             desc = f"- {key} ({field_type}): {label}"
             if enum_values:
                 desc += f" - Values: {', '.join(enum_values)}"
-            if regex:
-                desc += f" - Pattern: {regex}"
             if is_required:
                 desc += " (required)"
             field_descriptions.append(desc)
@@ -3063,39 +3307,63 @@ Respond with JSON only:
         chunk_info = ""
         is_chunk = bool(chunk_num and total_chunks)
         if chunk_num and total_chunks:
+            chunk_index = chunk_num - 1
             chunk_info = f"""
-NOTE: This is chunk {chunk_num} of {total_chunks} of a large document. 
-- Classify the chunk:
-  - primary_record if the text describes the main subject of the document.
-  - related_record if the text describes other objects, people, companies, transactions, references, attachments, examples, historical records, or related entities.
-  - background_text if the text only contains explanations, definitions, conditions, general rules, or disclaimers.
-  - unknown if the context is unclear.
-- Extract only values that belong to the main subject of the document.
-- If this chunk clearly describes related_record or background_text, return null for business fields.
-- Extract metadata from this chunk using both text and table structure.
-- A field may be present through column headers, row labels, or nearby section titles.
-- When a table row contains values without repeated labels, map the values to the nearest preceding column headers.
-- If a field is not present in text or table context, return null.
-- Do NOT make up values for fields not found in this chunk.
-- The results from all chunks will be merged automatically."""
+NOTE: This is chunk {chunk_num} of {total_chunks} of a large document. Its zero-based chunk_index is {chunk_index}.
+
+Extract candidate values only. Do not choose the final document-level value.
+For each requested field, return all plausible values found in this chunk.
+Use labels, nearby text, table headers, row labels and section structure.
+For each candidate, include exact evidence, evidence_type, confidence and record_role.
+If no candidate is found for a field, return an empty array for that field.
+Do not use regex as the extraction method.
+
+Determine record_role per candidate from document structure and relative position, not fixed document-type keywords:
+- primary: the candidate appears to belong to the main subject that the document is primarily about.
+- secondary: the candidate appears to belong to another record/entity/object/person/transaction than the main subject.
+- example: the candidate appears to be part of an example, reference, comparison, illustration or demonstration.
+- background: the candidate comes from general explanation, definitions, conditions or background text.
+- unknown: insufficient context.
+
+Structural guidance:
+- Candidates near the document title, summary, first main section or first complete record are more often primary.
+- Candidates in repeated records after the first complete record are more often secondary or example.
+- Candidates in explanatory paragraphs are more often background.
+- Candidates in tables may be primary when the table describes the first or central record."""
 
         # Build actual field keys for the JSON structure
         field_keys = [key for key, _, _, _, _, _ in fields]
         
         # Build a concrete JSON template with the actual field names
         data_template = ", ".join([f'"{k}": null' for k in field_keys])
-        json_template = f'{{"data": {{{data_template}}}, "evidence": {{}}}}'
-        context_type_note = ""
-        if is_chunk:
-            json_template = f'{{"context_type": "unknown", "data": {{{data_template}}}, "evidence": {{}}}}'
-            context_type_note = "\n- Set context_type to exactly one of: primary_record, related_record, background_text, unknown"
-        
-        # Build field list for clarity
         field_list = ", ".join([f'"{k}"' for k in field_keys])
-        
+        json_template = f'{{"data": {{{data_template}}}, "evidence": {{}}}}'
+        output_instruction = "Return JSON in this exact format (replace null with actual values, keep null if not found):"
+        important_notes = [
+            f"- Extract ALL fields listed above: {field_list}",
+            "- Replace null with the actual extracted value for each field",
+            "- If a field is not found in the document, keep it as null",
+            "- Do NOT add fields that are not in the list above",
+            '- Do NOT use placeholder values like "datasets" or other field names not in the schema',
+        ]
+        if is_chunk:
+            candidate_template = ", ".join([f'"{k}": []' for k in field_keys])
+            json_template = f'{{"candidates": {{{candidate_template}}}}}'
+            output_instruction = "Return JSON in this exact candidate-only format:"
+            important_notes = [
+                f"- Return candidates for ALL fields listed above: {field_list}",
+                "- Every candidate must include value, normalized_value, unit, evidence, chunk_index, confidence, evidence_type and record_role",
+                "- evidence must be an exact quote from this chunk",
+                "- confidence is 0-100",
+                "- evidence_type must be exactly one of: exact_label, table_context, nearby_label, semantic, ambiguous",
+                "- record_role must be exactly one of: primary, secondary, example, background, unknown",
+                "- The LLM must not choose final document-level values; the resolver will do that after all chunks",
+                "- Do NOT add fields that are not in the list above",
+            ]
         extra_notes = ""
         if notes_block.strip():
             extra_notes = f"\n{notes_block.strip()}"
+        important_notes_text = "\n".join(important_notes)
         
         return f"""Extract metadata from this {doc_type} document.{preamble_text}{chunk_info}
 
@@ -3105,15 +3373,11 @@ Fields to extract:
 Document text:
 {text}
 
-Return JSON in this exact format (replace null with actual values, keep null if not found):
+{output_instruction}
 {json_template}
 
 IMPORTANT:
-- Extract ALL fields listed above: {field_list}{context_type_note}
-- Replace null with the actual extracted value for each field
-- If a field is not found in the document, keep it as null
-- Do NOT add fields that are not in the list above
-- Do NOT use placeholder values like "datasets" or other field names not in the schema"""
+{important_notes_text}"""
 
     def _fill_missing_quotes(self, result: Dict[str, Any], pages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Fill in missing quote fields in evidence from document text."""

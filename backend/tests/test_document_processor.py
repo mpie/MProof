@@ -341,6 +341,195 @@ class TestDocumentProcessor:
         assert "Header line 1" in sample
         assert "Header line 2" in sample
 
+    def test_candidate_resolver_keeps_primary_table_values(self, processor):
+        """Primary table candidates should beat later repeated records."""
+        fields = [
+            ("year", "Year", "number", False, None, None),
+            ("size", "Size", "number", False, None, None),
+        ]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "Attributes: Year Size\nMain 1930 62\n\nReference records:\nRecord A 1934 61\nRecord B 1934 63",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "year": [{
+                        "value": "1930",
+                        "normalized_value": "1930",
+                        "unit": None,
+                        "evidence": "Main 1930 62",
+                        "chunk_index": 0,
+                        "confidence": 90,
+                        "evidence_type": "table_context",
+                        "record_role": "primary",
+                    }],
+                    "size": [{
+                        "value": "62",
+                        "normalized_value": "62",
+                        "unit": None,
+                        "evidence": "Main 1930 62",
+                        "chunk_index": 0,
+                        "confidence": 90,
+                        "evidence_type": "table_context",
+                        "record_role": "primary",
+                    }],
+                },
+            }),
+            (3, {
+                "candidates": {
+                    "year": [
+                        {
+                            "value": "1934",
+                            "normalized_value": "1934",
+                            "unit": None,
+                            "evidence": "Record A 1934 61",
+                            "chunk_index": 2,
+                            "confidence": 85,
+                            "evidence_type": "table_context",
+                            "record_role": "secondary",
+                        },
+                        {
+                            "value": "1934",
+                            "normalized_value": "1934",
+                            "unit": None,
+                            "evidence": "Record B 1934 63",
+                            "chunk_index": 2,
+                            "confidence": 85,
+                            "evidence_type": "table_context",
+                            "record_role": "example",
+                        },
+                    ],
+                    "size": [
+                        {
+                            "value": "61",
+                            "normalized_value": "61",
+                            "unit": None,
+                            "evidence": "Record A 1934 61",
+                            "chunk_index": 2,
+                            "confidence": 85,
+                            "evidence_type": "table_context",
+                            "record_role": "secondary",
+                        },
+                        {
+                            "value": "63",
+                            "normalized_value": "63",
+                            "unit": None,
+                            "evidence": "Record B 1934 63",
+                            "chunk_index": 2,
+                            "confidence": 85,
+                            "evidence_type": "table_context",
+                            "record_role": "example",
+                        },
+                    ],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields, pages)
+
+        assert resolved["data"]["year"] == "1930"
+        assert resolved["data"]["size"] == "62"
+        assert "rejected_candidates" in resolved
+        assert resolved["rejected_candidates"]["year"][0]["record_role"] in {"secondary", "example"}
+
+    def test_candidate_resolver_uses_later_primary_after_background(self, processor):
+        """Background-only chunks should not block a later primary record."""
+        fields = [("amount", "Amount", "number", False, None, None)]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "General explanation without a concrete value.\n\nPrimary summary\nAmount: 1250",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "amount": [],
+                },
+            }),
+            (2, {
+                "candidates": {
+                    "amount": [{
+                        "value": "1250",
+                        "normalized_value": "1250",
+                        "unit": None,
+                        "evidence": "Amount: 1250",
+                        "chunk_index": 1,
+                        "confidence": 92,
+                        "evidence_type": "exact_label",
+                        "record_role": "primary",
+                    }],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields, pages)
+
+        assert resolved["data"]["amount"] == "1250"
+        assert resolved["evidence"]["amount"][0]["quote"] == "Amount: 1250"
+
+    def test_candidate_resolver_prefers_exact_label_over_ambiguous_low_confidence(self, processor):
+        """A strong exact-label candidate should beat an earlier ambiguous value."""
+        fields = [("code", "Code", "text", False, None, None)]
+        pages = [{
+            "page": 0,
+            "source": "text",
+            "text": "Maybe X-1 applies.\n\nCode: A-42",
+        }]
+        chunk_results = [
+            (1, {
+                "candidates": {
+                    "code": [{
+                        "value": "X-1",
+                        "normalized_value": "X-1",
+                        "unit": None,
+                        "evidence": "Maybe X-1 applies.",
+                        "chunk_index": 0,
+                        "confidence": 35,
+                        "evidence_type": "ambiguous",
+                        "record_role": "unknown",
+                    }],
+                },
+            }),
+            (2, {
+                "candidates": {
+                    "code": [{
+                        "value": "A-42",
+                        "normalized_value": "A-42",
+                        "unit": None,
+                        "evidence": "Code: A-42",
+                        "chunk_index": 1,
+                        "confidence": 95,
+                        "evidence_type": "exact_label",
+                        "record_role": "primary",
+                    }],
+                },
+            }),
+        ]
+
+        resolved = processor._resolve_chunk_candidate_results(chunk_results, fields, pages)
+
+        assert resolved["data"]["code"] == "A-42"
+        assert resolved["rejected_candidates"]["code"][0]["value"] == "X-1"
+
+    def test_chunk_prompt_requests_candidates_without_regex_instruction(self, processor):
+        """Chunk extraction prompt should request candidates and avoid regex instructions."""
+        fields = [("code", "Code", "text", False, None, r"CODE-\d+")]
+
+        prompt = processor._build_extraction_prompt(
+            fields,
+            "Code: CODE-123",
+            "generic-document",
+            chunk_num=1,
+            total_chunks=2,
+        )
+
+        assert '"candidates": {"code": []}' in prompt
+        assert "Extract candidate values only" in prompt
+        assert "Do not use regex as the extraction method" in prompt
+        assert "Pattern:" not in prompt
+
     def test_evidence_supported_by_text_exact_match(self, processor):
         """Test evidence validation with exact match."""
         evidence = "Rabobank rekeningafschrift"
