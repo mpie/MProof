@@ -12,6 +12,28 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _parse_json_field(value: Any) -> Any:
+    """Parse JSON DB fields that may already be decoded by SQLAlchemy."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return value
+
+
+def _risk_level_for_score(score: Optional[float]) -> Optional[str]:
+    if score is None:
+        return None
+    if score >= 70:
+        return "CRITICAL"
+    if score >= 50:
+        return "HIGH"
+    if score >= 25:
+        return "MEDIUM"
+    return "LOW"
+
+
 async def verify_api_key(client_id: str, client_secret: str) -> bool:
     """Verify API key credentials."""
     import hashlib
@@ -340,24 +362,15 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 doc_id = arguments.get("document_id")
                 if not doc_id:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "document_id is required"})}]}
-                
-                # Check document exists
-                result = await session.execute(
-                    text("SELECT id, status FROM documents WHERE id = :id"),
-                    {"id": doc_id}
-                )
-                doc = result.fetchone()
-                if not doc:
-                    return {"content": [{"type": "text", "text": json.dumps({"error": f"Document {doc_id} not found"})}]}
-                
-                # Queue for analysis
-                await session.execute(
-                    text("UPDATE documents SET status = 'queued', progress = 0, stage = NULL WHERE id = :id"),
-                    {"id": doc_id}
-                )
-                await session.commit()
-                
-                return {"content": [{"type": "text", "text": json.dumps({"status": "queued", "document_id": doc_id, "message": "Document queued for analysis"})}]}
+
+                from app.api.documents import trigger_document_analysis
+
+                try:
+                    result = await trigger_document_analysis(int(doc_id))
+                except HTTPException as e:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": e.detail})}]}
+
+                return {"content": [{"type": "text", "text": json.dumps({"status": "started", "document_id": doc_id, "message": result["message"]})}]}
             
             elif tool_name == "list_subjects":
                 conditions = []
@@ -511,21 +524,29 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 
                 where_clause = " AND ".join(conditions) if conditions else "1=1"
                 
-                # If query provided, search in text files
-                if arguments.get("query"):
-                    # This is a simplified search - in production you might want full-text search
-                    sql = f"""SELECT DISTINCT d.id, d.original_filename, d.doc_type_slug, d.risk_score, d.created_at
-                              FROM documents d
-                              WHERE {where_clause}
-                              ORDER BY d.created_at DESC LIMIT :limit"""
-                else:
-                    sql = f"""SELECT d.id, d.original_filename, d.doc_type_slug, d.risk_score, d.created_at
-                              FROM documents d
-                              WHERE {where_clause}
-                              ORDER BY d.created_at DESC LIMIT :limit"""
+                sql = f"""SELECT d.id, d.subject_id, d.original_filename, d.doc_type_slug, d.risk_score, d.created_at
+                          FROM documents d
+                          WHERE {where_clause}
+                          ORDER BY d.created_at DESC"""
                 
                 result = await session.execute(text(sql), params)
                 docs = [dict(row._mapping) for row in result.fetchall()]
+
+                if arguments.get("query"):
+                    query = arguments["query"].lower()
+                    matching_docs = []
+                    for doc in docs:
+                        text_path = Path(settings.data_dir) / "subjects" / str(doc["subject_id"]) / "documents" / str(doc["id"]) / "text" / "extracted.txt"
+                        extracted_text = ""
+                        if text_path.exists():
+                            extracted_text = text_path.read_text(encoding="utf-8", errors="ignore")
+                        if query in extracted_text.lower() or query in (doc.get("original_filename") or "").lower():
+                            matching_docs.append(doc)
+                    docs = matching_docs
+
+                docs = docs[:params["limit"]]
+                for doc in docs:
+                    doc.pop("subject_id", None)
                 return {"content": [{"type": "text", "text": json.dumps({"documents": docs, "total": len(docs)}, indent=2, default=str)}]}
             
             elif tool_name == "train_classifier":
@@ -586,11 +607,21 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 try:
                     from app.services.doc_type_classifier import classifier_service
                     import os
-                    
+
+                    previous_active_model = os.environ.get("MPROOF_ACTIVE_MODEL")
                     if model_name:
                         os.environ["MPROOF_ACTIVE_MODEL"] = model_name
-                    
-                    status = await classifier_service().status()
+                    else:
+                        os.environ.pop("MPROOF_ACTIVE_MODEL", None)
+
+                    try:
+                        status = await classifier_service().status()
+                    finally:
+                        if previous_active_model is None:
+                            os.environ.pop("MPROOF_ACTIVE_MODEL", None)
+                        else:
+                            os.environ["MPROOF_ACTIVE_MODEL"] = previous_active_model
+
                     return {"content": [{"type": "text", "text": json.dumps(status, indent=2, default=str)}]}
                 except Exception as e:
                     logger.error(f"Error getting classifier status: {e}")
@@ -610,30 +641,31 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 conditions = []
                 params = {"limit": arguments.get("limit", 50)}
                 min_risk = arguments.get("min_risk_score", 50)
-                
-                conditions.append("d.risk_score >= :min_risk")
-                params["min_risk"] = min_risk
-                
+
                 if arguments.get("risk_level"):
                     # Map risk level to score ranges
                     risk_ranges = {
                         "LOW": (0, 25),
                         "MEDIUM": (25, 50),
                         "HIGH": (50, 75),
-                        "CRITICAL": (75, 100)
+                        "CRITICAL": (75, 101)
                     }
                     if arguments["risk_level"] in risk_ranges:
                         min_r, max_r = risk_ranges[arguments["risk_level"]]
                         conditions.append("d.risk_score >= :risk_min AND d.risk_score < :risk_max")
                         params["risk_min"] = min_r
                         params["risk_max"] = max_r
+
+                if not arguments.get("risk_level") or "min_risk_score" in arguments:
+                    conditions.append("d.risk_score >= :min_risk")
+                    params["min_risk"] = min_risk
                 
                 if arguments.get("subject_id"):
                     conditions.append("d.subject_id = :subject_id")
                     params["subject_id"] = arguments["subject_id"]
                 
                 where_clause = " AND ".join(conditions)
-                sql = f"""SELECT d.id, d.original_filename, d.doc_type_slug, d.risk_score, d.risk_level, d.created_at
+                sql = f"""SELECT d.id, d.original_filename, d.doc_type_slug, d.risk_score, d.created_at
                           FROM documents d
                           WHERE {where_clause}
                           ORDER BY d.risk_score DESC, d.created_at DESC
@@ -641,6 +673,8 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 
                 result = await session.execute(text(sql), params)
                 docs = [dict(row._mapping) for row in result.fetchall()]
+                for doc in docs:
+                    doc["risk_level"] = _risk_level_for_score(doc.get("risk_score"))
                 return {"content": [{"type": "text", "text": json.dumps({"documents": docs, "total": len(docs), "min_risk_score": min_risk}, indent=2, default=str)}]}
             
             # Classification Policy & Signals tools
@@ -650,30 +684,25 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 sql = """
                     SELECT 
                         key, label, description, signal_type,
-                        CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END as source,
-                        COALESCE(compute_method, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'keyword_set' END) as compute_kind,
+                        COALESCE(source, 'user') as source,
+                        COALESCE(compute_kind, 'builtin') as compute_kind,
                         config_json
                     FROM classification_signals
                 """
                 params = {}
                 
                 if source_filter:
-                    if source_filter == "builtin":
-                        sql += " WHERE is_system = 1"
-                    else:
-                        sql += " WHERE is_system = 0"
+                    sql += " WHERE source = :source"
+                    params["source"] = source_filter
                 
-                sql += " ORDER BY is_system DESC, key"
+                sql += " ORDER BY source ASC, key"
                 
                 result = await session.execute(text(sql), params)
                 signals = []
                 for row in result.fetchall():
                     signal = dict(row._mapping)
                     if signal.get("config_json"):
-                        try:
-                            signal["config"] = json.loads(signal["config_json"])
-                        except:
-                            pass
+                        signal["config"] = _parse_json_field(signal["config_json"])
                     del signal["config_json"]
                     signals.append(signal)
                 
@@ -693,8 +722,8 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                     text("""
                         SELECT 
                             key, label, description, signal_type,
-                            CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END as source,
-                            COALESCE(compute_method, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'keyword_set' END) as compute_kind,
+                            COALESCE(source, 'user') as source,
+                            COALESCE(compute_kind, 'builtin') as compute_kind,
                             config_json
                         FROM classification_signals WHERE key = :key
                     """),
@@ -706,10 +735,7 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 
                 signal = dict(row._mapping)
                 if signal.get("config_json"):
-                    try:
-                        signal["config"] = json.loads(signal["config_json"])
-                    except:
-                        pass
+                    signal["config"] = _parse_json_field(signal["config_json"])
                 del signal["config_json"]
                 
                 return {"content": [{"type": "text", "text": json.dumps(signal, indent=2)}]}
@@ -735,10 +761,7 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                     doc_type = dict(row._mapping)
                     policy_json = doc_type.get("classification_policy_json")
                     if policy_json:
-                        try:
-                            doc_type["policy"] = json.loads(policy_json)
-                        except:
-                            doc_type["policy"] = None
+                        doc_type["policy"] = _parse_json_field(policy_json)
                     else:
                         doc_type["policy"] = None
                     del doc_type["classification_policy_json"]
@@ -766,10 +789,7 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 doc_type = dict(row._mapping)
                 policy = None
                 if doc_type.get("classification_policy_json"):
-                    try:
-                        policy = json.loads(doc_type["classification_policy_json"])
-                    except:
-                        pass
+                    policy = _parse_json_field(doc_type["classification_policy_json"])
                 
                 return {"content": [{"type": "text", "text": json.dumps({
                     "slug": doc_type["slug"],
@@ -801,45 +821,14 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 doc_type = dict(row._mapping)
                 policy = {}
                 if doc_type.get("classification_policy_json"):
-                    try:
-                        policy = json.loads(doc_type["classification_policy_json"])
-                    except:
-                        pass
-                
-                # Get all signals
-                sig_result = await session.execute(text("""
-                    SELECT key, signal_type,
-                        CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END as source,
-                        COALESCE(compute_method, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'keyword_set' END) as compute_kind,
-                        config_json
-                    FROM classification_signals
-                """))
-                signals_db = [dict(r._mapping) for r in sig_result.fetchall()]
-                
-                # Compute signals
-                from app.services.signal_engine import compute_builtin_signal, compute_keyword_set_signal, compute_regex_set_signal
-                
-                computed_signals = {}
-                for sig in signals_db:
-                    key = sig["key"]
-                    compute_kind = sig["compute_kind"]
-                    config = {}
-                    if sig.get("config_json"):
-                        try:
-                            config = json.loads(sig["config_json"])
-                        except:
-                            pass
-                    
-                    if compute_kind == "builtin":
-                        computed_signals[key] = compute_builtin_signal(key, sample_text)
-                    elif compute_kind == "keyword_set":
-                        keywords = config.get("keywords", [])
-                        match_mode = config.get("match_mode", "any")
-                        computed_signals[key] = compute_keyword_set_signal(sample_text, keywords, match_mode)
-                    elif compute_kind == "regex_set":
-                        patterns = config.get("patterns", [])
-                        match_mode = config.get("match_mode", "any")
-                        computed_signals[key] = compute_regex_set_signal(sample_text, patterns, match_mode)
+                    policy = _parse_json_field(doc_type["classification_policy_json"]) or {}
+
+                from app.api.signals import load_all_signals_from_db
+                from app.services.signal_engine import compute_all_signals
+
+                signal_defs = await load_all_signals_from_db()
+                computed = compute_all_signals(sample_text, signal_defs)
+                computed_signals = computed.values
                 
                 # Evaluate eligibility
                 requirements = policy.get("requirements", [])
@@ -895,47 +884,20 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 if not sample_text:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "text is required"})}]}
                 
-                # Get all signals
-                sig_result = await session.execute(text("""
-                    SELECT key, label, signal_type,
-                        CASE WHEN is_system = 1 THEN 'builtin' ELSE 'user' END as source,
-                        COALESCE(compute_method, CASE WHEN is_system = 1 THEN 'builtin' ELSE 'keyword_set' END) as compute_kind,
-                        config_json
-                    FROM classification_signals
-                """))
-                signals_db = [dict(r._mapping) for r in sig_result.fetchall()]
-                
-                # Compute signals
-                from app.services.signal_engine import compute_builtin_signal, compute_keyword_set_signal, compute_regex_set_signal
-                
+                from app.api.signals import load_all_signals_from_db
+                from app.services.signal_engine import compute_all_signals
+
+                signal_defs = await load_all_signals_from_db()
+                computed = compute_all_signals(sample_text, signal_defs)
+
                 results = []
-                for sig in signals_db:
-                    key = sig["key"]
-                    compute_kind = sig["compute_kind"]
-                    config = {}
-                    if sig.get("config_json"):
-                        try:
-                            config = json.loads(sig["config_json"])
-                        except:
-                            pass
-                    
-                    value = None
-                    if compute_kind == "builtin":
-                        value = compute_builtin_signal(key, sample_text)
-                    elif compute_kind == "keyword_set":
-                        keywords = config.get("keywords", [])
-                        match_mode = config.get("match_mode", "any")
-                        value = compute_keyword_set_signal(sample_text, keywords, match_mode)
-                    elif compute_kind == "regex_set":
-                        patterns = config.get("patterns", [])
-                        match_mode = config.get("match_mode", "any")
-                        value = compute_regex_set_signal(sample_text, patterns, match_mode)
-                    
+                for sig in signal_defs:
+                    value = computed.get(sig.key)
                     results.append({
-                        "key": key,
-                        "label": sig["label"],
-                        "type": sig["signal_type"],
-                        "source": sig["source"],
+                        "key": sig.key,
+                        "label": sig.label,
+                        "type": sig.signal_type,
+                        "source": sig.source,
                         "value": value
                     })
                 

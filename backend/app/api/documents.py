@@ -125,11 +125,8 @@ async def get_document(
         return DocumentResponse(**doc_dict)
 
 
-@router.post("/documents/{document_id}/analyze")
-async def analyze_document(
-    document_id: int
-):
-    """Trigger analysis for a document."""
+async def trigger_document_analysis(document_id: int) -> dict[str, Any]:
+    """Reset a document and enqueue it for full re-analysis."""
     from app import main as app_main
     from app.services.job_queue import JobQueue
 
@@ -209,6 +206,14 @@ async def analyze_document(
         await app_main.job_queue.enqueue_document_processing(document_id)
 
         return {"ok": True, "message": "Analysis started"}
+
+
+@router.post("/documents/{document_id}/analyze")
+async def analyze_document(
+    document_id: int
+):
+    """Trigger analysis for a document."""
+    return await trigger_document_analysis(document_id)
 
 
 @router.get("/documents/{document_id}/artifact")
