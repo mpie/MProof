@@ -314,22 +314,36 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
           .filter(range => range.start < end && range.end > start)
           .map(range => ({
             start: Math.max(0, range.start - start),
-            end: Math.max(0, range.end - start),
+            end: Math.min(span.textContent?.length || 0, Math.max(0, range.end - start)),
           }))
           .sort((a, b) => a.start - b.start);
 
         if (localRanges.length === 0) return;
 
-        const spanRect = span.getBoundingClientRect();
-        if (spanRect.width <= 0 || spanRect.height <= 0) return;
+        const textNode = Array.from(span.childNodes).find(node => node.nodeType === Node.TEXT_NODE);
+        if (!textNode) return;
 
-        const highlightBox = document.createElement('div');
-        highlightBox.className = 'pdf-highlight-box';
-        highlightBox.style.left = `${spanRect.left - pageRect.left}px`;
-        highlightBox.style.top = `${spanRect.top - pageRect.top}px`;
-        highlightBox.style.width = `${spanRect.width}px`;
-        highlightBox.style.height = `${spanRect.height}px`;
-        pageElement.appendChild(highlightBox);
+        localRanges.forEach(localRange => {
+          if (localRange.end <= localRange.start) return;
+
+          const range = document.createRange();
+          range.setStart(textNode, localRange.start);
+          range.setEnd(textNode, localRange.end);
+
+          Array.from(range.getClientRects()).forEach(rect => {
+            if (rect.width <= 0 || rect.height <= 0) return;
+
+            const highlightBox = document.createElement('div');
+            highlightBox.className = 'pdf-highlight-box';
+            highlightBox.style.left = `${rect.left - pageRect.left}px`;
+            highlightBox.style.top = `${rect.top - pageRect.top}px`;
+            highlightBox.style.width = `${rect.width}px`;
+            highlightBox.style.height = `${rect.height}px`;
+            pageElement.appendChild(highlightBox);
+          });
+
+          range.detach();
+        });
       });
     }, 150);
     
@@ -524,11 +538,10 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
           position: absolute;
           z-index: 8;
           pointer-events: none;
-          background-color: rgba(59, 130, 246, 0.35);
-          border: 1px solid rgba(96, 165, 250, 0.9);
+          background-color: rgba(250, 204, 21, 0.42);
+          border: 1px solid rgba(250, 204, 21, 0.95);
           border-radius: 3px;
-          box-shadow: 0 0 10px rgba(59, 130, 246, 0.55);
-          mix-blend-mode: multiply;
+          box-shadow: 0 0 10px rgba(250, 204, 21, 0.45);
         }
 
         .pdf-highlight-fallback {

@@ -223,6 +223,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
   const [showDocumentViewer, setShowDocumentViewer] = useState(false);
   const [documentViewerPath, setDocumentViewerPath] = useState<string | null>(null);
   const [examplesSidebar, setExamplesSidebar] = useState<{ signalIndex: number; examples: any } | null>(null);
+  const initializedTabDocumentRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
 
   const { data: document, isLoading, refetch } = useQuery({
@@ -347,10 +348,18 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
   useEffect(() => {
     if (!isOpen) {
       setActiveTab('overview');
+      initializedTabDocumentRef.current = null;
       setHighlightSources(false);
       setSearchTerm('');
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !documentId || !document || initializedTabDocumentRef.current === documentId) return;
+
+    setActiveTab(document.status === 'done' ? 'metadata' : 'overview');
+    initializedTabDocumentRef.current = documentId;
+  }, [isOpen, documentId, document]);
 
   if (!isOpen || !documentId) return null;
 
@@ -425,8 +434,8 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
             }
           }}
         >
-          <div className="relative w-full max-w-4xl h-full sm:h-auto sm:max-h-[90vh] m-0 sm:m-4 overflow-hidden sm:overflow-visible">
-            <div className={`glass-card overflow-hidden flex flex-col w-full h-full sm:h-auto transition-all duration-300 rounded-none sm:rounded-xl`}>
+          <div className="relative w-full max-w-4xl h-full sm:h-[90vh] m-0 sm:m-4 overflow-hidden">
+            <div className={`glass-card overflow-hidden flex flex-col w-full h-full min-h-0 transition-all duration-300 rounded-none sm:rounded-xl`}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
           <div className="flex items-center space-x-3 min-w-0">
@@ -1132,6 +1141,8 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
   copyToClipboard: (text: string) => void;
   downloadArtifact: (path: string, filename: string) => void;
 }) {
+  const [copiedForExcel, setCopiedForExcel] = useState(false);
+  const [expandedEvidenceKey, setExpandedEvidenceKey] = useState<string | null>(null);
   const hasDbData = !!document.metadata_json && Object.keys(document.metadata_json || {}).length > 0;
   const { data: artifactData } = useQuery({
     queryKey: ['document-metadata-artifact', documentId],
@@ -1154,88 +1165,142 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
   });
   const evidence = evidenceFromDb || evidenceArtifact || {};
 
-  const formatValue = (value: any): string => {
+  const formatExcelValue = (value: unknown): string => {
     if (value === null || value === undefined) {
-      return String(value);
+      return '';
     }
     if (typeof value === 'object') {
-      return JSON.stringify(value, null, 2);
+      return JSON.stringify(value);
     }
-    return String(value);
+    return String(value).replace(/\s+/g, ' ').trim();
+  };
+
+  const copyMetadataForExcel = async () => {
+    if (!data) return;
+
+    const rows = [
+      'Veld\tWaarde',
+      ...Object.entries(data).map(([key, value]) => `${key.replace(/_/g, ' ')}\t${formatExcelValue(value)}`),
+    ];
+
+    await copyToClipboard(rows.join('\n'));
+    setCopiedForExcel(true);
+    window.setTimeout(() => setCopiedForExcel(false), 1500);
+  };
+
+  const renderMetadataValue = (value: unknown) => {
+    if (value === null || value === undefined || value === '') {
+      return <span className="text-white/35 italic">Niet gevonden</span>;
+    }
+
+    if (Array.isArray(value)) {
+      return (
+        <div className="flex flex-wrap gap-1">
+          {value.map((item, i) => (
+            <span key={i} className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] text-purple-200">
+              {typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item)}
+            </span>
+          ))}
+        </div>
+      );
+    }
+
+    if (typeof value === 'object') {
+      return (
+        <pre className="max-h-24 overflow-auto rounded bg-black/20 p-2 text-[10px] text-white/75">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      );
+    }
+
+    return <span className="text-white/95 break-words">{String(value)}</span>;
   };
 
   return (
-    <div className="p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-y-auto">
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => downloadArtifact('metadata/result.json', 'metadata.json')} className="flex items-center space-x-1 px-2 py-1.5 bg-white/10 text-white text-xs rounded hover:bg-white/20">
-          <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
-          <span>Metadata</span>
-        </button>
-        <button onClick={() => downloadArtifact('metadata/evidence.json', 'evidence.json')} className="flex items-center space-x-1 px-2 py-1.5 bg-white/10 text-white text-xs rounded hover:bg-white/20">
-          <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
-          <span>Evidence</span>
-        </button>
+    <div className="overflow-y-auto p-2 sm:p-3">
+      <div className="sticky top-0 z-10 -mx-2 -mt-2 mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-slate-950/90 px-2 py-2 backdrop-blur sm:-mx-3 sm:-mt-3 sm:px-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-white/70">
+            Data
+            {hasData && <span className="ml-2 font-normal normal-case tracking-normal text-white/40">{Object.keys(data!).length} velden</span>}
+          </div>
+          {document.doc_type_slug && (
+            <div className="truncate text-[11px] text-white/35">{formatDocumentTypeName(document.doc_type_slug)}</div>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            onClick={copyMetadataForExcel}
+            disabled={!hasData}
+            className="flex items-center space-x-1.5 rounded-md bg-blue-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <FontAwesomeIcon icon={copiedForExcel ? faCheck : faCopy} className="w-3 h-3" />
+            <span>{copiedForExcel ? 'Gekopieerd' : 'Excel copy'}</span>
+          </button>
+          <button onClick={() => downloadArtifact('metadata/result.json', 'metadata.json')} className="flex items-center space-x-1 rounded-md bg-white/10 px-2 py-1.5 text-[11px] text-white/80 hover:bg-white/20">
+            <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
+            <span>JSON</span>
+          </button>
+          <button onClick={() => downloadArtifact('metadata/evidence.json', 'evidence.json')} className="flex items-center space-x-1 rounded-md bg-white/10 px-2 py-1.5 text-[11px] text-white/80 hover:bg-white/20">
+            <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
+            <span>Bronnen</span>
+          </button>
+        </div>
       </div>
 
       {hasData ? (
-        <div className="grid gap-1.5">
+        <div className="overflow-hidden rounded-lg border border-white/10 bg-black/10">
+          <div
+            className="grid gap-3 border-b border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/35"
+            style={{ gridTemplateColumns: 'minmax(120px, 180px) minmax(0, 1fr)' }}
+          >
+            <div>Veld</div>
+            <div>Waarde</div>
+          </div>
           {Object.entries(data!).map(([key, value]) => {
-            const isArray = Array.isArray(value);
-            const isNull = value === null || value === undefined;
-            const isObject = typeof value === 'object' && !isArray && !isNull;
             const fieldEvidence = evidence[key] || [];
-            const hasMultipleEvidence = Array.isArray(fieldEvidence) && fieldEvidence.length > 1;
+            const hasEvidence = Array.isArray(fieldEvidence) && fieldEvidence.length > 0;
+            const isExpanded = expandedEvidenceKey === key;
             
             return (
-              <div key={key} className="bg-white/5 rounded px-2 py-1.5 border border-white/10 hover:bg-white/10 transition-colors">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-white/50 text-[10px] font-medium uppercase">{key.replace(/_/g, ' ')}</span>
-                      {hasMultipleEvidence && (
-                        <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1 py-0.5 rounded">
-                          {fieldEvidence.length} bronnen
-                        </span>
-                      )}
-                    </div>
-                    {isNull ? (
-                      <span className="block text-white/30 text-xs italic">null</span>
-                    ) : isArray ? (
-                      <div className="flex flex-wrap gap-1 mt-0.5">
-                        {(value as any[]).map((item, i) => (
-                          <span key={i} className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">
-                            {typeof item === 'object' ? JSON.stringify(item) : String(item)}
-                          </span>
-                        ))}
-                      </div>
-                    ) : isObject ? (
-                      <pre className="text-white/80 text-[10px] font-mono mt-0.5 bg-black/20 rounded p-1 overflow-x-auto">
-                        {JSON.stringify(value, null, 2)}
-                      </pre>
-                    ) : (
-                      <span className="block text-white font-mono text-xs break-all">{String(value)}</span>
-                    )}
-                    
-                    {/* Show all evidence quotes if multiple */}
-                    {Array.isArray(fieldEvidence) && fieldEvidence.length > 0 && (
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {fieldEvidence.map((ev: any, i: number) => (
-                          <span 
-                            key={i} 
-                            className="text-[9px] bg-blue-500/20 text-blue-200 px-1.5 py-0.5 rounded border border-blue-500/30"
-                            title={`Pagina ${(ev.page || 0) + 1}, positie ${ev.start}-${ev.end}`}
-                          >
-                            "{ev.quote?.substring(0, 40)}{ev.quote?.length > 40 ? '...' : ''}"
-                            <span className="text-blue-400/60 ml-1">p{(ev.page || 0) + 1}</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
+              <div key={key} className="border-b border-white/10 last:border-b-0">
+                <div
+                  className="grid gap-3 px-2.5 py-1.5 text-xs transition-colors odd:bg-white/[0.015] hover:bg-white/[0.055]"
+                  style={{ gridTemplateColumns: 'minmax(120px, 180px) minmax(0, 1fr)' }}
+                >
+                  <div className="truncate font-medium text-blue-200/75">
+                    {key.replace(/_/g, ' ')}
                   </div>
-                  <button onClick={() => copyToClipboard(formatValue(value))} className="text-white/30 hover:text-white/60 shrink-0 p-0.5">
-                    <FontAwesomeIcon icon={faCopy} className="w-2.5 h-2.5" />
-                  </button>
+                  <div className="flex min-w-0 items-start justify-between gap-2 leading-relaxed text-white/90">
+                    <div className="min-w-0 flex-1">
+                      {renderMetadataValue(value)}
+                    </div>
+                    {hasEvidence ? (
+                      <button
+                        onClick={() => setExpandedEvidenceKey(isExpanded ? null : key)}
+                        className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-200 hover:bg-blue-500/25"
+                        title={`${fieldEvidence.length} bron${fieldEvidence.length === 1 ? '' : 'nen'}`}
+                      >
+                        bron {fieldEvidence.length}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
+                {hasEvidence && isExpanded && (
+                  <div className="space-y-1 bg-black/20 px-2.5 pb-2" style={{ paddingLeft: 'calc(min(max(120px, 28vw), 180px) + 1.25rem)' }}>
+                    {fieldEvidence.map((ev: any, i: number) => (
+                      <div
+                        key={i}
+                        className="rounded border border-blue-500/15 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-100"
+                        title={`Pagina ${(ev.page || 0) + 1}, positie ${ev.start}-${ev.end}`}
+                      >
+                        <span className="text-blue-300/70">p{(ev.page || 0) + 1}</span>
+                        <span className="mx-1.5 text-blue-300/40">·</span>
+                        <span>{ev.quote}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
