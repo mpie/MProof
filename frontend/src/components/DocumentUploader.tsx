@@ -225,39 +225,74 @@ export function DocumentUploader({
   }
 
   // ── Default variant: full-size drop zone ──────────────────────────────────
+  const hasActiveUploads = uploads.some(u => u.status === 'uploading');
   const zoneClass = isDisabled
     ? 'border-slate-200 bg-slate-50 cursor-not-allowed opacity-80'
-    : isDragOver
-      ? 'border-[#FFC1F3]/60 bg-[#FFC1F3]/8'
-      : 'border-slate-300 hover:border-slate-300 hover:bg-slate-50 cursor-pointer';
+    : hasActiveUploads
+      ? 'border-[#22d3d3]/40 bg-[#22d3d3]/5 cursor-default'
+      : isDragOver
+        ? 'border-[#FFC1F3]/60 bg-[#FFC1F3]/8'
+        : 'border-slate-300 hover:border-slate-300 hover:bg-slate-50 cursor-pointer';
 
   return (
     <div className="space-y-3 sm:space-y-4">
       <div
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
-        onClick={triggerClick}
+        onDragOver={!hasActiveUploads ? onDragOver : undefined}
+        onDragLeave={!hasActiveUploads ? onDragLeave : undefined}
+        onDrop={!hasActiveUploads ? onDrop : undefined}
+        onClick={!hasActiveUploads ? triggerClick : undefined}
         className={`relative border-2 border-dashed rounded-xl p-8 sm:p-12 text-center transition-all group overflow-hidden ${zoneClass}`}
       >
-        {!isDisabled && (
+        {!isDisabled && !hasActiveUploads && (
           <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none">
             <div className="absolute inset-0 bg-gradient-to-br from-blue-500/8 via-purple-500/8 to-pink-500/8" />
           </div>
         )}
 
-        <div className="relative z-10 mb-4">
-          <div className={`inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200 transition-all duration-300 ${!isDisabled && 'group-hover:scale-105 group-hover:bg-slate-100'}`}>
-            <FontAwesomeIcon icon={faCloudUploadAlt} className={`text-2xl text-slate-400 transition-colors ${!isDisabled && 'group-hover:text-slate-600'}`} />
+        {hasActiveUploads ? (
+          /* Orbit animation during upload */
+          <div className="relative z-10 flex flex-col items-center gap-4">
+            <div className="relative w-24 h-24 flex items-center justify-center">
+              {/* Pulse ring */}
+              <div className="absolute w-16 h-16 rounded-full border border-[#22d3d3]/30 ai-pulse-ring" />
+              {/* Center node */}
+              <div className="w-5 h-5 rounded-full bg-[#22d3d3] ai-node-pulse" />
+              {/* Orbit 1 */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="ai-orbit-1">
+                  <div className="w-2 h-2 rounded-full bg-[#22d3d3] shadow-[0_0_6px_#22d3d3]" />
+                </div>
+              </div>
+              {/* Orbit 2 */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="ai-orbit-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#FFC1F3] shadow-[0_0_4px_#FFC1F3]" />
+                </div>
+              </div>
+              {/* Orbit 3 */}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="ai-orbit-3">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_4px_rgba(96,165,250,0.8)]" />
+                </div>
+              </div>
+            </div>
+            <p className="text-[#22d3d3] text-sm font-medium">Uploaden...</p>
           </div>
-        </div>
-
-        <div className="relative z-10 space-y-1.5">
-          <p className="text-slate-800 font-semibold text-base">
-            {isDragOver ? 'Loslaten om te uploaden' : 'Sleep bestanden hierheen of klik'}
-          </p>
-          <p className="text-slate-400 text-sm">PDF · DOCX · JPG · PNG · XLSX · max 50 MB</p>
-        </div>
+        ) : (
+          <>
+            <div className="relative z-10 mb-4">
+              <div className={`inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200 transition-all duration-300 ${!isDisabled && 'group-hover:scale-105 group-hover:bg-slate-100'}`}>
+                <FontAwesomeIcon icon={faCloudUploadAlt} className={`text-2xl text-slate-400 transition-colors ${!isDisabled && 'group-hover:text-slate-600'}`} />
+              </div>
+            </div>
+            <div className="relative z-10 space-y-1.5">
+              <p className="text-slate-800 font-semibold text-base">
+                {isDragOver ? 'Loslaten om te uploaden' : 'Sleep bestanden hierheen of klik'}
+              </p>
+              <p className="text-slate-400 text-sm">PDF · DOCX · JPG · PNG · XLSX · max 50 MB</p>
+            </div>
+          </>
+        )}
 
         {input}
       </div>

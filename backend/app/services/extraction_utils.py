@@ -922,7 +922,7 @@ value, normalized_value, unit, evidence, chunk_index, confidence, evidence_type,
         if has_iban_field:
             notes.append("- For IBAN fields: return only the IBAN (e.g., NL..), no extra words or currency.")
         if has_money_field:
-            notes.append("- For money/currency fields: preserve the original currency symbol exactly as it appears in the document (€, $, £, etc.). Return as a string such as '$39,212.40' or '€ 39.212,40', not as a bare number.")
+            notes.append("- For money/currency fields: preserve the original currency symbol exactly as it appears in the document. If no currency symbol appears near the value in the source text, default to € (euro) — this is a Dutch document. Return as a string such as '€ 39.212,40', not as a bare number. Never use US$ unless $ is explicitly printed in the source text.")
         notes_text = "\n".join(notes)
         notes_block = f"\nSpecial notes:\n{notes_text}\n" if notes_text else ""
 

@@ -74,10 +74,13 @@ export default function RootLayout({
                         className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
                         title="Dashboard"
                       >
-                        <div className="w-8 h-8 flex items-center justify-center rounded-lg bg-gradient-to-br from-[#FFC1F3] to-[#FCE2CE] shadow-md">
-                          <FontAwesomeIcon icon={faFileShield} className="text-white text-sm" />
+                        <div className="w-9 h-9 flex items-center justify-center rounded-xl bg-gradient-to-br from-[#FFC1F3] via-[#f5b8f0] to-[#FCE2CE] shadow-[0_2px_12px_rgba(255,193,243,0.55)] border border-white/40">
+                          <FontAwesomeIcon icon={faFileShield} className="text-white" style={{ fontSize: '15px' }} />
                         </div>
-                        <span className="text-slate-800 text-lg font-bold tracking-tight">MProof</span>
+                        <div className="flex flex-col leading-none gap-0.5">
+                          <span className="text-slate-800 text-base font-bold tracking-tight">MProof</span>
+                          <span className="text-[9px] font-semibold tracking-[0.1em] text-slate-400 uppercase">Document Analysis</span>
+                        </div>
                       </Link>
                       <div className="flex items-center gap-2 sm:gap-3">
                         <div className="hidden sm:block">

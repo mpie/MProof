@@ -81,13 +81,22 @@ TOOLS = [
     },
     {
         "name": "analyze_document",
-        "description": "Trigger analysis for a document",
+        "description": "Trigger (re-)analysis for a document. Use list_classifier_models to see available model names.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "document_id": {"type": "integer", "description": "The ID of the document to analyze"}
+                "document_id": {"type": "integer", "description": "The ID of the document to analyze"},
+                "model_name": {"type": "string", "description": "Optional classifier model to use (e.g. 'backoffice', 'mdoc'). Omit for default model."}
             },
             "required": ["document_id"]
+        }
+    },
+    {
+        "name": "list_classifier_models",
+        "description": "List available classifier model folders (e.g. 'backoffice', 'mdoc'). Pass model_name to analyze_document, train_classifier, or get_classifier_status to target a specific model.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     },
     {
@@ -363,17 +372,36 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
             
             elif tool_name == "analyze_document":
                 doc_id = arguments.get("document_id")
+                model_name = arguments.get("model_name")
                 if not doc_id:
                     return {"content": [{"type": "text", "text": json.dumps({"error": "document_id is required"})}]}
 
                 from app.api.documents import trigger_document_analysis
 
                 try:
-                    result = await trigger_document_analysis(int(doc_id))
+                    result = await trigger_document_analysis(int(doc_id), model_name=model_name)
                 except HTTPException as e:
                     return {"content": [{"type": "text", "text": json.dumps({"error": e.detail})}]}
 
-                return {"content": [{"type": "text", "text": json.dumps({"status": "started", "document_id": doc_id, "message": result["message"]})}]}
+                return {"content": [{"type": "text", "text": json.dumps({"status": "started", "document_id": doc_id, "model_name": model_name, "message": result["message"]})}]}
+
+            elif tool_name == "list_classifier_models":
+                try:
+                    from app.api.classifier import _default_dataset_dir
+                    base_dir = _default_dataset_dir()
+                    models = []
+                    if base_dir.exists():
+                        for d in sorted(base_dir.iterdir()):
+                            if d.is_dir() and not d.name.startswith('.'):
+                                doc_types = [sub.name for sub in sorted(d.iterdir()) if sub.is_dir() and not sub.name.startswith('.')]
+                                models.append({"name": d.name, "document_types": doc_types, "type_count": len(doc_types)})
+                    return {"content": [{"type": "text", "text": json.dumps({
+                        "models": models,
+                        "total": len(models),
+                        "note": "Pass model_name to analyze_document, train_classifier, or get_classifier_status to target a specific model"
+                    }, indent=2)}]}
+                except Exception as e:
+                    return {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}]}
             
             elif tool_name == "list_references":
                 conditions = []

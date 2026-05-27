@@ -161,7 +161,7 @@ async def get_document(
         return DocumentResponse(**doc_dict)
 
 
-async def trigger_document_analysis(document_id: int) -> dict[str, Any]:
+async def trigger_document_analysis(document_id: int, model_name: Optional[str] = None) -> dict[str, Any]:
     """Reset a document and enqueue it for full re-analysis."""
     from app import main as app_main
     from app.services.job_queue import JobQueue
@@ -239,17 +239,18 @@ async def trigger_document_analysis(document_id: int) -> dict[str, Any]:
             await app_main.job_queue.start()
 
         await app_main.job_queue.start()
-        await app_main.job_queue.enqueue_document_processing(document_id)
+        await app_main.job_queue.enqueue_document_processing(document_id, model_name=model_name)
 
         return {"ok": True, "message": "Analysis started"}
 
 
 @router.post("/documents/{document_id}/analyze")
 async def analyze_document(
-    document_id: int
+    document_id: int,
+    model_name: Optional[str] = Query(None, description="Model name for classification (e.g. 'backoffice', 'mdoc')"),
 ):
     """Trigger analysis for a document."""
-    return await trigger_document_analysis(document_id)
+    return await trigger_document_analysis(document_id, model_name=model_name)
 
 
 @router.get("/documents/{document_id}/artifact")
