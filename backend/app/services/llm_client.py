@@ -137,37 +137,40 @@ class LLMClient:
             # Ollama supports system messages, return as-is
             return messages
 
-    def _build_request_payload(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Dict[str, Any]:
+    def _build_request_payload(self, messages: List[Dict[str, str]], temperature: float = 0.1, json_mode: bool = False) -> Dict[str, Any]:
         """Build the request payload based on the provider."""
         # Normalize messages for the provider (e.g., convert system to user for vLLM)
         normalized_messages = self._normalize_messages(messages)
-        
+
         if self.provider == "vllm":
             # Calculate available tokens based on actual model context
             # Configurable via MPROOF_VLLM_CONTEXT_LENGTH env var; default 8192
             MODEL_CONTEXT = int(os.environ.get("MPROOF_VLLM_CONTEXT_LENGTH", "8192"))
             SAFETY_MARGIN = 100  # Buffer for tokenization differences
-            
+
             input_tokens = self._estimate_input_tokens(normalized_messages)
             available_tokens = MODEL_CONTEXT - input_tokens - SAFETY_MARGIN
-            
-            # Ensure we don't exceed available space
+
+            # JSON responses can be large; use the full available budget
+            max_cap = available_tokens if json_mode else 2048
             if available_tokens <= 0:
                 safe_max_tokens = 50
             else:
-                safe_max_tokens = min(available_tokens, 2048)
+                safe_max_tokens = min(available_tokens, max_cap)
                 safe_max_tokens = max(safe_max_tokens, 50)
-            
-            logger.info(f"vLLM request: input ~{input_tokens} tokens, available ~{available_tokens}, max_tokens={safe_max_tokens}")
-            # OpenAI-compatible format for vLLM
-            return {
+
+            logger.info(f"vLLM request: input ~{input_tokens} tokens, available ~{available_tokens}, max_tokens={safe_max_tokens}, json_mode={json_mode}")
+            payload: Dict[str, Any] = {
                 "model": self.model,
                 "messages": normalized_messages,
                 "temperature": temperature,
                 "max_tokens": safe_max_tokens,
                 "top_p": 0.9,
-                "stop": ["\n\n\n", "```", "---"]  # Stop sequences to prevent infinite generation
             }
+            # Stop sequences break JSON output (--- or ``` can appear in evidence text)
+            if not json_mode:
+                payload["stop"] = ["\n\n\n", "```", "---"]
+            return payload
         else:  # ollama
             return {
                 "model": self.model,
@@ -195,10 +198,10 @@ class LLMClient:
                 raise LLMClientError("Invalid response format from Ollama")
             return data["message"]["content"]
 
-    async def _make_request(self, messages: List[Dict[str, str]], temperature: float = 0.1) -> Tuple[str, str, float]:
+    async def _make_request(self, messages: List[Dict[str, str]], temperature: float = 0.1, json_mode: bool = False) -> Tuple[str, str, float]:
         """Make a request to the LLM API with retries. Returns (response_text, curl_command, duration_seconds)."""
         url = self._get_api_url()
-        payload = self._build_request_payload(messages, temperature)
+        payload = self._build_request_payload(messages, temperature, json_mode=json_mode)
 
         # Generate curl command
         curl_command = self._generate_curl_command(url, payload)
@@ -813,7 +816,7 @@ class LLMClient:
 
         logger.info(f"Sending JSON request to LLM (model: {self.model})")
         try:
-            response_text, curl_command, duration = await self._make_request(messages)
+            response_text, curl_command, duration = await self._make_request(messages, json_mode=True)
             logger.info(f"Received LLM response ({len(response_text)} chars)")
 
             # Try to parse JSON
@@ -861,7 +864,7 @@ class LLMClient:
                 schema_note += f"\n\nREQUIRED FIELDS to extract: {', '.join(field_names)}"
             messages[0]["content"] += schema_note
 
-        response_text, curl_command, duration = await self._make_request(messages)
+        response_text, curl_command, duration = await self._make_request(messages, json_mode=True)
 
         # Pre-process: remove any instruction text that the LLM might have echoed
         import re
