@@ -35,7 +35,8 @@ class LLMClient:
         self.timeout = config["timeout"]
         self.max_retries = config["max_retries"]
         self.max_tokens = config.get("max_tokens", 2048)
-        
+        self._detected_context_length: Optional[int] = None  # populated on first 400 context-limit error
+
         # Validate base_url format
         if not self.base_url.startswith(('http://', 'https://')):
             logger.warning(
@@ -143,9 +144,8 @@ class LLMClient:
         normalized_messages = self._normalize_messages(messages)
 
         if self.provider == "vllm":
-            # Calculate available tokens based on actual model context
-            # Configurable via MPROOF_VLLM_CONTEXT_LENGTH env var; default 8192
-            MODEL_CONTEXT = int(os.environ.get("MPROOF_VLLM_CONTEXT_LENGTH", "8192"))
+            # Use detected context length (from a prior 400 response) or env var default
+            MODEL_CONTEXT = self._detected_context_length or int(os.environ.get("MPROOF_VLLM_CONTEXT_LENGTH", "8192"))
             SAFETY_MARGIN = 100  # Buffer for tokenization differences
 
             input_tokens = self._estimate_input_tokens(normalized_messages)
@@ -304,6 +304,10 @@ class LLMClient:
                             f"Context limit auto-correct: model_ctx={actual_ctx}, "
                             f"input_tokens={actual_input}, retrying with max_tokens={corrected}"
                         )
+                        # Cache so future calls don't hit 400 again
+                        if self._detected_context_length != actual_ctx:
+                            self._detected_context_length = actual_ctx
+                            logger.info(f"Cached model context length: {actual_ctx} tokens")
                         payload = {**payload, "max_tokens": corrected}
                         continue  # retry with corrected payload
                     raise LLMClientError(f"LLM request rejected (400): {error_body}")
