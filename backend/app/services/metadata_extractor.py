@@ -59,7 +59,9 @@ class MetadataExtractorMixin:
                 terms.update({"bouw jaar", "bouwjaar", "construction year", "built", "built year"})
             if "energielabel" in combined or "energie label" in combined:
                 terms.update({"energielabel", "energie label", "energieklasse",
-                               "energieprestatie", "energie certificaat", "epc"})
+                               "energieprestatie", "energie certificaat", "epc",
+                               "duurzaamheid", "energieprestatie-indicatoren",
+                               "nta 8800", "energieklasse woning"})
             if "exploitatielasten" in combined or "exploitatie lasten" in combined:
                 terms.update({"exploitatielasten", "totale exploitatielasten",
                                "exploitatiekosten", "exploitatie kosten",
