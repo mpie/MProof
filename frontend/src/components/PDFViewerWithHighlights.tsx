@@ -239,16 +239,30 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
 
       pageEv.items.forEach(item => {
         const quote = item.quote?.trim();
-        if (!quote) return;
+        // Minimum length: a bare number like "4" or "28" matches everywhere and is useless
+        if (!quote || quote.length < 5) return;
         const style = getHighlightStyle(item.fieldName, quote);
         const beforeCount = highlightRanges.length;
 
-        // 1. Exact match
-        let idx = findFirst(pageText, quote);
+        // Word-boundary-aware find: "4" must not match inside "4.000"
+        const findWithBoundary = (haystack: string, needle: string): number => {
+          let i = haystack.indexOf(needle);
+          while (i >= 0) {
+            if (overlaps(i, i + needle.length)) { i = haystack.indexOf(needle, i + 1); continue; }
+            const before = i === 0 || !/\w/.test(haystack[i - 1]);
+            const after = i + needle.length >= haystack.length || !/\w/.test(haystack[i + needle.length]);
+            if (before && after) return i;
+            i = haystack.indexOf(needle, i + 1);
+          }
+          return -1;
+        };
+
+        // 1. Exact match (word-boundary aware)
+        let idx = findWithBoundary(pageText, quote);
         if (idx >= 0) { reserve(idx, idx + quote.length, style); }
         else {
-          // 2. Case-insensitive
-          idx = findFirst(lowerPage, quote.toLowerCase());
+          // 2. Case-insensitive (word-boundary aware)
+          idx = findWithBoundary(lowerPage, quote.toLowerCase());
           if (idx >= 0) { reserve(idx, idx + quote.length, style); }
           else {
             // 3. Normalized whitespace

@@ -516,10 +516,27 @@ class ExtractionUtilsMixin:
         if not quote:
             return []
 
+        # Too short to highlight reliably — a bare number like "4" matches everywhere
+        if len(quote) < 5:
+            return []
+
+        def _find_with_boundary(page_text: str, q: str) -> int:
+            """Find q in page_text, requiring a word boundary so '4' doesn't match inside '4.000'."""
+            start = 0
+            while True:
+                idx = page_text.find(q, start)
+                if idx < 0:
+                    return -1
+                before_ok = idx == 0 or not page_text[idx - 1].isalnum()
+                after_ok = idx + len(q) >= len(page_text) or not page_text[idx + len(q)].isalnum()
+                if before_ok and after_ok:
+                    return idx
+                start = idx + 1
+
         if pages:
             for page_idx, page in enumerate(pages):
                 page_text = page.get("text", "")
-                start = page_text.find(quote)
+                start = _find_with_boundary(page_text, quote)
                 if start >= 0:
                     return [{
                         "page": page_idx,
@@ -531,7 +548,7 @@ class ExtractionUtilsMixin:
             quote_lower = quote.lower()
             for page_idx, page in enumerate(pages):
                 page_text = page.get("text", "")
-                start = page_text.lower().find(quote_lower)
+                start = _find_with_boundary(page_text.lower(), quote_lower)
                 if start >= 0:
                     matched_quote = page_text[start:start + len(quote)]
                     return [{
@@ -541,12 +558,8 @@ class ExtractionUtilsMixin:
                         "quote": matched_quote,
                     }]
 
-        return [{
-            "page": 0,
-            "start": 0,
-            "end": len(quote),
-            "quote": quote,
-        }]
+        # Quote not found in any page — return nothing rather than fake coordinates
+        return []
 
     def _validate_candidate(self, candidate: Dict[str, Any], field_config: Dict[str, Any]) -> Optional[str]:
         """Validate one candidate after LLM output and normalization."""
