@@ -1053,7 +1053,22 @@ IMPORTANT:
         return result
 
     def _correct_evidence_pages(self, result: Dict[str, Any], pages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Fix LLM-attributed page numbers by searching quote across all pages."""
+        """Fix LLM-attributed page numbers by searching quote across all pages.
+
+        Tries exact match first, then token-based scoring (for LLM-synthesised quotes
+        that combine label + value from separate table rows so no verbatim match exists).
+        """
+        import re as _re
+
+        def _page_score(page_text: str, quote: str) -> float:
+            """Return 0-1 fraction of significant quote tokens present in page_text."""
+            tokens = _re.findall(r"[A-Za-zÀ-ÿ0-9]{4,}", quote)
+            if not tokens:
+                return 0.0
+            page_lower = page_text.lower()
+            hits = sum(1 for t in tokens if t.lower() in page_lower)
+            return hits / len(tokens)
+
         if "evidence" not in result or not isinstance(result["evidence"], dict):
             return result
 
@@ -1068,18 +1083,39 @@ IMPORTANT:
                     continue
                 current_page = span.get("page")
                 quote_lower = quote.lower()
-                # Check attributed page first
+
+                # 1. Exact match on attributed page — nothing to fix
                 if current_page is not None and 0 <= current_page < len(pages):
                     if quote_lower in pages[current_page].get("text", "").lower():
-                        continue  # Correct, no fix needed
-                # Search all other pages
+                        continue
+
+                # 2. Exact match on any other page
+                best_exact = None
                 for page_idx, page in enumerate(pages):
                     if page_idx == current_page:
                         continue
                     if quote_lower in page.get("text", "").lower():
-                        logger.info(f"Corrected evidence page for '{field_key}': {current_page} → {page_idx}")
-                        span["page"] = page_idx
+                        best_exact = page_idx
                         break
+                if best_exact is not None:
+                    logger.info(f"Corrected evidence page for '{field_key}': {current_page} → {best_exact} (exact)")
+                    span["page"] = best_exact
+                    continue
+
+                # 3. Token-based: find the page where most significant tokens appear
+                best_page = None
+                best_score = 0.0
+                for page_idx, page in enumerate(pages):
+                    score = _page_score(page.get("text", ""), quote)
+                    if score > best_score:
+                        best_score = score
+                        best_page = page_idx
+                if best_page is not None and best_score >= 0.6 and best_page != current_page:
+                    logger.info(
+                        f"Corrected evidence page for '{field_key}': {current_page} → {best_page} "
+                        f"(token score {best_score:.2f})"
+                    )
+                    span["page"] = best_page
 
         return result
 
