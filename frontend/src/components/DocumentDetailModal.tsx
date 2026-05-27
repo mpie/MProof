@@ -1331,7 +1331,9 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
     if (/email/.test(k) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return 'email';
     if (/url|link|website/.test(k) || /^https?:\/\//.test(s)) return 'url';
     if (/bedrag|amount|prijs|waarde|kosten|rente|inkomen|schuld|hypotheek|lening|saldo|totaal/.test(k) ||
-        /^[€$]?\s*[\d.,]+\s*$/.test(s) || /^[\d.,]+\s*euro$/i.test(s)) return 'amount';
+        /^[€$£¥]\s*[\d.,]+$/.test(s) ||          // explicit currency symbol
+        /^[\d.,]+\s*(euro|eur|usd|gbp)$/i.test(s) || // currency text suffix
+        /^\d{1,3}([.,]\d{3})+([\.,]\d{1,2})?$/.test(s)) return 'amount'; // formatted thousands (e.g. 39.212,40)
     if (/phone|telefoon|tel/.test(k) || /^\+?[\d\s\-()]{7,}$/.test(s)) return 'phone';
     if (/datum|date|geldig|vervalt|aanvang|eind/.test(k) ||
         /^\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}$/.test(s) ||
