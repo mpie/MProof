@@ -477,7 +477,7 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 - `get_document` - Get details
 - `get_document_text` - Get extracted text
 - `get_document_metadata` - Get metadata
-- `analyze_document` - Queue for processing
+- `analyze_document` - Queue for processing (optional `model_name` to specify classifier model)
 - `search_documents` - Search by text/type/risk
 
 **Fraud Detection:**
@@ -497,6 +497,7 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
 - `train_bert_classifier` - Train BERT
 - `get_classifier_status` - Naive Bayes status
 - `get_bert_classifier_status` - BERT status
+- `list_classifier_models` - List available classifier models with their document types
 
 **Subjects:**
 - `list_subjects` - Search subjects
@@ -638,9 +639,10 @@ nvidia-smi
 
 ### LLM Response Issues
 
-**Truncated responses:**
+**Truncated responses / context length errors:**
+- Set **Context venster** in Settings → LLM to match your model's actual context window (e.g. 4096)
+- Output tokens = context window − input tokens. If misconfigured the system auto-corrects once per session.
 - System automatically repairs malformed JSON
-- Check logs for `"LLM response appears truncated"`
 
 **Wrong JSON structure:**
 - System merges separate data/evidence objects
