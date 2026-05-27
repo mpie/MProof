@@ -491,15 +491,12 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
         )}
       </div>
 
-      {/* Page thumbnails / quick nav for pages with confirmed highlights */}
-      {matchedItems.size > 0 && Array.from(matchedItems.values()).some(items => items.length > 0) && (
+      {/* Page thumbnails / quick nav — based on LLM-attributed evidence pages (available immediately) */}
+      {pageEvidence.size > 0 && (
         <div className="px-4 py-2 bg-white border-t border-slate-200">
           <div className="text-slate-400 text-[10px] mb-1">Pagina's met evidence:</div>
           <div className="flex gap-1 flex-wrap">
-            {Array.from(matchedItems.entries())
-              .filter(([, items]) => items.length > 0)
-              .sort(([a], [b]) => a - b)
-              .map(([pageNum]) => (
+            {Array.from(pageEvidence.keys()).sort((a, b) => a - b).map(pageNum => (
               <button
                 key={pageNum}
                 onClick={() => setCurrentPage(pageNum)}

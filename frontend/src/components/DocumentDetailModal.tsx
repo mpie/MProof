@@ -292,6 +292,17 @@ export function DocumentDetailModal({ documentId, isOpen, onClose, initialTab }:
       queryClient.removeQueries({ queryKey: ['ela-heatmap', documentId] });
       queryClient.removeQueries({ queryKey: ['fraud-analysis', documentId] });
       
+      // Sync documents-recent cache immediately so SSE subscription picks up the new queued status
+      queryClient.setQueryData(['documents-recent'], (old: any) => {
+        if (!old?.documents) return old;
+        return {
+          ...old,
+          documents: old.documents.map((d: any) =>
+            d.id === documentId ? { ...d, status: 'queued', progress: 0, stage: null } : d
+          ),
+        };
+      });
+
       // Invalidate queries in background (don't await)
       queryClient.invalidateQueries({ queryKey: ['document', documentId] });
       queryClient.invalidateQueries({ queryKey: ['documents'] });
@@ -1351,8 +1362,24 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
     return parseFloat(clean);
   };
 
-  const formatAmount = (s: string) => {
-    const currency = /\$/.test(s) ? 'USD' : /£/.test(s) ? 'GBP' : /¥/.test(s) ? 'JPY' : 'EUR';
+  const detectCurrency = (s: string, evidenceQuotes?: string[]): string => {
+    // Check value string first
+    if (/\$/.test(s)) return 'USD';
+    if (/£/.test(s)) return 'GBP';
+    if (/¥/.test(s)) return 'JPY';
+    // Fall back to evidence quotes (LLM may strip symbol from extracted value)
+    if (evidenceQuotes) {
+      for (const q of evidenceQuotes) {
+        if (/\$/.test(q)) return 'USD';
+        if (/£/.test(q)) return 'GBP';
+        if (/¥/.test(q)) return 'JPY';
+      }
+    }
+    return 'EUR';
+  };
+
+  const formatAmount = (s: string, evidenceQuotes?: string[]) => {
+    const currency = detectCurrency(s, evidenceQuotes);
     const num = parseAmountString(s);
     if (isNaN(num)) return s;
     return new Intl.NumberFormat('nl-NL', { style: 'currency', currency }).format(num);
@@ -1399,12 +1426,14 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
             {formatIban(s)}
           </span>
         );
-      case 'amount':
+      case 'amount': {
+        const evQuotes = (evidenceFromDb?.[key] || []).map((e: any) => String(e.quote || '')).filter(Boolean);
         return (
           <span className="font-mono text-yellow-700 text-xs font-medium">
-            {formatAmount(s)}
+            {formatAmount(s, evQuotes)}
           </span>
         );
+      }
       case 'date':
         return <span className="text-blue-700 text-xs">{s}</span>;
       case 'bsn':
