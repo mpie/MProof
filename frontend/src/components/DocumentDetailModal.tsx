@@ -348,7 +348,10 @@ export function DocumentDetailModal({ documentId, isOpen, onClose, initialTab }:
           if (event.type === 'status') {
             updated.status = event.status as Document['status'];
             updated.stage = event.stage || undefined;
-            updated.progress = event.progress ?? old.progress;
+            // Reset progress when re-entering processing (rerun) to avoid keeping stale 100%
+            updated.progress = (event.status === 'processing' && old.status !== 'processing')
+              ? (event.progress ?? 0)
+              : (event.progress ?? old.progress);
             updated.updated_at = event.updated_at || old.updated_at;
           } else if (event.type === 'result') {
             if (event.doc_type_slug != null) updated.doc_type_slug = event.doc_type_slug;
@@ -363,16 +366,15 @@ export function DocumentDetailModal({ documentId, isOpen, onClose, initialTab }:
             updated.error_message = event.error_message || 'Unknown error';
             updated.updated_at = new Date().toISOString();
           }
-          
+
           return updated;
         });
-        
-        // Also refetch to ensure consistency
-        refetch();
-        queryClient.invalidateQueries({ queryKey: ['documents'] });
-        
-        // Invalidate LLM artifacts when document status changes or finishes processing
-        if (event.type === 'result' || (event.type === 'status' && event.stage?.includes('extract'))) {
+
+        // Only refetch from server when processing completes — mid-processing refetches
+        // return stale DB progress that overwrites real-time SSE updates.
+        if (event.type === 'result') {
+          refetch();
+          queryClient.invalidateQueries({ queryKey: ['documents'] });
           queryClient.removeQueries({ queryKey: ['document-llm', documentId] });
           queryClient.invalidateQueries({ queryKey: ['document-llm', documentId] });
         }
