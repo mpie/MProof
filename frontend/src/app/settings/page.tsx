@@ -1005,7 +1005,7 @@ function ModelTab() {
                     trainingFilesByLabel={trainingDetails.training_files_by_label}
                     tokensByLabel={trainingDetails.important_tokens_by_label}
                     modelName={selectedModel}
-                    allModelsData={aggregatedTrainingDetails}
+                    allModelsData={availableModels?.models}
                   />
                 )}
               </div>
