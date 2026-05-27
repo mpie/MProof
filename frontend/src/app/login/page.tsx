@@ -19,8 +19,8 @@ function LoginForm() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!isLoading && user) router.replace(from);
-  }, [user, isLoading, router, from]);
+    if (!isLoading && user) window.location.href = from;
+  }, [user, isLoading, from]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -28,7 +28,8 @@ function LoginForm() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.replace(from);
+      // Hard navigation so the browser sends the new cookie to the proxy
+      window.location.href = from;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Inloggen mislukt');
     } finally {
