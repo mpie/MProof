@@ -313,10 +313,10 @@ async def export_config():
         # Export user-defined signals only
         result = await session.execute(
             text("""
-                SELECT key, label, description, signal_type, compute_kind, config_json
+                SELECT `key`, label, description, signal_type, compute_kind, config_json
                 FROM classification_signals
                 WHERE source = 'user'
-                ORDER BY key
+                ORDER BY `key`
             """)
         )
         signal_rows = result.fetchall()
@@ -388,7 +388,7 @@ async def import_config(bundle: ConfigExportBundle = Body(...)):
         for sig in bundle.signals:
             try:
                 result = await session.execute(
-                    text("SELECT id, source FROM classification_signals WHERE key = :key"),
+                    text("SELECT id, source FROM classification_signals WHERE `key` = :key"),
                     {"key": sig.key}
                 )
                 row = result.fetchone()
@@ -405,7 +405,7 @@ async def import_config(bundle: ConfigExportBundle = Body(...)):
                             SET label = :label, description = :description,
                                 signal_type = :signal_type, compute_kind = :compute_kind,
                                 config_json = :config_json, updated_at = CURRENT_TIMESTAMP
-                            WHERE key = :key
+                            WHERE `key` = :key
                         """),
                         {
                             "key": sig.key,

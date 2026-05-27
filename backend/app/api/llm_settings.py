@@ -31,6 +31,14 @@ class LLMSettingsResponse(BaseModel):
     providers: Dict[str, LLMProviderConfig]
 
 
+class UpdateProviderRequest(BaseModel):
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    timeout: Optional[float] = None
+    max_retries: Optional[int] = None
+    max_tokens: Optional[int] = None
+
+
 class SwitchProviderRequest(BaseModel):
     """Request to switch the active LLM provider."""
     provider: Literal["ollama", "vllm"]
@@ -87,38 +95,76 @@ async def set_active_provider_in_db(db: AsyncSession, provider: str) -> None:
     await db.commit()
 
 
+async def _get_all_llm_settings(db: AsyncSession) -> dict:
+    """Return flat dict of all LLM-related app_settings rows."""
+    result = await db.execute(select(AppSetting))
+    return {s.key: s.value for s in result.scalars().all()}
+
+
+async def _upsert_setting(db: AsyncSession, key: str, value: str, description: str = "") -> None:
+    from datetime import datetime, timezone
+    row = (await db.execute(select(AppSetting).where(AppSetting.key == key))).scalar_one_or_none()
+    if row:
+        row.value = value
+        row.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(AppSetting(key=key, value=value, description=description,
+                          created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc)))
+    await db.commit()
+
+
 @router.get("/llm/settings", response_model=LLMSettingsResponse)
 async def get_llm_settings(db: AsyncSession = Depends(get_db)):
-    """Get current LLM settings for all providers."""
-    active = await get_active_provider_from_db(db)
-    
-    # Get config for both providers
-    ollama_config = settings.get_llm_config("ollama")
-    vllm_config = settings.get_llm_config("vllm")
-    
-    return LLMSettingsResponse(
-        active_provider=active,
-        providers={
-            "ollama": LLMProviderConfig(
-                provider="ollama",
-                base_url=ollama_config["base_url"],
-                model=ollama_config["model"],
-                timeout=ollama_config["timeout"],
-                max_retries=ollama_config["max_retries"],
-                max_tokens=ollama_config["max_tokens"],
-                is_active=(active == "ollama"),
-            ),
-            "vllm": LLMProviderConfig(
-                provider="vllm",
-                base_url=vllm_config["base_url"],
-                model=vllm_config["model"],
-                timeout=vllm_config["timeout"],
-                max_retries=vllm_config["max_retries"],
-                max_tokens=vllm_config["max_tokens"],
-                is_active=(active == "vllm"),
-            ),
-        }
-    )
+    """Get current LLM settings for all providers (from database)."""
+    s = await _get_all_llm_settings(db)
+    active = s.get("llm_provider", "ollama")
+
+    def cfg(p: str) -> LLMProviderConfig:
+        return LLMProviderConfig(
+            provider=p,
+            base_url=s.get(f"{p}_base_url", settings.get_llm_config(p)["base_url"]),
+            model=s.get(f"{p}_model", settings.get_llm_config(p)["model"]),
+            timeout=float(s.get(f"{p}_timeout", settings.get_llm_config(p)["timeout"])),
+            max_retries=int(s.get(f"{p}_max_retries", settings.get_llm_config(p)["max_retries"])),
+            max_tokens=int(s.get(f"{p}_max_tokens", settings.get_llm_config(p)["max_tokens"])),
+            is_active=(active == p),
+        )
+
+    return LLMSettingsResponse(active_provider=active, providers={"ollama": cfg("ollama"), "vllm": cfg("vllm")})
+
+
+@router.put("/llm/settings/{provider}")
+async def update_provider_settings(
+    provider: Literal["ollama", "vllm"],
+    req: UpdateProviderRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update connection/model settings for a provider (persisted in database)."""
+    import app.main as app_main
+
+    field_map = {
+        "base_url": (f"{provider}_base_url", str),
+        "model": (f"{provider}_model", str),
+        "timeout": (f"{provider}_timeout", float),
+        "max_retries": (f"{provider}_max_retries", int),
+        "max_tokens": (f"{provider}_max_tokens", int),
+    }
+
+    updated = []
+    for field, (db_key, cast) in field_map.items():
+        val = getattr(req, field)
+        if val is None:
+            continue
+        await _upsert_setting(db, db_key, str(val))
+        object.__setattr__(app_main.settings, db_key.replace(f"{provider}_", f"{provider}_"), cast(val))
+        updated.append(field)
+
+    # Apply to settings object and refresh client if this is the active provider
+    active = (await db.execute(select(AppSetting).where(AppSetting.key == "llm_provider"))).scalar_one_or_none()
+    if active and active.value == provider:
+        app_main.llm_client._refresh_config(provider)
+
+    return {"updated": updated, "provider": provider}
 
 
 @router.get("/llm/health")

@@ -4,6 +4,8 @@ import Link from "next/link";
 import "./globals.css";
 import { QueryProvider } from "@/components/QueryProvider";
 import { ModelProvider } from "@/context/ModelContext";
+import { AuthProvider } from "@/context/AuthContext";
+import { UserMenu } from "@/components/UserMenu";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { config, library } from "@fortawesome/fontawesome-svg-core";
 import {
@@ -12,7 +14,8 @@ import {
   faFolder, faQuestion, faSearch, faEye, faDownload, faRedo, faInfoCircle,
   faHighlighter, faCopy, faChevronDown, faChevronUp, faSpinner, faFilePdf,
   faFileImage, faFileWord, faFileExcel, faHome, faFileAlt, faList, faBook,
-  faExternalLinkAlt
+  faExternalLinkAlt, faUsers, faCrown, faShieldAlt, faToggleOn, faToggleOff,
+  faSignOutAlt, faKey, faEyeSlash, faStop,
 } from "@fortawesome/free-solid-svg-icons";
 import "@fortawesome/fontawesome-svg-core/styles.css";
 import { Navigation } from "@/components/Navigation";
@@ -25,7 +28,8 @@ library.add(
   faFolder, faQuestion, faSearch, faEye, faDownload, faRedo, faInfoCircle,
   faHighlighter, faCopy, faChevronDown, faChevronUp, faSpinner, faFilePdf,
   faFileImage, faFileWord, faFileExcel, faHome, faFileAlt, faList, faBook,
-  faExternalLinkAlt
+  faExternalLinkAlt, faUsers, faCrown, faShieldAlt, faToggleOn, faToggleOff,
+  faSignOutAlt, faKey, faEyeSlash, faStop,
 );
 
 // Prevent FontAwesome from adding its CSS since we did it manually above
@@ -59,41 +63,38 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} antialiased min-w-[320px]`}>
         <QueryProvider>
-          <ModelProvider>
-            <div className="min-h-screen min-w-[320px]" style={{ background: 'linear-gradient(135deg, #0f766e 0%, #0e7490 30%, #1e40af 70%, #1e3a8a 100%)' }}>
-              <header className="bg-white/10 backdrop-blur-xl border-b border-white/15 shadow-xl relative z-[100]">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                  <div className="flex items-center justify-between h-14 sm:h-16">
-                    <Link
-                      href="/"
-                      className="flex items-center space-x-2 sm:space-x-3 hover:opacity-80 transition-opacity"
-                      title="Go to Dashboard"
-                    >
-                      <div className="relative w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg bg-gradient-to-br from-teal-500 via-cyan-500 to-blue-500 p-1.5 sm:p-2 shadow-lg">
-                        <FontAwesomeIcon
-                          icon={faFileShield}
-                          className="text-white text-sm sm:text-lg"
-                        />
+          <AuthProvider>
+            <ModelProvider>
+              <div className="min-h-screen min-w-[320px]" style={{ background: 'var(--background)' }}>
+                <header className="section-header backdrop-blur-xl relative z-[100]">
+                  <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex items-center justify-between h-14 sm:h-16">
+                      <Link
+                        href="/"
+                        className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
+                        title="Dashboard"
+                      >
+                        <div className="w-8 h-8 flex items-center justify-center rounded-lg bg-gradient-to-br from-[#FFC1F3] to-[#FCE2CE] shadow-md">
+                          <FontAwesomeIcon icon={faFileShield} className="text-white text-sm" />
+                        </div>
+                        <span className="text-slate-800 text-lg font-bold tracking-tight">MProof</span>
+                      </Link>
+                      <div className="flex items-center gap-2 sm:gap-3">
+                        <div className="hidden sm:block">
+                          <LLMStatus />
+                        </div>
+                        <Navigation />
+                        <UserMenu />
                       </div>
-                      <div className="flex flex-col">
-                        <span className="text-white text-lg sm:text-xl font-bold tracking-tight">MProof</span>
-                        <span className="text-white/70 text-[10px] sm:text-xs font-normal hidden sm:block">Document Analysis</span>
-                      </div>
-                    </Link>
-                    <div className="flex items-center space-x-2 sm:space-x-4">
-                      <div className="hidden sm:block">
-                        <LLMStatus />
-                      </div>
-                      <Navigation />
                     </div>
                   </div>
-                </div>
-              </header>
-              <main className="max-w-7xl mx-auto px-3 sm:px-4 lg:px-8 py-4 sm:py-8">
-                {children}
-              </main>
-            </div>
-          </ModelProvider>
+                </header>
+                <main className="max-w-[1600px] mx-auto px-3 sm:px-4 lg:px-8 py-4 sm:py-8">
+                  {children}
+                </main>
+              </div>
+            </ModelProvider>
+          </AuthProvider>
         </QueryProvider>
       </body>
     </html>

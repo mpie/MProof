@@ -439,7 +439,7 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
           </Document>
         </div>
 
-        {currentPageItems.length > 0 && (
+        {(pageEvidence.get(currentPage)?.items.length ?? 0) > 0 && (
           <aside className="lg:w-80 lg:max-w-80 max-h-48 lg:max-h-none overflow-hidden bg-white border-t lg:border-t-0 lg:border-l border-slate-200">
             <button
               onClick={() => setShowEvidenceOverlay(!showEvidenceOverlay)}
@@ -449,7 +449,9 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
                 <FontAwesomeIcon icon={faHighlighter} className="text-blue-400 w-3.5 h-3.5 flex-shrink-0" />
                 <div className="min-w-0">
                   <div className="text-slate-800 text-sm font-semibold">Evidence op pagina {currentPage}</div>
-                  <div className="text-slate-400 text-[11px]">{currentPageItems.length} bron{currentPageItems.length === 1 ? '' : 'nen'}</div>
+                  <div className="text-slate-400 text-[11px]">
+                    {pageEvidence.get(currentPage)!.items.length} bron{pageEvidence.get(currentPage)!.items.length === 1 ? '' : 'nen'}
+                  </div>
                 </div>
               </div>
               <FontAwesomeIcon
@@ -460,12 +462,13 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
 
             {showEvidenceOverlay && (
               <div className="px-4 pb-4 space-y-2 overflow-y-auto max-h-36 lg:max-h-[calc(100%-64px)]">
-                {currentPageItems.map((item, i) => {
+                {pageEvidence.get(currentPage)!.items.map((item, i) => {
                   const hs = getHighlightStyle(item.fieldName, item.quote || '');
+                  const highlighted = currentPageItems.some(m => m.fieldName === item.fieldName && m.quote === item.quote);
                   return (
                   <div
                     key={`${item.fieldName}-${i}`}
-                    className="rounded-lg p-2.5"
+                    className={`rounded-lg p-2.5 ${highlighted ? '' : 'opacity-60'}`}
                     style={{ border: `1px solid ${hs.border}60`, background: hs.cardBg }}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
@@ -475,7 +478,7 @@ export function PDFViewerWithHighlights({ url, evidence = {} }: PDFViewerWithHig
                           {item.fieldName.replace(/_/g, ' ')}
                         </span>
                       </div>
-                      <span className="text-[10px] flex-shrink-0" style={{ color: hs.label }}>
+                      <span className="text-[10px] flex-shrink-0 text-slate-400">
                         #{i + 1}
                       </span>
                     </div>

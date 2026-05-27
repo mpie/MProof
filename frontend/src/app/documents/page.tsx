@@ -25,10 +25,10 @@ const contextLabels = {
 };
 
 const contextColors = {
-  person: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  company: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  dossier: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
-  other: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  person: 'bg-blue-100 text-blue-700 border-blue-200',
+  company: 'bg-purple-100 text-purple-700 border-purple-200',
+  dossier: 'bg-amber-100 text-amber-700 border-amber-200',
+  other: 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
 export default function DocumentsPage() {
@@ -108,8 +108,8 @@ export default function DocumentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-white text-2xl sm:text-3xl font-bold">Documenten</h1>
-          <p className="text-white/60 mt-1 text-sm sm:text-base">Zoek en filter documenten op naam en context</p>
+          <h1 className="text-slate-800 text-2xl sm:text-3xl font-bold">Documenten</h1>
+          <p className="text-slate-500 mt-1 text-sm sm:text-base">Zoek en filter documenten op naam en context</p>
         </div>
       </div>
 
@@ -119,19 +119,19 @@ export default function DocumentsPage() {
         <div className="relative">
           <FontAwesomeIcon
             icon={faSearch}
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-white/40 w-4 h-4"
+            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4"
           />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
             placeholder="Zoek op naam..."
-            className="w-full pl-10 sm:pl-11 pr-9 sm:pr-10 py-2.5 sm:py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40 focus:ring-2 focus:ring-blue-400 focus:border-transparent text-sm sm:text-base lg:text-lg"
+            className="w-full pl-10 sm:pl-11 pr-9 sm:pr-10 py-2.5 sm:py-3 bg-slate-100 border border-slate-300 rounded-xl text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-blue-400 focus:border-transparent text-sm sm:text-base lg:text-lg"
           />
           {searchQuery && (
             <button
               onClick={clearFilters}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-white/40 hover:text-white cursor-pointer"
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-800 cursor-pointer"
             >
               <FontAwesomeIcon icon={faTimes} className="w-4 h-4" />
             </button>
@@ -141,7 +141,7 @@ export default function DocumentsPage() {
         {/* Context Filter Pills */}
         {availableContexts.length > 0 && (
           <div className="flex items-center space-x-2 flex-wrap gap-2">
-            <span className="text-white/60 text-sm flex items-center">
+            <span className="text-slate-500 text-sm flex items-center">
               <FontAwesomeIcon icon={faFilter} className="w-3 h-3 mr-2" />
               Context:
             </span>
@@ -149,8 +149,8 @@ export default function DocumentsPage() {
               onClick={() => setSelectedContext(null)}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all ${
                 selectedContext === null
-                  ? 'bg-white/20 text-white'
-                  : 'bg-white/5 text-white/60 hover:bg-white/10 hover:text-white'
+                  ? 'bg-slate-200 text-slate-800'
+                  : 'bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-slate-800'
               }`}
             >
               Alle ({totalSubjects})
@@ -165,7 +165,7 @@ export default function DocumentsPage() {
                   className={`flex items-center space-x-1.5 sm:space-x-2 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all border cursor-pointer ${
                     selectedContext === ctx
                       ? contextColors[ctx as keyof typeof contextColors]
-                      : 'bg-white/5 text-white/60 border-transparent hover:bg-white/10 hover:text-white'
+                      : 'bg-slate-50 text-slate-500 border-transparent hover:bg-slate-100 hover:text-slate-800'
                   }`}
                 >
                   <FontAwesomeIcon icon={icon} className="w-3 h-3" />
@@ -181,15 +181,15 @@ export default function DocumentsPage() {
         {isSearching && (
           <div className="flex items-center justify-center py-4">
             <FontAwesomeIcon icon={faSpinner} className="w-5 h-5 text-blue-400 animate-spin mr-2" />
-            <span className="text-white/60">Zoeken...</span>
+            <span className="text-slate-500">Zoeken...</span>
           </div>
         )}
 
         {/* No results */}
         {debouncedQuery.length >= 2 && !isSearching && totalSubjects === 0 && (
           <div className="text-center py-8">
-            <FontAwesomeIcon icon={faSearch} className="w-12 h-12 text-white/20 mb-3" />
-            <p className="text-white/60">Geen resultaten gevonden voor "{debouncedQuery}"</p>
+            <FontAwesomeIcon icon={faSearch} className="w-12 h-12 text-slate-500 mb-3" />
+            <p className="text-slate-500">Geen resultaten gevonden voor "{debouncedQuery}"</p>
           </div>
         )}
 
@@ -207,21 +207,21 @@ export default function DocumentsPage() {
                   onClick={() => handleSubjectSelect(subject)}
                   className={`flex items-center space-x-2 sm:space-x-3 p-3 sm:p-4 rounded-lg sm:rounded-xl border transition-all text-left cursor-pointer ${
                     isSelected
-                      ? 'bg-blue-500/20 border-blue-500/50 ring-2 ring-blue-500/30'
-                      : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                      ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
+                      : 'bg-slate-50 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
                   }`}
                 >
                   <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center shrink-0 ${colorClass.split(' ').slice(0, 2).join(' ')}`}>
                     <FontAwesomeIcon icon={icon} className={`${colorClass.split(' ')[1]} text-sm sm:text-base`} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-white font-medium text-sm sm:text-base truncate">{subject.name}</p>
-                    <p className="text-white/50 text-xs sm:text-sm">
+                    <p className="text-slate-800 font-medium text-sm sm:text-base truncate">{subject.name}</p>
+                    <p className="text-slate-400 text-xs sm:text-sm">
                       {contextLabels[subject.context]}
                     </p>
                   </div>
                   {isSelected && (
-                    <FontAwesomeIcon icon={faChevronDown} className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400 shrink-0" />
+                    <FontAwesomeIcon icon={faChevronDown} className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 shrink-0" />
                   )}
                 </button>
               );
@@ -244,13 +244,13 @@ export default function DocumentsPage() {
                 />
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="text-white text-lg sm:text-xl font-semibold truncate">{selectedSubject.name}</h2>
-                <p className="text-white/50 text-xs sm:text-sm">{contextLabels[selectedSubject.context]}</p>
+                <h2 className="text-slate-800 text-lg sm:text-xl font-semibold truncate">{selectedSubject.name}</h2>
+                <p className="text-slate-400 text-xs sm:text-sm">{contextLabels[selectedSubject.context]}</p>
               </div>
             </div>
             <button
               onClick={() => setSelectedSubject(null)}
-              className="text-white/40 hover:text-white p-1.5 sm:p-2 hover:bg-white/10 rounded-lg transition-colors shrink-0 cursor-pointer"
+              className="text-slate-400 hover:text-slate-800 p-1.5 sm:p-2 hover:bg-slate-100 rounded-lg transition-colors shrink-0 cursor-pointer"
             >
               <FontAwesomeIcon icon={faTimes} className="w-4 h-4" />
             </button>
@@ -268,9 +268,9 @@ export default function DocumentsPage() {
       {/* Empty State */}
       {!selectedSubject && debouncedQuery.length < 2 && (
         <div className="glass-card p-12 text-center">
-          <FontAwesomeIcon icon={faFileAlt} className="w-16 h-16 text-white/20 mb-4" />
-          <h3 className="text-white text-lg font-medium mb-2">Zoek naar documenten</h3>
-          <p className="text-white/50 max-w-md mx-auto">
+          <FontAwesomeIcon icon={faFileAlt} className="w-16 h-16 text-slate-500 mb-4" />
+          <h3 className="text-slate-800 text-lg font-medium mb-2">Zoek naar documenten</h3>
+          <p className="text-slate-400 max-w-md mx-auto">
             Typ een naam in het zoekveld om te zoeken. Je kunt daarna filteren op context
             (persoon, bedrijf, dossier) en een specifiek subject selecteren om de documenten te bekijken.
           </p>

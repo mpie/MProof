@@ -77,13 +77,16 @@ async def train_classifier(
 ):
     """Train the classifier. Optionally specify a model folder name."""
     if model_name:
-        # Set environment variable for this training session
         model_dir = _default_dataset_dir() / model_name
         if not model_dir.exists():
             return {"ok": False, "error": f"Model folder '{model_name}' not found"}
         os.environ["MPROOF_TRAINING_DATA_DIR"] = str(model_dir)
         os.environ["MPROOF_ACTIVE_MODEL"] = model_name
-    
+    else:
+        # Clear any leftover env var from a previous model-specific training run
+        os.environ.pop("MPROOF_TRAINING_DATA_DIR", None)
+        os.environ.pop("MPROOF_ACTIVE_MODEL", None)
+
     # Incremental flag is handled by cache logic (only new/changed files are processed)
     return await classifier_service().train()
 

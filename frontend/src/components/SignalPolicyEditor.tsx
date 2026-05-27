@@ -241,10 +241,10 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm"
+      className="flex-1 px-3 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm"
     >
       {signals.map((s) => (
-        <option key={s.key} value={s.key} className="bg-gray-800">
+        <option key={s.key} value={s.key} className="bg-white">
           {s.label} ({s.signal_type})
         </option>
       ))}
@@ -256,21 +256,21 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-20 px-2 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm text-center"
+      className="w-20 px-2 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm text-center"
     >
       {isBoolean ? (
         <>
-          <option value="==" className="bg-gray-800">=</option>
-          <option value="!=" className="bg-gray-800">≠</option>
+          <option value="==" className="bg-white">=</option>
+          <option value="!=" className="bg-white">≠</option>
         </>
       ) : (
         <>
-          <option value=">=" className="bg-gray-800">≥</option>
-          <option value=">" className="bg-gray-800">&gt;</option>
-          <option value="<=" className="bg-gray-800">≤</option>
-          <option value="<" className="bg-gray-800">&lt;</option>
-          <option value="==" className="bg-gray-800">=</option>
-          <option value="!=" className="bg-gray-800">≠</option>
+          <option value=">=" className="bg-white">≥</option>
+          <option value=">" className="bg-white">&gt;</option>
+          <option value="<=" className="bg-white">≤</option>
+          <option value="<" className="bg-white">&lt;</option>
+          <option value="==" className="bg-white">=</option>
+          <option value="!=" className="bg-white">≠</option>
         </>
       )}
     </select>
@@ -279,7 +279,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
   if (isPolicyLoading) {
     return (
       <div className="flex items-center justify-center py-8">
-        <div className="animate-spin w-6 h-6 border-2 border-white/30 border-t-white rounded-full" />
+        <div className="animate-spin w-6 h-6 border-2 border-slate-300 border-t-slate-600 rounded-full" />
       </div>
     );
   }
@@ -288,7 +288,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
           <FontAwesomeIcon icon={faShieldAlt} className="text-indigo-400" />
           Classificatiebeleid
         </h3>
@@ -296,8 +296,8 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
           onClick={() => setShowAdvanced(!showAdvanced)}
           className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
             showAdvanced
-              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-              : 'bg-white/10 text-white/60 hover:bg-white/20'
+              ? 'bg-purple-100 text-purple-700 border border-purple-200'
+              : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
           }`}
         >
           <FontAwesomeIcon icon={faCode} className="mr-2" />
@@ -308,15 +308,15 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
       {showAdvanced ? (
         /* JSON Editor */
         <div className="space-y-4">
-          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
             <textarea
               value={rawJson}
               onChange={(e) => handleRawJsonChange(e.target.value)}
-              className="w-full h-80 px-4 py-3 bg-gray-900 border border-white/20 rounded-lg text-white font-mono text-sm resize-y"
+              className="w-full h-80 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 font-mono text-sm resize-y"
               placeholder="Voer beleid JSON in..."
             />
             {jsonError && (
-              <p className="text-red-400 text-sm mt-2">{jsonError}</p>
+              <p className="text-red-600 text-sm mt-2">{jsonError}</p>
             )}
           </div>
         </div>
@@ -324,15 +324,15 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
         /* Signal-based Editor */
         <div className="space-y-6">
           {/* Requirements */}
-          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h4 className="text-white font-medium">Vereisten</h4>
-                <p className="text-white/50 text-sm">Document moet aan ALLE vereisten voldoen</p>
+                <h4 className="text-slate-800 font-medium">Vereisten</h4>
+                <p className="text-slate-400 text-sm">Document moet aan ALLE vereisten voldoen</p>
               </div>
               <button
                 onClick={addRequirement}
-                className="px-3 py-1.5 bg-teal-500/20 text-teal-300 rounded-lg text-sm hover:bg-teal-500/30 transition-colors"
+                className="px-3 py-1.5 bg-teal-100 text-teal-700 rounded-lg text-sm hover:bg-teal-200 transition-colors"
               >
                 <FontAwesomeIcon icon={faPlus} className="mr-2" />
                 Toevoegen
@@ -340,7 +340,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
             </div>
 
             {requirements.length === 0 ? (
-              <p className="text-white/40 text-sm italic">Geen vereisten (alle documenten komen in aanmerking)</p>
+              <p className="text-slate-400 text-sm italic">Geen vereisten (alle documenten komen in aanmerking)</p>
             ) : (
               <div className="space-y-2">
                 {requirements.map((req, index) => {
@@ -348,7 +348,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                   const isBoolean = signal?.signal_type === 'boolean';
 
                   return (
-                    <div key={index} className="flex items-center gap-2 bg-white/5 rounded-lg p-2">
+                    <div key={index} className="flex items-center gap-2 bg-slate-50 rounded-lg p-2">
                       <SignalSelect
                         value={req.signal}
                         onChange={(v) => updateRequirement(index, 'signal', v)}
@@ -362,23 +362,23 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                         <select
                           value={String(req.value)}
                           onChange={(e) => updateRequirement(index, 'value', e.target.value === 'true')}
-                          className="w-24 px-2 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm"
+                          className="w-24 px-2 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm"
                         >
-                          <option value="true" className="bg-gray-800">Ja</option>
-                          <option value="false" className="bg-gray-800">Nee</option>
+                          <option value="true" className="bg-white">Ja</option>
+                          <option value="false" className="bg-white">Nee</option>
                         </select>
                       ) : (
                         <input
                           type="number"
                           value={Number(req.value)}
                           onChange={(e) => updateRequirement(index, 'value', parseInt(e.target.value) || 0)}
-                          className="w-24 px-2 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm"
+                          className="w-24 px-2 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm"
                           min={0}
                         />
                       )}
                       <button
                         onClick={() => removeRequirement(index)}
-                        className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
                       >
                         <FontAwesomeIcon icon={faTrash} />
                       </button>
@@ -390,15 +390,15 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
           </div>
 
           {/* Exclusions */}
-          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h4 className="text-white font-medium">Uitsluitingen</h4>
-                <p className="text-white/50 text-sm">Als EEN uitsluiting matcht, komt document NIET in aanmerking</p>
+                <h4 className="text-slate-800 font-medium">Uitsluitingen</h4>
+                <p className="text-slate-400 text-sm">Als EEN uitsluiting matcht, komt document NIET in aanmerking</p>
               </div>
               <button
                 onClick={addExclusion}
-                className="px-3 py-1.5 bg-red-500/20 text-red-300 rounded-lg text-sm hover:bg-red-500/30 transition-colors"
+                className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm hover:bg-red-200 transition-colors"
               >
                 <FontAwesomeIcon icon={faPlus} className="mr-2" />
                 Toevoegen
@@ -406,7 +406,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
             </div>
 
             {exclusions.length === 0 ? (
-              <p className="text-white/40 text-sm italic">Geen uitsluitingen</p>
+              <p className="text-slate-400 text-sm italic">Geen uitsluitingen</p>
             ) : (
               <div className="space-y-2">
                 {exclusions.map((excl, index) => {
@@ -414,7 +414,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                   const isBoolean = signal?.signal_type === 'boolean';
 
                   return (
-                    <div key={index} className="flex items-center gap-2 bg-red-500/5 border border-red-500/10 rounded-lg p-2">
+                    <div key={index} className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-2">
                       <SignalSelect
                         value={excl.signal}
                         onChange={(v) => updateExclusion(index, 'signal', v)}
@@ -428,23 +428,23 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                         <select
                           value={String(excl.value)}
                           onChange={(e) => updateExclusion(index, 'value', e.target.value === 'true')}
-                          className="w-24 px-2 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm"
+                          className="w-24 px-2 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm"
                         >
-                          <option value="true" className="bg-gray-800">Ja</option>
-                          <option value="false" className="bg-gray-800">Nee</option>
+                          <option value="true" className="bg-white">Ja</option>
+                          <option value="false" className="bg-white">Nee</option>
                         </select>
                       ) : (
                         <input
                           type="number"
                           value={Number(excl.value)}
                           onChange={(e) => updateExclusion(index, 'value', parseInt(e.target.value) || 0)}
-                          className="w-24 px-2 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm"
+                          className="w-24 px-2 py-2 bg-slate-100 border border-slate-300 rounded-lg text-slate-800 text-sm"
                           min={0}
                         />
                       )}
                       <button
                         onClick={() => removeExclusion(index)}
-                        className="p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+                        className="p-2 text-red-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
                       >
                         <FontAwesomeIcon icon={faTrash} />
                       </button>
@@ -456,21 +456,21 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
           </div>
 
           {/* Acceptance Thresholds */}
-          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
-            <h4 className="text-white font-medium mb-4">Acceptatiedrempels</h4>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+            <h4 className="text-slate-800 font-medium mb-4">Acceptatiedrempels</h4>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Trained Model */}
-              <div className="p-3 bg-teal-500/10 border border-teal-500/20 rounded-lg">
+              <div className="p-3 bg-teal-50 border border-teal-200 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-teal-300 text-sm font-medium">Getraind Model</span>
+                  <span className="text-teal-700 text-sm font-medium">Getraind Model</span>
                   <button
                     onClick={() => setAcceptance({
                       ...acceptance,
                       trained_model: { ...acceptance.trained_model, enabled: !acceptance.trained_model?.enabled }
                     })}
                     className={`w-8 h-5 rounded-full transition-colors flex items-center ${
-                      acceptance.trained_model?.enabled ? 'bg-teal-500' : 'bg-white/20'
+                      acceptance.trained_model?.enabled ? 'bg-teal-500' : 'bg-slate-200'
                     }`}
                   >
                     <div className={`w-3 h-3 bg-white rounded-full shadow-md transform transition-transform ${
@@ -481,7 +481,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                 {acceptance.trained_model?.enabled && (
                   <div className="space-y-2">
                     <div>
-                      <label className="text-white/50 text-xs">Min. Zekerheid</label>
+                      <label className="text-slate-400 text-xs">Min. Zekerheid</label>
                       <input
                         type="number"
                         min={0}
@@ -492,11 +492,11 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                           ...acceptance,
                           trained_model: { ...acceptance.trained_model, min_confidence: parseFloat(e.target.value) }
                         })}
-                        className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-white text-sm"
+                        className="w-full px-2 py-1 bg-slate-100 border border-slate-300 rounded text-slate-800 text-sm"
                       />
                     </div>
                     <div>
-                      <label className="text-white/50 text-xs">Min. Marge</label>
+                      <label className="text-slate-400 text-xs">Min. Marge</label>
                       <input
                         type="number"
                         min={0}
@@ -507,7 +507,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                           ...acceptance,
                           trained_model: { ...acceptance.trained_model, min_margin: parseFloat(e.target.value) }
                         })}
-                        className="w-full px-2 py-1 bg-white/10 border border-white/20 rounded text-white text-sm"
+                        className="w-full px-2 py-1 bg-slate-100 border border-slate-300 rounded text-slate-800 text-sm"
                       />
                     </div>
                   </div>
@@ -515,16 +515,16 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
               </div>
 
               {/* Deterministic */}
-              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
                 <div className="flex items-center justify-between">
-                  <span className="text-amber-300 text-sm font-medium">Deterministisch</span>
+                  <span className="text-amber-700 text-sm font-medium">Deterministisch</span>
                   <button
                     onClick={() => setAcceptance({
                       ...acceptance,
                       deterministic: { enabled: !acceptance.deterministic?.enabled }
                     })}
                     className={`w-8 h-5 rounded-full transition-colors flex items-center ${
-                      acceptance.deterministic?.enabled ? 'bg-amber-500' : 'bg-white/20'
+                      acceptance.deterministic?.enabled ? 'bg-amber-500' : 'bg-slate-200'
                     }`}
                   >
                     <div className={`w-3 h-3 bg-white rounded-full shadow-md transform transition-transform ${
@@ -535,16 +535,16 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
               </div>
 
               {/* LLM */}
-              <div className="p-3 bg-purple-500/10 border border-purple-500/20 rounded-lg">
+              <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-purple-300 text-sm font-medium">LLM</span>
+                  <span className="text-purple-700 text-sm font-medium">LLM</span>
                   <button
                     onClick={() => setAcceptance({
                       ...acceptance,
                       llm: { ...acceptance.llm, enabled: !acceptance.llm?.enabled }
                     })}
                     className={`w-8 h-5 rounded-full transition-colors flex items-center ${
-                      acceptance.llm?.enabled ? 'bg-purple-500' : 'bg-white/20'
+                      acceptance.llm?.enabled ? 'bg-purple-500' : 'bg-slate-200'
                     }`}
                   >
                     <div className={`w-3 h-3 bg-white rounded-full shadow-md transform transition-transform ${
@@ -554,14 +554,14 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                 </div>
                 {acceptance.llm?.enabled && (
                   <div className="flex items-center gap-2">
-                    <label className="text-white/50 text-xs">Bewijs vereist</label>
+                    <label className="text-slate-400 text-xs">Bewijs vereist</label>
                     <button
                       onClick={() => setAcceptance({
                         ...acceptance,
                         llm: { ...acceptance.llm, require_evidence: !acceptance.llm?.require_evidence }
                       })}
                       className={`w-6 h-4 rounded-full transition-colors flex items-center ${
-                        acceptance.llm?.require_evidence ? 'bg-purple-400' : 'bg-white/20'
+                        acceptance.llm?.require_evidence ? 'bg-purple-400' : 'bg-slate-200'
                       }`}
                     >
                       <div className={`w-2.5 h-2.5 bg-white rounded-full shadow-md transform transition-transform ${
@@ -575,18 +575,18 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
           </div>
 
           {/* Preview */}
-          <div className="bg-white/5 border border-white/10 rounded-xl p-4">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h4 className="text-white font-medium flex items-center gap-2">
+                <h4 className="text-slate-800 font-medium flex items-center gap-2">
                   <FontAwesomeIcon icon={faEye} className="text-blue-400" />
                   Geschiktheidspreview
                 </h4>
-                <p className="text-white/50 text-sm">Test hoe een document zou worden geëvalueerd</p>
+                <p className="text-slate-400 text-sm">Test hoe een document zou worden geëvalueerd</p>
               </div>
               <button
                 onClick={() => setShowPreview(!showPreview)}
-                className="px-3 py-1.5 bg-blue-500/20 text-blue-300 rounded-lg text-sm hover:bg-blue-500/30 transition-colors"
+                className="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg text-sm hover:bg-blue-200 transition-colors"
               >
                 {showPreview ? 'Verbergen' : 'Tonen'}
               </button>
@@ -598,12 +598,12 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                   value={previewText}
                   onChange={(e) => setPreviewText(e.target.value)}
                   placeholder="Plak voorbeeldtekst hier..."
-                  className="w-full h-32 px-3 py-2 bg-white/5 border border-white/20 rounded-lg text-white text-sm resize-y"
+                  className="w-full h-32 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-sm resize-y"
                 />
                 <button
                   onClick={() => previewMutation.mutate()}
                   disabled={!previewText || previewMutation.isPending}
-                  className="px-4 py-2 bg-blue-500/20 text-blue-300 rounded-lg hover:bg-blue-500/30 disabled:opacity-50 transition-colors"
+                  className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 disabled:opacity-50 transition-colors"
                 >
                   {previewMutation.isPending ? 'Testen...' : 'Test Geschiktheid'}
                 </button>
@@ -611,25 +611,25 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                 {previewResult && (
                   <div className={`p-4 rounded-lg ${
                     previewResult.is_eligible
-                      ? 'bg-green-500/10 border border-green-500/30'
-                      : 'bg-red-500/10 border border-red-500/30'
+                      ? 'bg-green-50 border border-green-200'
+                      : 'bg-red-50 border border-red-200'
                   }`}>
                     <div className="flex items-center gap-2 mb-3">
                       <FontAwesomeIcon
                         icon={previewResult.is_eligible ? faCheckCircle : faTimesCircle}
                         className={previewResult.is_eligible ? 'text-green-400' : 'text-red-400'}
                       />
-                      <span className={previewResult.is_eligible ? 'text-green-300' : 'text-red-300'}>
+                      <span className={previewResult.is_eligible ? 'text-green-700' : 'text-red-600'}>
                         {previewResult.is_eligible ? 'Document KOMT IN AANMERKING' : 'Document komt NIET in aanmerking'}
                       </span>
                     </div>
 
                     {/* Computed Signals */}
                     <div className="mb-3">
-                      <span className="text-white/60 text-sm">Berekende signalen:</span>
+                      <span className="text-slate-500 text-sm">Berekende signalen:</span>
                       <div className="flex flex-wrap gap-2 mt-1">
                         {previewResult.computed_signals.map((s) => (
-                          <span key={s.key} className="px-2 py-1 bg-white/10 rounded text-xs text-white/80">
+                          <span key={s.key} className="px-2 py-1 bg-slate-100 rounded text-xs text-slate-600">
                             {s.label}: {String(s.value)}
                           </span>
                         ))}
@@ -639,8 +639,8 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                     {/* Failed Requirements */}
                     {previewResult.failed_requirements.length > 0 && (
                       <div className="mb-2">
-                        <span className="text-red-300 text-sm">Niet voldaan aan vereisten:</span>
-                        <ul className="list-disc list-inside text-red-200 text-xs">
+                        <span className="text-red-600 text-sm">Niet voldaan aan vereisten:</span>
+                        <ul className="list-disc list-inside text-red-700 text-xs">
                           {previewResult.failed_requirements.map((f, i) => (
                             <li key={i}>{f}</li>
                           ))}
@@ -651,8 +651,8 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
                     {/* Triggered Exclusions */}
                     {previewResult.triggered_exclusions.length > 0 && (
                       <div>
-                        <span className="text-red-300 text-sm">Getriggerde uitsluitingen:</span>
-                        <ul className="list-disc list-inside text-red-200 text-xs">
+                        <span className="text-red-600 text-sm">Getriggerde uitsluitingen:</span>
+                        <ul className="list-disc list-inside text-red-700 text-xs">
                           {previewResult.triggered_exclusions.map((e, i) => (
                             <li key={i}>{e}</li>
                           ))}
@@ -668,18 +668,18 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
       )}
 
       {/* Actions */}
-      <div className="flex items-center justify-between pt-4 border-t border-white/10">
+      <div className="flex items-center justify-between pt-4 border-t border-slate-200">
         <button
           onClick={() => deleteMutation.mutate()}
           disabled={deleteMutation.isPending}
-          className="px-4 py-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors"
+          className="px-4 py-2 text-red-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
         >
           Reset naar Standaard
         </button>
 
         <div className="flex items-center gap-3">
           {saveSuccess && (
-            <span className="text-green-400 text-sm flex items-center gap-1">
+            <span className="text-green-600 text-sm flex items-center gap-1">
               <FontAwesomeIcon icon={faCheckCircle} />
               Opgeslagen!
             </span>
@@ -687,7 +687,7 @@ export function SignalPolicyEditor({ slug, onClose }: SignalPolicyEditorProps) {
           {onClose && (
             <button
               onClick={onClose}
-              className="px-4 py-2 bg-white/10 text-white/70 rounded-lg hover:bg-white/20 transition-colors"
+              className="px-4 py-2 bg-slate-100 text-slate-500 rounded-lg hover:bg-slate-200 transition-colors"
             >
               Annuleren
             </button>

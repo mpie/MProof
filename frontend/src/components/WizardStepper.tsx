@@ -44,7 +44,7 @@ export function WizardStepper({ activeStep, steps = defaultSteps, isStep3Complet
   return (
     <div className="w-full">
       {/* Progress bar */}
-      <div className="relative h-1 bg-white/10 rounded-full overflow-hidden mb-4">
+      <div className="relative h-1 bg-slate-100 rounded-full overflow-hidden mb-4">
         <div
           className="absolute left-0 top-0 h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-500 ease-out"
           style={{ width: `${progress}%` }}
@@ -68,7 +68,7 @@ export function WizardStepper({ activeStep, steps = defaultSteps, isStep3Complet
                     ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white'
                     : isActive
                       ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-                      : 'bg-white/10 text-white/40'
+                      : 'bg-slate-100 text-slate-400'
                   }
                 `}
               >
@@ -81,13 +81,13 @@ export function WizardStepper({ activeStep, steps = defaultSteps, isStep3Complet
               <div className="mt-2 text-center">
                 <div
                   className={`text-xs font-medium transition-colors duration-300 ${
-                    isActive || isCompleted ? 'text-white' : 'text-white/40'
+                    isActive || isCompleted ? 'text-slate-800' : 'text-slate-400'
                   }`}
                 >
                   {step.title}
                 </div>
                 {step.subtitle && (
-                  <div className="text-[10px] text-white/30 mt-0.5 hidden sm:block">
+                  <div className="text-[10px] text-slate-500 mt-0.5 hidden sm:block">
                     {step.subtitle}
                   </div>
                 )}

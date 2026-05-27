@@ -344,6 +344,10 @@ class NaiveBayesTextClassifier:
         if not labels:
             return None
 
+        # Single-class model: softmax always returns 1.0 — meaningless confidence.
+        if len(labels) < 2:
+            return None
+
         tokens = _tokenize(text)
         if not tokens:
             return None
@@ -387,6 +391,9 @@ class NaiveBayesTextClassifier:
             labels = [l for l in labels if l in allowed]
 
         if not labels:
+            return None
+
+        if len(labels) < 2:
             return None
 
         tokens = _tokenize(text)

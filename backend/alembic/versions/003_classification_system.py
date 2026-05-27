@@ -60,7 +60,7 @@ def upgrade() -> None:
 
         # Seed ONLY generic built-in signals (no domain-specific term lists)
         op.execute("""
-            INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json) VALUES
+            INSERT INTO classification_signals (`key`, label, description, signal_type, source, compute_kind, config_json) VALUES
             ('iban_present', 'IBAN aanwezig', 'Document bevat minimaal één IBAN nummer', 'boolean', 'builtin', 'builtin', NULL),
             ('date_count', 'Aantal datums', 'Aantal datums (DD-MM-YYYY formaat) in document', 'count', 'builtin', 'builtin', NULL),
             ('amount_count', 'Aantal bedragen', 'Aantal geldbedragen (€X.XXX,XX formaat) in document', 'count', 'builtin', 'builtin', NULL),

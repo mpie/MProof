@@ -32,8 +32,8 @@ def upgrade() -> None:
             sa.Column('name', sa.String(length=255), nullable=False),
             sa.Column('name_normalized', sa.String(length=255), nullable=False),
             sa.Column('context', sa.Enum('person', 'company', 'dossier', 'other', name='contextenum'), nullable=False),
-            sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
             sa.PrimaryKeyConstraint('id'),
             sa.Index('ix_subjects_name', 'name'),
             sa.Index('ix_subjects_name_normalized', 'name_normalized'),
@@ -50,8 +50,8 @@ def upgrade() -> None:
             sa.Column('description', sa.Text(), nullable=True),
             sa.Column('classification_hints', sa.Text(), nullable=True),
             sa.Column('extraction_prompt_preamble', sa.Text(), nullable=True),
-            sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
             sa.PrimaryKeyConstraint('id'),
             sa.UniqueConstraint('slug'),
             sa.Index('ix_document_types_slug', 'slug')
@@ -71,8 +71,8 @@ def upgrade() -> None:
             sa.Column('regex', sa.String(length=500), nullable=True),
             sa.Column('description', sa.Text(), nullable=True),
             sa.Column('examples', sa.JSON(), nullable=True),
-            sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
             sa.ForeignKeyConstraint(['document_type_id'], ['document_types.id'], ),
             sa.PrimaryKeyConstraint('id')
         )
@@ -101,8 +101,8 @@ def upgrade() -> None:
             sa.Column('risk_signals_json', sa.JSON(), nullable=True),
             sa.Column('ocr_used', sa.Boolean(), nullable=False),
             sa.Column('ocr_quality', sa.String(length=20), nullable=True),
-            sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
             sa.ForeignKeyConstraint(['subject_id'], ['subjects.id'], ),
             sa.PrimaryKeyConstraint('id')
         )

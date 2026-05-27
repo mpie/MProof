@@ -586,6 +586,15 @@ export const deleteDocument = async (documentId: number): Promise<void> => {
   await api.delete(`/documents/${documentId}`);
 };
 
+export const listDocumentLlmArtifacts = async (documentId: number): Promise<string[]> => {
+  try {
+    const response = await api.get(`/documents/${documentId}/llm-artifacts`);
+    return (response.data as { paths: string[] }).paths;
+  } catch {
+    return [];
+  }
+};
+
 // =============================================================================
 // API Functions - Document Types
 // =============================================================================

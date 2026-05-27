@@ -77,6 +77,70 @@ class FraudReport:
             return [self._convert_numpy_types(item) for item in obj]
         return obj
 
+    def generate_advice(self) -> List[Dict[str, Any]]:
+        """Produce actionable advice cards for the mortgage advisor, ordered by priority."""
+        advice = []
+        seen_categories = set()
+
+        # Category-to-advice mapping (document_expired gets specific advice per signal)
+        for signal in sorted(self.signals, key=lambda s: (
+            0 if s.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH) else
+            1 if s.risk_level == RiskLevel.MEDIUM else 2
+        )):
+            cat = signal.category or "other"
+            detail = signal.details or {}
+
+            if signal.name.endswith("_expired") or signal.name.endswith("_too_old"):
+                field_key = detail.get("field", "")
+                days = detail.get("days_old") or detail.get("days_expired", "?")
+                advice.append({
+                    "priority": "high" if signal.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH) else "medium",
+                    "category": "document_verlopen",
+                    "title": f"Document verlopen: {field_key}",
+                    "action": "Vraag een nieuw/geldig document op bij de klant.",
+                    "signals": [signal.code],
+                })
+            elif cat == "context_mismatch" and "ratio" in signal.name:
+                field_a = detail.get("field", "")
+                field_b = detail.get("other_field", "")
+                advice.append({
+                    "priority": "high" if signal.risk_level == RiskLevel.HIGH else "medium",
+                    "category": "waarde_afwijking",
+                    "title": f"Afwijkende verhouding: {field_a} / {field_b}",
+                    "action": f"Laat de verhouding {field_a}/{field_b} controleren door taxateur of analist.",
+                    "signals": [signal.code],
+                })
+            elif cat in ("ela_manipulation", "image_manipulation"):
+                if cat not in seen_categories:
+                    advice.append({
+                        "priority": "high",
+                        "category": "mogelijke_vervalsing",
+                        "title": "Mogelijke beeldmanipulatie gedetecteerd",
+                        "action": "Vraag origineel document op en vergelijk met digitale kopie.",
+                        "signals": [signal.code],
+                    })
+                    seen_categories.add(cat)
+            elif "metadata" in cat or cat == "suspicious_tool":
+                if cat not in seen_categories:
+                    advice.append({
+                        "priority": "medium",
+                        "category": "pdf_metadata",
+                        "title": "Verdachte PDF-metadata",
+                        "action": "Controleer herkomst van het PDF-bestand.",
+                        "signals": [signal.code],
+                    })
+                    seen_categories.add(cat)
+            elif signal.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL):
+                advice.append({
+                    "priority": "high",
+                    "category": cat,
+                    "title": signal.name.replace("_", " ").capitalize(),
+                    "action": signal.recommendation,
+                    "signals": [signal.code],
+                })
+
+        return advice
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "document_id": self.document_id,
@@ -100,6 +164,7 @@ class FraudReport:
                 }
                 for s in self.signals
             ],
+            "advice": self.generate_advice(),
             "summary": self.summary,
             "analyzed_at": self.analyzed_at,
             "semantic_context": self._convert_numpy_types(self.semantic_context),
@@ -157,8 +222,8 @@ class FraudDetector:
         (0x3164, 0x3164, "Hangul filler"),
     ]
     
-    def __init__(self, llm_client=None, ela_min_size: Optional[int] = None, 
-                 ela_allow_non_jpeg: Optional[bool] = None, 
+    def __init__(self, llm_client=None, ela_min_size: Optional[int] = None,
+                 ela_allow_non_jpeg: Optional[bool] = None,
                  ela_scale_for_heatmap: Optional[int] = None,
                  ela_quality: Optional[int] = None):
         self.llm_client = llm_client
@@ -168,42 +233,38 @@ class FraudDetector:
         self.ela_allow_non_jpeg = ela_allow_non_jpeg if ela_allow_non_jpeg is not None else settings.ela_allow_non_jpeg
         self.ela_scale_for_heatmap = ela_scale_for_heatmap if ela_scale_for_heatmap is not None else settings.ela_scale_for_heatmap
         self.ela_quality = ela_quality if ela_quality is not None else settings.ela_quality
-    
+        self._settings_cache: Dict[str, Any] = {}
+        self._settings_cache_ts: float = 0.0
+        self._settings_cache_ttl: float = 60.0  # seconds
+
+    async def _refresh_settings_cache(self) -> None:
+        import time
+        if time.monotonic() - self._settings_cache_ts < self._settings_cache_ttl:
+            return
+        try:
+            from app.main import async_session_maker
+            from sqlalchemy import select
+            from app.models.database import AppSetting
+            async with async_session_maker() as session:
+                result = await session.execute(select(AppSetting))
+                for setting in result.scalars():
+                    self._settings_cache[setting.key] = setting.value
+            self._settings_cache_ts = time.monotonic()
+        except Exception:
+            pass
+
+    async def _get_setting(self, key: str, default: bool) -> bool:
+        await self._refresh_settings_cache()
+        val = self._settings_cache.get(key)
+        if val is not None:
+            return val.lower() in ('true', '1', 'yes', 'on')
+        return default
+
     async def _get_ela_enabled(self) -> bool:
-        """Get ELA enabled setting, checking database first."""
-        try:
-            from app.main import async_session_maker
-            from sqlalchemy import select
-            from app.models.database import AppSetting
-            
-            async with async_session_maker() as session:
-                result = await session.execute(
-                    select(AppSetting).where(AppSetting.key == 'ela_enabled')
-                )
-                setting = result.scalar_one_or_none()
-                if setting:
-                    return setting.value.lower() in ('true', '1', 'yes', 'on')
-        except Exception:
-            pass
-        return self.settings.ela_enabled
-    
+        return await self._get_setting('ela_enabled', self.settings.ela_enabled)
+
     async def _get_exif_enabled(self) -> bool:
-        """Get EXIF enabled setting, checking database first."""
-        try:
-            from app.main import async_session_maker
-            from sqlalchemy import select
-            from app.models.database import AppSetting
-            
-            async with async_session_maker() as session:
-                result = await session.execute(
-                    select(AppSetting).where(AppSetting.key == 'exif_enabled')
-                )
-                setting = result.scalar_one_or_none()
-                if setting:
-                    return setting.value.lower() in ('true', '1', 'yes', 'on')
-        except Exception:
-            pass
-        return self.settings.exif_enabled
+        return await self._get_setting('exif_enabled', self.settings.exif_enabled)
     
     async def analyze_document(
         self,
@@ -217,6 +278,7 @@ class FraudDetector:
         classification_label: Optional[str] = None,
         semantic_context: Optional[Dict[str, Any]] = None,
         existing_signals: Optional[Dict[str, Any]] = None,
+        field_rules: Optional[List[Dict]] = None,
     ) -> FraudReport:
         """
         Analyze a document for fraud indicators.
@@ -379,9 +441,13 @@ class FraudDetector:
                                 ))
                         except (ValueError, TypeError):
                             pass
+
+                    if field_rules and result_data:
+                        signals.extend(self._analyze_field_rules(result_data, field_rules))
+
                 except Exception as e:
                     logger.warning(f"Failed to read verified/validation files: {e}")
-        
+
         # 8. Enhance signals with LLM-generated user-friendly descriptions
         if self.llm_client and signals:
             try:
@@ -406,6 +472,157 @@ class FraudDetector:
             semantic_context=semantic_context,
         )
     
+    def _analyze_field_rules(self, result_data: Dict[str, Any], field_rules: List[Dict]) -> List[FraudSignal]:
+        """Validate result_data fields against dynamic field-level rules from the database."""
+        from datetime import date, datetime as dt_cls
+        signals = []
+
+        def parse_amount(value) -> Optional[float]:
+            if value is None:
+                return None
+            cleaned = re.sub(r"[€$£\s\.]", "", str(value)).replace(",", ".")
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+
+        for rule in field_rules:
+            field_name = rule.get("field_name")
+            validation_type = rule.get("validation_type")
+            params = rule.get("params") or {}
+
+            if not field_name or not validation_type:
+                continue
+
+            raw_value = result_data.get(field_name)
+
+            if validation_type == "amount_range":
+                amount = parse_amount(raw_value)
+                if amount is None:
+                    continue
+                min_val = params.get("min")
+                max_val = params.get("max")
+                if min_val is not None and amount < min_val:
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_below_minimum",
+                        description=f"Veld '{field_name}' ({amount:,.0f}) ligt onder het minimum ({min_val:,.0f})",
+                        risk_level=RiskLevel.MEDIUM,
+                        confidence=0.8,
+                        category="context_mismatch",
+                        recommendation=f"Controleer of de waarde van '{field_name}' realistisch is.",
+                        details={"field": field_name, "value": amount, "min": min_val},
+                        evidence=[f"{field_name}: {amount:,.0f} < min {min_val:,.0f}"],
+                    ))
+                elif max_val is not None and amount > max_val:
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_above_maximum",
+                        description=f"Veld '{field_name}' ({amount:,.0f}) overschrijdt het maximum ({max_val:,.0f})",
+                        risk_level=RiskLevel.MEDIUM,
+                        confidence=0.8,
+                        category="context_mismatch",
+                        recommendation=f"Controleer of de waarde van '{field_name}' realistisch is.",
+                        details={"field": field_name, "value": amount, "max": max_val},
+                        evidence=[f"{field_name}: {amount:,.0f} > max {max_val:,.0f}"],
+                    ))
+
+            elif validation_type == "date_max_age_days":
+                if raw_value is None:
+                    continue
+                max_days = params.get("max_days")
+                if max_days is None:
+                    continue
+                parsed_date = None
+                for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y"):
+                    try:
+                        parsed_date = dt_cls.strptime(str(raw_value).strip(), fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                if parsed_date is None:
+                    continue
+                days_old = (date.today() - parsed_date).days
+                if days_old > max_days:
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_too_old",
+                        description=f"Veld '{field_name}' is {days_old} dagen oud (maximum: {max_days} dagen)",
+                        risk_level=RiskLevel.HIGH if days_old > max_days * 2 else RiskLevel.MEDIUM,
+                        confidence=0.9,
+                        category="context_mismatch",
+                        recommendation=f"Controleer of het document niet te oud is ('{field_name}': {raw_value}).",
+                        details={"field": field_name, "date": str(raw_value), "days_old": days_old, "max_days": max_days},
+                        evidence=[f"{field_name} is {days_old} dagen oud (max {max_days})"],
+                    ))
+
+            elif validation_type == "cross_field_ratio":
+                other_field = params.get("other_field")
+                min_ratio = params.get("min_ratio")
+                max_ratio = params.get("max_ratio")
+                if not other_field:
+                    continue
+                value_a = parse_amount(raw_value)
+                value_b = parse_amount(result_data.get(other_field))
+                if other_field not in result_data:
+                    logger.warning(f"cross_field_ratio: field '{other_field}' not found in result_data for rule on '{field_name}'")
+                if value_a is None or value_b is None or value_b == 0:
+                    continue
+                ratio = value_a / value_b
+                if min_ratio is not None and ratio < min_ratio:
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_ratio_too_low",
+                        description=f"Verhouding {field_name}/{other_field} is {ratio:.0%} (verwacht minimaal {min_ratio:.0%})",
+                        risk_level=RiskLevel.HIGH,
+                        confidence=0.85,
+                        category="context_mismatch",
+                        recommendation=f"Controleer de verhouding tussen '{field_name}' en '{other_field}'.",
+                        details={"field": field_name, "other_field": other_field, "value_a": value_a, "value_b": value_b, "ratio": round(ratio, 3), "min_ratio": min_ratio},
+                        evidence=[f"{field_name}/{other_field} ratio: {ratio:.0%} < min {min_ratio:.0%}"],
+                    ))
+                elif max_ratio is not None and ratio > max_ratio:
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_ratio_too_high",
+                        description=f"Verhouding {field_name}/{other_field} is {ratio:.0%} (verwacht maximaal {max_ratio:.0%})",
+                        risk_level=RiskLevel.MEDIUM,
+                        confidence=0.75,
+                        category="context_mismatch",
+                        recommendation=f"Controleer de verhouding tussen '{field_name}' en '{other_field}'.",
+                        details={"field": field_name, "other_field": other_field, "value_a": value_a, "value_b": value_b, "ratio": round(ratio, 3), "max_ratio": max_ratio},
+                        evidence=[f"{field_name}/{other_field} ratio: {ratio:.0%} > max {max_ratio:.0%}"],
+                    ))
+
+            elif validation_type == "date_not_expired":
+                # Field date must be >= today (e.g., passport/ID geldig_tot, contract datum_einde)
+                if raw_value is None:
+                    continue
+                parsed_date = None
+                for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y"):
+                    try:
+                        parsed_date = dt_cls.strptime(str(raw_value).strip(), fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                if parsed_date is None:
+                    continue
+                today = date.today()
+                if parsed_date < today:
+                    days_expired = (today - parsed_date).days
+                    signals.append(FraudSignal(
+                        name=f"{field_name}_expired",
+                        description=f"Veld '{field_name}' is verlopen op {raw_value} ({days_expired} dag(en) geleden)",
+                        risk_level=RiskLevel.HIGH if days_expired > 30 else RiskLevel.MEDIUM,
+                        confidence=0.95,
+                        category="document_expired",
+                        recommendation=f"Document is verlopen. Vraag een geldig document op bij de klant ('{field_name}': {raw_value}).",
+                        details={"field": field_name, "expiry_date": str(raw_value), "days_expired": days_expired},
+                        evidence=[f"{field_name} verlopen op {raw_value} ({days_expired} dag(en) geleden)"],
+                    ))
+
+            elif validation_type:
+                logger.warning(
+                    f"Unknown validation_type '{validation_type}' for field '{field_name}' — skipping"
+                )
+
+        return signals
+
     def _analyze_pdf_metadata(self, pdf_bytes: bytes) -> List[FraudSignal]:
         """Analyze PDF metadata for suspicious indicators."""
         signals = []
@@ -771,36 +988,128 @@ class FraudDetector:
     async def _analyze_exif(self, img: Image.Image) -> List[FraudSignal]:
         """Analyze EXIF metadata for suspicious indicators."""
         signals = []
-        
+
         exif_enabled = await self._get_exif_enabled()
         if not exif_enabled:
             return signals
-        
+
+        # (name, risk_level, confidence)
+        EDITING_SOFTWARE: dict[str, tuple[str, RiskLevel, float]] = {
+            'photoshop':      ('Adobe Photoshop',    RiskLevel.HIGH,   0.90),
+            'lightroom':      ('Adobe Lightroom',    RiskLevel.HIGH,   0.85),
+            'illustrator':    ('Adobe Illustrator',  RiskLevel.HIGH,   0.85),
+            'affinity photo': ('Affinity Photo',     RiskLevel.HIGH,   0.80),
+            'gimp':           ('GIMP',               RiskLevel.HIGH,   0.85),
+            'inkscape':       ('Inkscape',           RiskLevel.MEDIUM, 0.70),
+            'paint.net':      ('Paint.NET',          RiskLevel.MEDIUM, 0.70),
+            'pixelmator':     ('Pixelmator',         RiskLevel.MEDIUM, 0.65),
+            'canva':          ('Canva',              RiskLevel.MEDIUM, 0.65),
+            'snapseed':       ('Snapseed',           RiskLevel.MEDIUM, 0.60),
+            'paint ':         ('MS Paint',           RiskLevel.MEDIUM, 0.65),
+            'acrobat':        ('Adobe Acrobat',      RiskLevel.MEDIUM, 0.55),
+            'irfanview':      ('IrfanView',          RiskLevel.LOW,    0.50),
+            'preview':        ('Apple Preview',      RiskLevel.LOW,    0.40),
+        }
+
+        TAG_SOFTWARE      = 305    # 0x0131  Software
+        TAG_PROC_SW       = 11     # 0x000B  ProcessingSoftware
+        TAG_DATETIME      = 0x0132 # DateTime (last modified)
+        TAG_DATETIME_ORIG = 0x9003 # DateTimeOriginal
+        TAG_DATETIME_DIG  = 0x9004 # DateTimeDigitized
+        TAG_GPS_IFD       = 0x8825 # GPS Info IFD
+        TAG_MAKE          = 0x010F # Camera Make
+        TAG_MODEL         = 0x0110 # Camera Model
+
         try:
             exif = img._getexif()
             if not exif:
                 return signals
-            
-            # Check for software manipulation indicators
-            software_tags = [305, 11]  # Software, ProcessingSoftware
-            for tag in software_tags:
-                if tag in exif:
-                    software = str(exif[tag]).lower()
-                    if any(s in software for s in ['photoshop', 'gimp', 'paint']):
+
+            # ── Software tags ────────────────────────────────────────────────
+            for tag in [TAG_SOFTWARE, TAG_PROC_SW]:
+                if tag not in exif:
+                    continue
+                sw_raw = str(exif[tag])
+                sw = sw_raw.lower()
+                for key, (name, risk, conf) in EDITING_SOFTWARE.items():
+                    if key in sw:
                         signals.append(FraudSignal(
                             name="image_editing_software",
-                            description=f"Afbeelding bewerkt met: {exif[tag]}",
-                            risk_level=RiskLevel.LOW,
-                            confidence=0.7,
+                            description=f"Afbeelding bewerkt met {name}: {sw_raw}",
+                            risk_level=risk,
+                            confidence=conf,
                             category="manipulation",
                             recommendation="Controleer of gebruik van beeldbewerkingssoftware verwacht is voor dit document.",
-                            details={"software": exif[tag]},
-                            evidence=[f"Bewerkt met: {exif[tag]}"],
+                            details={"software": sw_raw, "exif_tag": tag},
+                            evidence=[f"Software-tag: {sw_raw}"],
                         ))
-            
+                        break
+
+            # ── Date mismatch ────────────────────────────────────────────────
+            def _parse_exif_dt(v):
+                try:
+                    from datetime import datetime as _dt
+                    return _dt.strptime(str(v), '%Y:%m:%d %H:%M:%S')
+                except Exception:
+                    return None
+
+            dt_modified = _parse_exif_dt(exif.get(TAG_DATETIME))
+            dt_original = _parse_exif_dt(exif.get(TAG_DATETIME_ORIG)) or _parse_exif_dt(exif.get(TAG_DATETIME_DIG))
+
+            if dt_modified and dt_original and dt_modified != dt_original:
+                delta_days = abs((dt_modified - dt_original).days)
+                if delta_days > 1:
+                    risk = RiskLevel.HIGH if delta_days > 30 else RiskLevel.MEDIUM
+                    signals.append(FraudSignal(
+                        name="exif_date_mismatch",
+                        description=f"Aanmaakdatum en wijzigingsdatum wijken {delta_days} dag(en) af",
+                        risk_level=risk,
+                        confidence=0.80,
+                        category="manipulation",
+                        recommendation="Afbeelding mogelijk bewerkt na aanmaak. Controleer originele bron.",
+                        details={
+                            "original": dt_original.strftime('%Y-%m-%d %H:%M:%S'),
+                            "modified": dt_modified.strftime('%Y-%m-%d %H:%M:%S'),
+                            "delta_days": delta_days,
+                        },
+                        evidence=[
+                            f"Aangemaakt: {dt_original.strftime('%d-%m-%Y')}",
+                            f"Gewijzigd:  {dt_modified.strftime('%d-%m-%Y')}",
+                        ],
+                    ))
+
+            # ── GPS data present ─────────────────────────────────────────────
+            if TAG_GPS_IFD in exif:
+                signals.append(FraudSignal(
+                    name="exif_gps_present",
+                    description="Afbeelding bevat GPS-locatiedata — ongebruikelijk voor financiële documenten",
+                    risk_level=RiskLevel.LOW,
+                    confidence=0.50,
+                    category="metadata",
+                    recommendation="GPS-coördinaten zijn aanwezig. Controleer of dit verwacht is voor dit documenttype.",
+                    details={"gps_ifd_present": True},
+                    evidence=["GPS-locatiedata aanwezig in EXIF"],
+                ))
+
+            # ── Camera make/model (foto, geen scanner) ───────────────────────
+            make  = str(exif[TAG_MAKE]).strip()  if TAG_MAKE  in exif else None
+            model = str(exif[TAG_MODEL]).strip() if TAG_MODEL in exif else None
+            if make or model:
+                label = " ".join(filter(None, [make, model]))
+                signals.append(FraudSignal(
+                    name="exif_camera_metadata",
+                    description=f"Document is een foto (camera: {label}), geen gescand document",
+                    risk_level=RiskLevel.LOW,
+                    confidence=0.40,
+                    category="metadata",
+                    recommendation="Document is gefotografeerd, niet gescand. Overweeg origineel op te vragen.",
+                    details={"make": make or "", "model": model or ""},
+                    evidence=[f"Camera: {label}"],
+                ))
+
         except Exception as e:
             logger.debug(f"EXIF analysis failed: {e}")
-        
+
         return signals
     
     async def _analyze_pdf_images(self, pdf_bytes: bytes, ela_heatmap_path: Optional[Path] = None) -> List[FraudSignal]:
@@ -861,7 +1170,10 @@ class FraudDetector:
                             })
                         else:
                             logger.debug(f"Skipping PDF image {page_num + 1}/{img_index}: too small ({width}x{height} < {self.ela_min_size})")
+                            pil_img.close()
                     except Exception as e:
+                        if 'pil_img' in locals():
+                            pil_img.close()
                         logger.debug(f"Failed to extract PDF image metadata: {e}")
             
             doc.close()
@@ -881,26 +1193,40 @@ class FraudDetector:
                 selected = max(candidates, key=lambda c: c['size_px'])
                 logger.info(f"Selected largest image from PDF (non-JPEG): page {selected['page']}, format {selected['ext']}, size {selected['width']}x{selected['height']} ({selected['size_px']} px)")
             
+            # Close unselected PIL images to free memory
+            for c in candidates:
+                if c is not selected:
+                    try:
+                        c['pil_img'].close()
+                    except Exception:
+                        pass
+
             # Perform ELA on selected candidate
             original_format = selected['pil_img'].format or selected['ext'].lstrip('.').upper() or "UNKNOWN"
-            ela_signal, ela_heatmap = self._perform_ela(
-                selected['pil_img'],
-                original_format=original_format,
-                save_heatmap_path=ela_heatmap_path,
-                allow_non_jpeg=self.ela_allow_non_jpeg
-            )
-            
-            if ela_signal:
-                # Add PDF-specific metadata
-                ela_signal.details.update({
-                    "page": selected['page'],
-                    "image_index": selected['image_index'],
-                    "xref": selected['xref'],
-                    "ext": selected['ext'],
-                    "size_px": selected['size_px'],
-                })
-                signals.append(ela_signal)
-                logger.info(f"ELA signal detected for PDF image: page {selected['page']}, std_error={ela_signal.details.get('std_error', 'N/A'):.2f}")
+            try:
+                ela_signal, ela_heatmap = self._perform_ela(
+                    selected['pil_img'],
+                    original_format=original_format,
+                    save_heatmap_path=ela_heatmap_path,
+                    allow_non_jpeg=self.ela_allow_non_jpeg
+                )
+
+                if ela_signal:
+                    # Add PDF-specific metadata
+                    ela_signal.details.update({
+                        "page": selected['page'],
+                        "image_index": selected['image_index'],
+                        "xref": selected['xref'],
+                        "ext": selected['ext'],
+                        "size_px": selected['size_px'],
+                    })
+                    signals.append(ela_signal)
+                    logger.info(f"ELA signal detected for PDF image: page {selected['page']}, std_error={ela_signal.details.get('std_error', 'N/A'):.2f}")
+            finally:
+                try:
+                    selected['pil_img'].close()
+                except Exception:
+                    pass
             
         except Exception as e:
             logger.warning(f"PDF image analysis failed: {e}", exc_info=True)

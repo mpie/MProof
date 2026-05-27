@@ -5,9 +5,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faFile, faSpinner, faCheck, faExclamationTriangle,
-  faEye, faRedo, faFilePdf, faFileImage, faFileWord, faFileExcel, faTrash, faTimes
+  faEye, faRedo, faFilePdf, faFileImage, faFileWord, faFileExcel, faTrash, faTimes, faStop
 } from '@fortawesome/free-solid-svg-icons';
-import { Document, listDocuments, subscribeToDocumentEvents, DocumentEvent, analyzeDocument, deleteDocument, getQueueStatus } from '@/lib/api';
+import { Document, listDocuments, subscribeToDocumentEvents, DocumentEvent, analyzeDocument, deleteDocument, getQueueStatus, cancelDocument } from '@/lib/api';
 import { DocumentDetailModal } from './DocumentDetailModal';
 
 interface DocumentListProps {
@@ -117,6 +117,16 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
           total: filteredDocs.length,
         };
       });
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: (documentId: number) => cancelDocument(documentId),
+    onSuccess: (_, documentId) => {
+      onDocumentsChange(documents.map(d =>
+        d.id === documentId ? { ...d, status: 'error', error_message: 'Geannuleerd door gebruiker' } : d
+      ));
+      queryClient.invalidateQueries({ queryKey: ['documents'] });
     },
   });
 
@@ -262,8 +272,8 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
   if (isLoading && displayDocuments.length === 0) {
     return (
       <div className="text-center py-12">
-        <FontAwesomeIcon icon={faSpinner} className="text-white/40 text-4xl mb-4 animate-spin" />
-        <p className="text-white/90">Loading documents...</p>
+        <FontAwesomeIcon icon={faSpinner} className="text-slate-400 text-4xl mb-4 animate-spin" />
+        <p className="text-slate-700">Loading documents...</p>
       </div>
     );
   }
@@ -271,8 +281,8 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
   if (displayDocuments.length === 0) {
     return (
       <div className="text-center py-12">
-        <FontAwesomeIcon icon={faFile} className="text-white/40 text-4xl mb-4" />
-        <p className="text-white/90">
+        <FontAwesomeIcon icon={faFile} className="text-slate-400 text-4xl mb-4" />
+        <p className="text-slate-700">
           {subjectId ? 'No documents found for this subject' : 'No documents uploaded yet'}
         </p>
       </div>
@@ -290,10 +300,10 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               className={`text-blue-400 w-5 h-5 ${queueStatus.is_running ? 'animate-spin' : ''}`}
             />
             <div>
-              <p className="text-white font-medium">
+              <p className="text-slate-800 font-medium">
                 {queueStatus.queue_size} document{queueStatus.queue_size !== 1 ? 'en' : ''} in queue
               </p>
-              <p className="text-white/60 text-sm">
+              <p className="text-slate-500 text-sm">
                 Processing is {queueStatus.is_running ? 'active' : 'paused'}
               </p>
             </div>
@@ -305,33 +315,33 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
         {displayDocuments.map((document) => (
           <div
             key={document.id}
-            className="glass-card p-3 sm:p-4 hover:bg-white/20 transition-colors cursor-pointer"
+            className="glass-card-hover p-3 sm:p-4 cursor-pointer"
             onClick={() => handleDocumentClick(document)}
           >
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="flex items-start sm:items-center space-x-2 sm:space-x-3 flex-1 min-w-0">
               <FontAwesomeIcon
                 icon={getMimeTypeIcon(document.mime_type)}
-                className="text-white/70 w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0 mt-0.5 sm:mt-0"
+                className="text-slate-500 w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0 mt-0.5 sm:mt-0"
               />
 
               <div className="flex-1 min-w-0">
-                <h3 className="text-white font-medium text-sm sm:text-base truncate">
+                <h3 className="text-slate-800 font-medium text-sm sm:text-base truncate">
                   {document.original_filename}
                 </h3>
-                <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs sm:text-sm text-white/85 mt-1">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs sm:text-sm text-slate-600 mt-1">
                   <span>{formatFileSize(document.size_bytes)}</span>
                   <span className="hidden sm:inline">{formatDate(document.created_at)}</span>
                   {document.subject_name && (
-                    <span className="text-white/80 font-medium truncate max-w-[120px] sm:max-w-none">
+                    <span className="text-slate-600 font-medium truncate max-w-[120px] sm:max-w-none">
                       {document.subject_name} <span className="hidden sm:inline">({document.subject_context})</span>
                     </span>
                   )}
                   {document.doc_type_slug && (
-                    <span className="text-emerald-400 font-medium truncate">
+                    <span className="text-emerald-700 font-medium truncate">
                       {formatDocumentTypeName(document.doc_type_slug)}
                       {document.doc_type_confidence && (
-                        <span className="text-white/80">
+                        <span className="text-slate-600">
                           ({Math.round(document.doc_type_confidence * 100)}%)
                         </span>
                       )}
@@ -348,14 +358,14 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                   icon={statusIcons[document.status]}
                   className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${statusColors[document.status]}`}
                 />
-                <span className="text-white/80 text-xs sm:text-sm capitalize">
+                <span className="text-slate-600 text-xs sm:text-sm capitalize">
                   {document.status === 'queued'
                     ? `Queue: ${getQueuePosition(document)}`
                     : document.status
                   }
                 </span>
                 {document.stage && document.status === 'processing' && (
-                  <span className="text-white/80 text-[10px] sm:text-xs hidden sm:inline">
+                  <span className="text-slate-600 text-[10px] sm:text-xs hidden sm:inline">
                     ({stageDescriptions[document.stage as keyof typeof stageDescriptions] || document.stage.replace('_', ' ')})
                   </span>
                 )}
@@ -363,7 +373,7 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
 
               {/* Progress Bar */}
               {(document.status === 'processing' || document.status === 'queued') && (
-                <div className="w-full sm:w-24 bg-white/20 rounded-full h-1.5 sm:h-2">
+                <div className="w-full sm:w-24 bg-slate-200 rounded-full h-1.5 sm:h-2">
                   {document.status === 'processing' ? (
                     <div
                       className="bg-blue-500 h-1.5 sm:h-2 rounded-full transition-all duration-300"
@@ -379,9 +389,9 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
               {/* Fraud indicators score */}
               {document.risk_score != null && (
                 <div className={`px-2 py-0.5 sm:py-1 rounded text-[10px] sm:text-xs font-medium shrink-0 ${
-                  (document.risk_score ?? 0) >= 70 ? 'bg-red-500/20 text-red-400' :
-                  (document.risk_score ?? 0) >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
-                  'bg-green-500/20 text-green-400'
+                  (document.risk_score ?? 0) >= 70 ? 'bg-red-100 text-red-700' :
+                  (document.risk_score ?? 0) >= 40 ? 'bg-yellow-100 text-yellow-700' :
+                  'bg-green-100 text-green-700'
                 }`}>
                   Forensics: {document.risk_score}%
                 </div>
@@ -394,7 +404,7 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                     e.stopPropagation();
                     handleDocumentClick(document);
                   }}
-                  className="p-1.5 sm:p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+                  className="p-1.5 sm:p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                   title="View details"
                 >
                   <FontAwesomeIcon icon={faEye} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -407,10 +417,25 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                       handleReanalyze(document.id, e);
                     }}
                     disabled={analyzeMutation.isPending}
-                    className="p-1.5 sm:p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+                    className="p-1.5 sm:p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50"
                     title="Re-run analysis"
                   >
                     <FontAwesomeIcon icon={faRedo} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </button>
+                )}
+
+                {/* Cancel button for processing/queued docs */}
+                {(document.status === 'processing' || document.status === 'queued') && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      cancelMutation.mutate(document.id);
+                    }}
+                    disabled={cancelMutation.isPending}
+                    className="p-1.5 sm:p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-500/10 rounded-lg transition-colors disabled:opacity-50"
+                    title="Verwerking stoppen"
+                  >
+                    <FontAwesomeIcon icon={faStop} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                 )}
 
@@ -421,7 +446,7 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
                     setConfirmDelete({ document, isOpen: true });
                   }}
                   disabled={deleteMutation.isPending}
-                  className="p-1.5 sm:p-2 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+                  className="p-1.5 sm:p-2 text-red-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
                   title="Delete document"
                 >
                   <FontAwesomeIcon icon={faTrash} className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -432,8 +457,8 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
 
           {/* Error Message */}
           {document.error_message && (
-            <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-              <p className="text-red-400 text-sm">{document.error_message}</p>
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-red-600 text-sm">{document.error_message}</p>
             </div>
           )}
         </div>
@@ -446,32 +471,32 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
           <div className="glass-card max-w-md w-full p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-red-500/20 rounded-full flex items-center justify-center">
-                  <FontAwesomeIcon icon={faTrash} className="text-red-400 w-5 h-5" />
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                  <FontAwesomeIcon icon={faTrash} className="text-red-600 w-5 h-5" />
                 </div>
-                <h3 className="text-white text-lg font-semibold">Document verwijderen</h3>
+                <h3 className="text-slate-800 text-lg font-semibold">Document verwijderen</h3>
               </div>
               <button
                 onClick={() => setConfirmDelete(null)}
-                className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+                className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 <FontAwesomeIcon icon={faTimes} className="w-5 h-5" />
               </button>
             </div>
 
             <div className="mb-6">
-              <p className="text-white/80 mb-2">
+              <p className="text-slate-600 mb-2">
                 Weet je zeker dat je dit document wilt verwijderen?
               </p>
-              <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-                <p className="text-white font-medium truncate">
+              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                <p className="text-slate-800 font-medium truncate">
                   {confirmDelete.document.original_filename}
                 </p>
-                <p className="text-white/60 text-sm">
+                <p className="text-slate-500 text-sm">
                   {confirmDelete.document.status === 'queued' ? 'Uit wachtrij verwijderen' : 'Kapot document verwijderen'}
                 </p>
               </div>
-              <p className="text-white/60 text-sm mt-3">
+              <p className="text-slate-500 text-sm mt-3">
                 Deze actie kan niet ongedaan worden gemaakt.
               </p>
             </div>
@@ -479,7 +504,7 @@ export function DocumentList({ subjectId, documents, onDocumentUpdate, onDocumen
             <div className="flex space-x-3">
               <button
                 onClick={() => setConfirmDelete(null)}
-                className="flex-1 px-4 py-2 bg-white/10 text-white rounded-lg hover:bg-white/20 transition-colors"
+                className="flex-1 px-4 py-2 bg-slate-100 text-slate-800 rounded-lg hover:bg-slate-200 transition-colors"
                 disabled={deleteMutation.isPending}
               >
                 Annuleren

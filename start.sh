@@ -1,183 +1,112 @@
 #!/bin/bash
 
 # MProof Startup Script
-# This script starts both the backend and frontend in development mode
 
 set -e
 
-echo "🚀 Starting MProof..."
+echo "Starting MProof..."
 echo
 
-# Check if Ollama is running
-echo "Checking Ollama..."
-if ! curl -s http://localhost:11434/api/tags > /dev/null; then
-    echo "⚠️  Ollama is not running or not accessible at http://localhost:11434"
-    echo "   Please start Ollama with: ollama serve"
-    echo "   And ensure Mistral model is pulled: ollama pull mistral"
-    echo
-fi
-
+# ── Python / venv ─────────────────────────────────────────────────────────────
 BACKEND_PYTHON="python3"
 if command -v pyenv >/dev/null 2>&1; then
-    PYENV_311_PREFIX="$(pyenv prefix 3.11.8 2>/dev/null || true)"
-    if [ -x "$PYENV_311_PREFIX/bin/python" ]; then
-        BACKEND_PYTHON="$PYENV_311_PREFIX/bin/python"
-    fi
+    PYENV_PREFIX="$(pyenv prefix 3.11.8 2>/dev/null || true)"
+    [ -x "$PYENV_PREFIX/bin/python" ] && BACKEND_PYTHON="$PYENV_PREFIX/bin/python"
 fi
 BACKEND_PYTHON_VERSION="$($BACKEND_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-echo "Using backend Python: $($BACKEND_PYTHON --version)"
+echo "Python: $($BACKEND_PYTHON --version)"
 
-# Recreate an incompatible virtual environment instead of trying to build old pins on Python 3.13.
 if [ -d "backend/venv" ]; then
-    VENV_PYTHON_VERSION="$(backend/venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
-    if [ "$VENV_PYTHON_VERSION" != "$BACKEND_PYTHON_VERSION" ]; then
-        echo "Backend virtual environment uses Python $VENV_PYTHON_VERSION, expected $BACKEND_PYTHON_VERSION. Recreating..."
+    VENV_VER="$(backend/venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo unknown)"
+    if [ "$VENV_VER" != "$BACKEND_PYTHON_VERSION" ]; then
+        echo "venv Python mismatch ($VENV_VER vs $BACKEND_PYTHON_VERSION) — recreating..."
         rm -rf backend/venv
     fi
 fi
 
-# Check if virtual environment exists for backend
-if [ ! -d "backend/venv" ]; then
-    echo "Setting up Python virtual environment..."
-    cd backend
-    "$BACKEND_PYTHON" -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    pip install greenlet==3.0.3  # Extra zekerheid
-    cd ..
-    echo "✓ Backend virtual environment ready"
-else
-    cd backend
-    source venv/bin/activate
-    if ! python -c "import pydantic_settings" >/dev/null 2>&1; then
-        echo "Backend virtual environment is missing dependencies. Installing requirements..."
-        pip install -r requirements.txt
-        pip install greenlet==3.0.3  # Extra zekerheid
-        echo "✓ Backend dependencies updated"
-    fi
-    cd ..
-fi
-
-# Activate virtual environment and run tests
-echo "Running backend tests..."
 cd backend
-source venv/bin/activate
-mkdir -p data
-PYTHONPATH="$(pwd):$PYTHONPATH" python test_basic.py
-# Tests may fail due to model differences, but core functionality works
-echo "✓ Core functionality verified - system ready to start"
-
-# Initialize database if needed
-if [ ! -f "data/app.db" ]; then
-    echo "Initializing database..."
-    alembic upgrade head
-    python -c "import asyncio; from app.main import seed_initial_data; asyncio.run(seed_initial_data())"
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    "$BACKEND_PYTHON" -m venv venv
 fi
+
+source venv/bin/activate
+
+# Install / update dependencies
+echo "Checking dependencies..."
+pip install -r requirements.txt -q
+
+# Verify MySQL driver
+if ! python -c "import aiomysql" >/dev/null 2>&1; then
+    echo "Installing aiomysql..."
+    pip install aiomysql==0.2.0 -q
+fi
+
+# ── Database ──────────────────────────────────────────────────────────────────
+echo "Running database migrations..."
+alembic upgrade head
+echo "✓ Database up to date"
+
+mkdir -p data
 
 echo "✓ Backend setup complete"
 echo
+cd ..
 
-# Check if port 8000 is already in use
-if lsof -Pi :8000 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
-    echo "⚠️  Port 8000 is already in use!"
-    echo
-    echo "   To kill the existing uvicorn process, run one of these commands:"
-    echo "   • lsof -ti:8000 | xargs kill -9"
-    echo "   • pkill -f 'uvicorn app.main:app'"
-    echo "   • Find and kill manually: lsof -i :8000"
-    echo
-    echo "   Or restart this script after killing the process."
-    echo
-    read -p "   Do you want to kill the existing process automatically? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "   Killing existing process on port 8000..."
-        lsof -ti:8000 | xargs kill -9 2>/dev/null || pkill -f 'uvicorn app.main:app' 2>/dev/null || true
-        sleep 2
-        echo "   ✓ Process killed"
-    else
-        echo "   Exiting. Please kill the process manually and try again."
-        exit 1
+# ── Port checks ───────────────────────────────────────────────────────────────
+for PORT in 8000 3000; do
+    if lsof -Pi :$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo "Port $PORT is already in use."
+        read -p "Kill existing process on :$PORT? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            lsof -ti:$PORT | xargs kill -9 2>/dev/null || true
+            sleep 1
+            echo "✓ Killed"
+        else
+            echo "Exiting — kill port $PORT manually and retry."
+            exit 1
+        fi
     fi
-    echo
-fi
+done
 
-# Start backend in background
-echo "Starting backend server with auto-reload enabled..."
-uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000 &
+# ── Start backend ─────────────────────────────────────────────────────────────
+echo "Starting backend..."
+cd backend
+source venv/bin/activate
+venv/bin/uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
-echo "✓ Backend running on http://localhost:8000 (PID: $BACKEND_PID) with auto-reload enabled"
+echo "✓ Backend: http://localhost:8000 (PID: $BACKEND_PID)"
+cd ..
 
-# Wait a moment for backend to start
 sleep 3
 
-# Check if port 3000 is already in use
-if lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
-    echo "⚠️  Port 3000 is already in use!"
-    echo
-    echo "   To kill the existing Next.js process, run one of these commands:"
-    echo "   • lsof -ti:3000 | xargs kill -9"
-    echo "   • pkill -f 'next dev'"
-    echo "   • Find and kill manually: lsof -i :3000"
-    echo
-    echo "   Or restart this script after killing the process."
-    echo
-    read -p "   Do you want to kill the existing process automatically? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo "   Killing existing process on port 3000..."
-        lsof -ti:3000 | xargs kill -9 2>/dev/null || pkill -f 'next dev' 2>/dev/null || true
-        sleep 2
-        echo "   ✓ Process killed"
-    else
-        echo "   Exiting. Please kill the process manually and try again."
-        exit 1
-    fi
-    echo
-fi
-
-# Start frontend
+# ── Start frontend ────────────────────────────────────────────────────────────
 echo "Starting frontend..."
-cd ../frontend
-# Use Node.js 20 for Next.js compatibility
+cd frontend
 export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
-if [ ! -d "node_modules" ]; then
-    npm install
-fi
+[ ! -d "node_modules" ] && npm install -q
 npm run dev &
 FRONTEND_PID=$!
-echo "✓ Frontend running on http://localhost:3000 (PID: $FRONTEND_PID) with Node.js $(node --version)"
+echo "✓ Frontend: http://localhost:3000 (Node $(node --version))"
+cd ..
 
 echo
-echo "🎉 System started successfully!"
+echo "System started."
+echo "  Frontend: http://localhost:3000"
+echo "  Backend:  http://localhost:8000"
+echo "  API docs: http://localhost:8000/docs"
 echo
-echo "Frontend: http://localhost:3000"
-echo "Backend:  http://localhost:8000"
-echo "API Docs: http://localhost:8000/docs"
-echo
-echo "Press Ctrl+C to stop all services"
-echo
-echo "💡 If you need to restart and ports are busy, use:"
-echo "   Backend:  lsof -ti:8000 | xargs kill -9  (or: pkill -f 'uvicorn app.main:app')"
-echo "   Frontend: lsof -ti:3000 | xargs kill -9  (or: pkill -f 'next dev')"
+echo "Press Ctrl+C to stop"
 
-# Wait for user interrupt
 cleanup() {
     echo
-    echo "Stopping services gracefully..."
-    # Send SIGTERM first for graceful shutdown (allows lifespan shutdown handler to run)
+    echo "Stopping..."
     kill -TERM $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
-    # Wait up to 5 seconds for graceful shutdown (training tasks need time to cancel)
-    echo "Waiting for graceful shutdown (max 5 seconds)..."
     for i in {1..5}; do
-        if ! kill -0 $BACKEND_PID 2>/dev/null && ! kill -0 $FRONTEND_PID 2>/dev/null; then
-            echo "✓ Services stopped gracefully"
-            exit 0
-        fi
+        kill -0 $BACKEND_PID 2>/dev/null || kill -0 $FRONTEND_PID 2>/dev/null || { echo "✓ Stopped"; exit 0; }
         sleep 1
     done
-    # Force kill if still running
-    echo "Force killing remaining processes..."
     kill -9 $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
     exit
 }

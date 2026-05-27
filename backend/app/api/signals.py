@@ -126,12 +126,12 @@ async def load_all_signals_from_db() -> list[Signal]:
     async with async_session_maker() as session:
         result = await session.execute(
             text("""
-                SELECT key, label, description, signal_type, 
+                SELECT `key`, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
                        COALESCE(source, 'user') as source,
                        config_json
                 FROM classification_signals
-                ORDER BY source DESC, key ASC
+                ORDER BY source DESC, `key` ASC
             """)
         )
         rows = result.fetchall()
@@ -171,12 +171,12 @@ async def list_signals():
     async with async_session_maker() as session:
         result = await session.execute(
             text("""
-                SELECT id, key, label, description, signal_type, 
+                SELECT id, `key`, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
                        COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
-                ORDER BY source DESC, key ASC
+                ORDER BY source DESC, `key` ASC
             """)
         )
         rows = result.fetchall()
@@ -228,12 +228,12 @@ async def get_signal(key: str):
     async with async_session_maker() as session:
         result = await session.execute(
             text("""
-                SELECT id, key, label, description, signal_type,
+                SELECT id, `key`, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
                        COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
-                WHERE key = :key
+                WHERE `key` = :key
             """),
             {"key": key}
         )
@@ -287,7 +287,7 @@ async def create_signal(signal: SignalCreate):
     async with async_session_maker() as session:
         # Check if key exists
         result = await session.execute(
-            text("SELECT id FROM classification_signals WHERE key = :key"),
+            text("SELECT id FROM classification_signals WHERE `key` = :key"),
             {"key": signal.key}
         )
         if result.fetchone():
@@ -301,7 +301,7 @@ async def create_signal(signal: SignalCreate):
         await session.execute(
             text("""
                 INSERT INTO classification_signals
-                (key, label, description, signal_type, compute_kind, source, config_json, created_at, updated_at)
+                (`key`, label, description, signal_type, compute_kind, source, config_json, created_at, updated_at)
                 VALUES (:key, :label, :description, :signal_type, :compute_kind, 'user', :config_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """),
             {
@@ -318,12 +318,12 @@ async def create_signal(signal: SignalCreate):
         # Fetch created
         result = await session.execute(
             text("""
-                SELECT id, key, label, description, signal_type,
+                SELECT id, `key`, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
                        COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
-                WHERE key = :key
+                WHERE `key` = :key
             """),
             {"key": signal.key}
         )
@@ -358,7 +358,7 @@ async def update_signal(key: str, update: SignalUpdate):
     async with async_session_maker() as session:
         # Check if exists and is user signal
         result = await session.execute(
-            text("SELECT id, COALESCE(source, 'user') as source, COALESCE(compute_kind, 'builtin') as compute_kind FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, 'user') as source, COALESCE(compute_kind, 'builtin') as compute_kind FROM classification_signals WHERE `key` = :key"),
             {"key": key}
         )
         row = result.fetchone()
@@ -407,7 +407,7 @@ async def update_signal(key: str, update: SignalUpdate):
         updates.append("updated_at = CURRENT_TIMESTAMP")
 
         await session.execute(
-            text(f"UPDATE classification_signals SET {', '.join(updates)} WHERE key = :key"),
+            text(f"UPDATE classification_signals SET {', '.join(updates)} WHERE `key` = :key"),
             params
         )
         await session.commit()
@@ -415,12 +415,12 @@ async def update_signal(key: str, update: SignalUpdate):
         # Fetch updated
         result = await session.execute(
             text("""
-                SELECT id, key, label, description, signal_type,
+                SELECT id, `key`, label, description, signal_type,
                        COALESCE(compute_kind, 'builtin') as compute_kind,
                        COALESCE(source, 'user') as source,
                        config_json, created_at, updated_at
                 FROM classification_signals
-                WHERE key = :key
+                WHERE `key` = :key
             """),
             {"key": key}
         )
@@ -454,7 +454,7 @@ async def delete_signal(key: str):
 
     async with async_session_maker() as session:
         result = await session.execute(
-            text("SELECT id, COALESCE(source, 'user') as source FROM classification_signals WHERE key = :key"),
+            text("SELECT id, COALESCE(source, 'user') as source FROM classification_signals WHERE `key` = :key"),
             {"key": key}
         )
         row = result.fetchone()
@@ -469,7 +469,7 @@ async def delete_signal(key: str):
             )
 
         await session.execute(
-            text("DELETE FROM classification_signals WHERE key = :key"),
+            text("DELETE FROM classification_signals WHERE `key` = :key"),
             {"key": key}
         )
         await session.commit()

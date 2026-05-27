@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # OCR
     tesseract_config: str = "--psm 6"
     
+    # Auth
+    jwt_secret_key: str = "change-me-in-production-use-a-random-64-char-string"
+    jwt_expiry_hours: int = 8
+    super_admin_email: str = ""
+    super_admin_password: str = ""
+
     # ELA (Error Level Analysis) Configuration
     ela_enabled: bool = False  # Enable ELA analysis (default: disabled, often noise)
     ela_min_size: int = 150  # Minimum image size (width/height) to analyze

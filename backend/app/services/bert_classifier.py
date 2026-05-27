@@ -325,79 +325,101 @@ class BertClassifierService:
         skip_sig = getattr(self, '_train_skip_sig', '')
         pdf_max_pages = getattr(self, '_train_pdf_max_pages', 5)
         
-        # Create cache directory
+        # Create cache directories (text + embedding vectors)
         cache_dir = self._model_dir / "bert_text_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Collect training data
-        label_texts: Dict[str, List[str]] = {}
+        emb_cache_dir = self._model_dir / "bert_emb_cache"
+        emb_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Collect training data: track (sha, text) per label for embedding cache
+        label_file_data: Dict[str, List[tuple]] = {}  # label -> [(sha, text), ...]
         file_count = 0
-        
+
         for subdir in dataset_dir.iterdir():
             if not subdir.is_dir():
                 continue
-            
+
             label = subdir.name
-            texts = []
-            
+            file_data = []
+
             for file_path in subdir.rglob("*"):
                 # Check cancellation flag
                 if self._cancelled.is_set():
                     logger.info("BERT training cancelled, stopping file processing")
                     break
-                
+
                 if file_path.is_file() and file_path.suffix.lower() in {'.pdf', '.docx', '.doc', '.txt'}:
                     try:
-                        # Check cache (incremental: only re-extract if cache missing or file changed)
+                        # Check text cache (incremental: only re-extract if cache missing or file changed)
                         sha = _compute_sha256(file_path)
                         cache_path = cache_dir / f"{sha}.{skip_sig}.p{pdf_max_pages}.txt"
-                        
+
                         if cache_path.exists():
-                            # Cache hit - use cached text (incremental behavior)
                             text = cache_path.read_text(encoding='utf-8', errors='ignore')
                         else:
-                            # Check cancellation before expensive extraction
                             if self._cancelled.is_set():
                                 logger.info("BERT training cancelled, stopping before extraction")
                                 break
-                            # Cache miss - extract and cache (new or changed file)
                             text = _extract_text(file_path, skip_markers=skip_markers, pdf_max_pages=pdf_max_pages)
                             if text:
-                                # Truncate to first 5000 chars for efficiency
                                 text = text[:5000]
                                 cache_path.write_text(text, encoding='utf-8')
-                        
+
                         if text and len(text.strip()) > 50:
-                            texts.append(text)
+                            file_data.append((sha, text))
                             file_count += 1
                     except Exception as e:
                         logger.warning(f"Failed to extract text from {file_path}: {e}")
-            
-            if texts:
-                label_texts[label] = texts
-        
-        if not label_texts:
+
+            if file_data:
+                label_file_data[label] = file_data
+
+        if not label_file_data:
             raise ValueError("No training data found")
-        
-        # Get BERT model
+
+        # Load BERT model once (needed for new embeddings and dimension info)
         logger.info("Loading BERT model (this may take 30-60 seconds on first run)...")
         model = _get_sentence_transformer()
         logger.info(f"BERT model loaded: {_model_name}")
-        
-        # Compute embeddings for each label
+
+        # Short model name slug for cache key isolation (different BERT models → different caches)
+        model_slug = _model_name.replace("/", "_").replace(":", "_")
+
+        # Compute embeddings for each label — use per-file embedding cache for true incremental training
         label_embeddings: Dict[str, np.ndarray] = {}
         samples_per_label: Dict[str, int] = {}
-        
-        for label, texts in label_texts.items():
-            logger.info(f"Computing embeddings for '{label}' ({len(texts)} documents)")
-            
-            # Encode all texts for this label
-            embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
-            logger.info(f"Computed {len(embeddings)} embeddings for '{label}'")
-            
-            # Store mean embedding as the class centroid
-            label_embeddings[label] = np.mean(embeddings, axis=0)
-            samples_per_label[label] = len(texts)
+
+        for label, file_data in label_file_data.items():
+            logger.info(f"Processing embeddings for '{label}' ({len(file_data)} documents)")
+            all_embeddings = []
+            new_computed = 0
+
+            for sha, text in file_data:
+                if self._cancelled.is_set():
+                    break
+                emb_cache_path = emb_cache_dir / f"{sha}.{model_slug}.npy"
+                if emb_cache_path.exists():
+                    # Cache hit — load cached embedding vector (true incremental: skip re-encoding)
+                    try:
+                        emb = np.load(str(emb_cache_path))
+                        all_embeddings.append(emb)
+                        continue
+                    except Exception:
+                        pass  # corrupted cache — recompute below
+                # Cache miss — encode and save
+                emb = model.encode([text], show_progress_bar=False, convert_to_numpy=True)[0]
+                try:
+                    np.save(str(emb_cache_path), emb)
+                except Exception:
+                    pass
+                all_embeddings.append(emb)
+                new_computed += 1
+
+            if not all_embeddings:
+                continue
+            logger.info(f"'{label}': {len(all_embeddings)} embeddings ({new_computed} newly computed, {len(all_embeddings) - new_computed} from cache)")
+            label_embeddings[label] = np.mean(np.stack(all_embeddings), axis=0)
+            samples_per_label[label] = len(all_embeddings)
             logger.info(f"Stored centroid for '{label}' (dim: {len(label_embeddings[label])})")
         
         # Create classifier object

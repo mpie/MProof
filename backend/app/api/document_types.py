@@ -38,7 +38,7 @@ async def list_document_types(db: AsyncSession = Depends(lambda: None)):
         for doc_type in doc_types:
             # Get fields for this document type
             fields_result = await session.execute(
-                text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY key"),
+                text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY `key`"),
                 {"document_type_id": doc_type.id}
             )
             fields = fields_result.fetchall()
@@ -169,7 +169,7 @@ async def get_document_type(slug: str, db: AsyncSession = Depends(lambda: None))
 
         # Get fields
         fields_result = await session.execute(
-            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY key"),
+            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY `key`"),
             {"document_type_id": doc_type.id}
         )
         fields = fields_result.fetchall()
@@ -228,7 +228,7 @@ async def update_document_type(
         if not update_fields:
             # No changes, return current
             fields_result = await session.execute(
-                text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY key"),
+                text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY `key`"),
                 {"document_type_id": doc_type.id}
             )
             fields = fields_result.fetchall()
@@ -310,7 +310,7 @@ async def list_document_type_fields(slug: str, db: AsyncSession = Depends(lambda
 
         # Get fields
         fields_result = await session.execute(
-            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY key"),
+            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id ORDER BY `key`"),
             {"document_type_id": doc_type.id}
         )
         fields = fields_result.fetchall()
@@ -339,7 +339,7 @@ async def create_document_type_field(
 
         # Check if key already exists
         key_result = await session.execute(
-            text("SELECT id FROM document_type_fields WHERE document_type_id = :document_type_id AND key = :key"),
+            text("SELECT id FROM document_type_fields WHERE document_type_id = :document_type_id AND `key` = :key"),
             {"document_type_id": doc_type.id, "key": field.key}
         )
         if key_result.fetchone():
@@ -349,18 +349,19 @@ async def create_document_type_field(
         now = datetime.now(timezone.utc)
         await session.execute(
             text("""INSERT INTO document_type_fields
-                   (document_type_id, key, label, field_type, required, enum_values, regex, description, examples, created_at, updated_at)
-                   VALUES (:document_type_id, :key, :label, :field_type, :required, :enum_values, :regex, :description, :examples, :created_at, :updated_at)"""),
+                   (document_type_id, `key`, label, field_type, required, enum_values, regex, description, examples, validation_rules, created_at, updated_at)
+                   VALUES (:document_type_id, :key, :label, :field_type, :required, :enum_values, :regex, :description, :examples, :validation_rules, :created_at, :updated_at)"""),
             {
                 "document_type_id": doc_type.id,
                 "key": field.key,
                 "label": field.label,
                 "field_type": field.field_type.value,
                 "required": field.required,
-                "enum_values": field.enum_values,
+                "enum_values": json.dumps(field.enum_values) if field.enum_values is not None else None,
                 "regex": field.regex,
                 "description": field.description,
-                "examples": field.examples,
+                "examples": json.dumps(field.examples) if field.examples is not None else None,
+                "validation_rules": json.dumps(field.validation_rules) if field.validation_rules is not None else None,
                 "created_at": now,
                 "updated_at": now
             }
@@ -369,7 +370,7 @@ async def create_document_type_field(
 
         # Fetch the created field using document_type_id + key (unique combination)
         result = await session.execute(
-            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id AND key = :key"),
+            text("SELECT * FROM document_type_fields WHERE document_type_id = :document_type_id AND `key` = :key"),
             {"document_type_id": doc_type.id, "key": field.key}
         )
         new_field = result.fetchone()
@@ -403,12 +404,16 @@ async def update_document_type_field(
         update_fields = []
         params = {}
 
+        _json_fields = {"enum_values", "examples", "validation_rules"}
         update_data = field_update.dict(exclude_unset=True)
         if update_data:
             for field, value in update_data.items():
                 if field == "field_type" and value is not None:
                     update_fields.append(f"{field} = :{field}")
                     params[field] = value.value
+                elif field in _json_fields:
+                    update_fields.append(f"{field} = :{field}")
+                    params[field] = json.dumps(value) if value is not None else None
                 else:
                     update_fields.append(f"{field} = :{field}")
                     params[field] = value

@@ -6,7 +6,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faCheckCircle, faExclamationTriangle, faSpinner, faFileAlt, faTrash,
-  faEye, faShieldAlt, faArrowRight, faRobot, faTag, faList, faBolt,
+  faEye, faShieldAlt, faArrowRight, faArrowLeft, faRobot, faTag, faList, faBolt,
   faCheck, faCloudUploadAlt,
 } from '@fortawesome/free-solid-svg-icons';
 import { SubjectSelector } from '@/components/SubjectSelector';
@@ -122,9 +122,15 @@ export default function Dashboard() {
     queryKey: ['document', activeId],
     queryFn: () => getDocument(activeId!),
     enabled: !!activeId,
+    // SSE provides real-time updates during processing; DB polling at 2s overwrites SSE progress
+    // because per-page progress is only sent via SSE, not written to DB.
     refetchInterval: q => {
       const d = q.state.data as Document | undefined;
-      return d && (d.status === 'processing' || d.status === 'queued') ? 2000 : false;
+      return d && (d.status === 'processing' || d.status === 'queued') ? false : 30000;
+    },
+    refetchOnWindowFocus: q => {
+      const d = (q as any).state.data as Document | undefined;
+      return !(d?.status === 'processing' || d?.status === 'queued');
     },
   });
 
@@ -247,7 +253,7 @@ export default function Dashboard() {
 
   return (
     <div
-      className="-my-4 sm:-my-8 -mx-3 sm:-mx-4 lg:-mx-8 flex overflow-hidden h-[calc(100vh-3.5rem)] sm:h-[calc(100vh-4rem)]"
+      className="-my-4 sm:-my-8 -mx-3 sm:-mx-4 lg:-mx-8 flex overflow-hidden h-[calc(100vh-3.5rem)] sm:h-[calc(100vh-4rem)] min-w-[320px]"
     >
       {/* ── SIDEBAR ──────────────────────────────────────────────────────────── */}
       <aside className="hidden md:flex w-72 lg:w-80 xl:w-[320px] shrink-0 flex-col border-r border-slate-200 overflow-hidden bg-white/70 backdrop-blur-sm">
@@ -341,7 +347,7 @@ export default function Dashboard() {
                   <p className="text-slate-800 text-xs font-medium truncate leading-snug">{doc.original_filename}</p>
                   <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                     {doc.doc_type_slug && (
-                      <span className="text-purple-600 text-[10px] truncate max-w-[100px]">
+                      <span className="text-[#22d3d3] text-[10px] truncate max-w-[100px]">
                         {fmtType(doc.doc_type_slug)}
                       </span>
                     )}
@@ -410,6 +416,21 @@ export default function Dashboard() {
             />
           </div>
         </div>
+
+        {/* Mobile: back to list when a document is active */}
+        {activeDoc && (
+          <div className="md:hidden flex items-center gap-2 px-4 py-2 border-b border-slate-200 bg-white/80 sticky top-0 z-10">
+            <button
+              onClick={() => setActiveId(null)}
+              className="flex items-center gap-1.5 text-[#22d3d3] text-xs font-medium py-1"
+            >
+              <FontAwesomeIcon icon={faArrowLeft} className="w-3 h-3" />
+              Documenten
+            </button>
+            <span className="text-slate-300 text-xs">·</span>
+            <span className="text-slate-500 text-xs truncate min-w-0">{activeDoc.original_filename}</span>
+          </div>
+        )}
 
         {/* Content router */}
         {!activeDoc ? (
@@ -488,7 +509,8 @@ function EmptyState({ docs, onSelect }: { docs: Document[]; onSelect: (id: numbe
 
         <div className="mt-8 pt-6 border-t border-slate-100 flex items-center gap-2 justify-center">
           <FontAwesomeIcon icon={faArrowRight} className="w-3 h-3 text-slate-400 rotate-180" />
-          <p className="text-slate-500 text-sm">Selecteer een referentie in de zijbalk en upload een document</p>
+          <p className="text-slate-500 text-sm hidden md:block">Selecteer een referentie in de zijbalk en upload een document</p>
+          <p className="text-slate-500 text-sm md:hidden">Selecteer een referentie hierboven en upload een document</p>
         </div>
       </div>
 
@@ -508,7 +530,7 @@ function EmptyState({ docs, onSelect }: { docs: Document[]; onSelect: (id: numbe
                 </div>
                 <div className="flex items-center gap-2 pl-5">
                   {doc.doc_type_slug && (
-                    <span className="text-purple-600 text-[10px]">{fmtType(doc.doc_type_slug)}</span>
+                    <span className="text-[#22d3d3] text-[10px]">{fmtType(doc.doc_type_slug)}</span>
                   )}
                   {doc.risk_score != null && (
                     <span className={`text-[10px] font-bold ${riskStyle(doc.risk_score).text}`}>
@@ -666,7 +688,7 @@ function ResultsPanel({
         </h2>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
           {doc.doc_type_slug && (
-            <span className="px-2.5 py-1 rounded-lg bg-purple-100 border border-purple-200 text-purple-700 text-xs font-medium">
+            <span className="px-2.5 py-1 rounded-lg bg-[#22d3d3]/10 border border-[#22d3d3]/30 text-[#22d3d3] text-xs font-medium">
               {fmtType(doc.doc_type_slug)}
             </span>
           )}
@@ -691,7 +713,7 @@ function ResultsPanel({
         {/* Classification */}
         <div className="glass-card-hover p-4" style={{ animationDelay: '0ms' }}>
           <div className="flex items-center gap-2 mb-3">
-            <FontAwesomeIcon icon={faTag} className="w-3 h-3 text-purple-500" />
+            <FontAwesomeIcon icon={faTag} className="w-3 h-3 text-[#22d3d3]" />
             <span className="text-slate-400 text-[10px] font-semibold uppercase tracking-widest">Documenttype</span>
           </div>
           {doc.doc_type_slug ? (
@@ -703,13 +725,13 @@ function ResultsPanel({
                 <div>
                   <div className="flex justify-between text-[10px] mb-1">
                     <span className="text-slate-400">Zekerheid</span>
-                    <span className="text-purple-600 font-bold tabular-nums">
+                    <span className="text-[#22d3d3] font-bold tabular-nums">
                       {Math.round(doc.doc_type_confidence * 100)}%
                     </span>
                   </div>
                   <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full"
+                      className="h-full bg-gradient-to-r from-[#22d3d3] to-[#FFC1F3] rounded-full"
                       style={{ width: `${doc.doc_type_confidence * 100}%` }}
                     />
                   </div>
@@ -725,7 +747,7 @@ function ResultsPanel({
                     {bert.top_matches.slice(0, 3).map(m => (
                       <span
                         key={m.label}
-                        className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 border border-blue-200 text-blue-700"
+                        className="text-[10px] px-2 py-0.5 rounded-full bg-[#22d3d3]/10 border border-[#22d3d3]/30 text-[#22d3d3]"
                       >
                         {fmtType(m.label)} {Math.round(m.confidence * 100)}%
                       </span>

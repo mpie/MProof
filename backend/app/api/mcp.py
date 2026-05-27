@@ -58,11 +58,11 @@ async def verify_api_key(client_id: str, client_secret: str) -> bool:
 TOOLS = [
     {
         "name": "list_documents",
-        "description": "List documents with optional filtering by subject_id, status, and limit",
+        "description": "List documents with optional filtering by reference_id, status, and limit",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "subject_id": {"type": "integer", "description": "Filter by subject ID"},
+                "reference_id": {"type": "integer", "description": "Filter by reference ID (entity the documents belong to)"},
                 "status": {"type": "string", "enum": ["queued", "processing", "done", "error"], "description": "Filter by status"},
                 "limit": {"type": "integer", "default": 50, "description": "Maximum number of documents to return"}
             }
@@ -91,8 +91,8 @@ TOOLS = [
         }
     },
     {
-        "name": "list_subjects",
-        "description": "Search for subjects (persons, companies, etc.)",
+        "name": "list_references",
+        "description": "Search for references (persons, companies, dossiers, etc.) — entities that own documents",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -145,7 +145,7 @@ TOOLS = [
                 "doc_type": {"type": "string", "description": "Filter by document type slug"},
                 "min_risk_score": {"type": "number", "description": "Minimum risk score (0-100)"},
                 "max_risk_score": {"type": "number", "description": "Maximum risk score (0-100)"},
-                "subject_id": {"type": "integer", "description": "Filter by subject ID"},
+                "reference_id": {"type": "integer", "description": "Filter by reference ID"},
                 "limit": {"type": "integer", "default": 50, "description": "Maximum number of results"}
             }
         }
@@ -201,7 +201,7 @@ TOOLS = [
             "properties": {
                 "min_risk_score": {"type": "number", "default": 50, "description": "Minimum risk score (0-100)"},
                 "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"], "description": "Filter by risk level"},
-                "subject_id": {"type": "integer", "description": "Filter by subject ID"},
+                "reference_id": {"type": "integer", "description": "Filter by reference ID"},
                 "limit": {"type": "integer", "default": 50, "description": "Maximum number of results"}
             }
         }
@@ -317,10 +317,10 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
             if tool_name == "list_documents":
                 conditions = []
                 params = {"limit": arguments.get("limit", 50)}
-                
-                if arguments.get("subject_id"):
+
+                if arguments.get("reference_id"):
                     conditions.append("subject_id = :subject_id")
-                    params["subject_id"] = arguments["subject_id"]
+                    params["subject_id"] = arguments["reference_id"]
                 if arguments.get("status"):
                     conditions.append("status = :status")
                     params["status"] = arguments["status"]
@@ -355,7 +355,10 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                             doc_dict[field] = json.loads(doc_dict[field])
                         except:
                             pass
-                
+                # Expose reference_id so callers know which entity this document belongs to
+                if "subject_id" in doc_dict:
+                    doc_dict["reference_id"] = doc_dict.pop("subject_id")
+
                 return {"content": [{"type": "text", "text": json.dumps(doc_dict, indent=2, default=str)}]}
             
             elif tool_name == "analyze_document":
@@ -372,23 +375,25 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
 
                 return {"content": [{"type": "text", "text": json.dumps({"status": "started", "document_id": doc_id, "message": result["message"]})}]}
             
-            elif tool_name == "list_subjects":
+            elif tool_name == "list_references":
                 conditions = []
                 params = {"limit": arguments.get("limit", 50)}
-                
+
                 if arguments.get("query"):
                     conditions.append("name LIKE :query")
                     params["query"] = f"%{arguments['query']}%"
                 if arguments.get("context"):
                     conditions.append("context = :context")
                     params["context"] = arguments["context"]
-                
+
                 where_clause = " AND ".join(conditions) if conditions else "1=1"
                 sql = f"SELECT * FROM subjects WHERE {where_clause} ORDER BY name LIMIT :limit"
-                
+
                 result = await session.execute(text(sql), params)
-                subjects = [dict(row._mapping) for row in result.fetchall()]
-                return {"content": [{"type": "text", "text": json.dumps({"subjects": subjects, "total": len(subjects)}, indent=2, default=str)}]}
+                rows = [dict(row._mapping) for row in result.fetchall()]
+                # Expose as reference_id so callers can pass it back to other tools
+                references = [{**r, "reference_id": r["id"]} for r in rows]
+                return {"content": [{"type": "text", "text": json.dumps({"references": references, "total": len(references)}, indent=2, default=str)}]}
             
             elif tool_name == "get_document_text":
                 doc_id = arguments.get("document_id")
@@ -509,9 +514,9 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 conditions = []
                 params = {"limit": arguments.get("limit", 50)}
                 
-                if arguments.get("subject_id"):
+                if arguments.get("reference_id"):
                     conditions.append("d.subject_id = :subject_id")
-                    params["subject_id"] = arguments["subject_id"]
+                    params["subject_id"] = arguments["reference_id"]
                 if arguments.get("doc_type"):
                     conditions.append("d.doc_type_slug = :doc_type")
                     params["doc_type"] = arguments["doc_type"]
@@ -546,7 +551,8 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
 
                 docs = docs[:params["limit"]]
                 for doc in docs:
-                    doc.pop("subject_id", None)
+                    if "subject_id" in doc:
+                        doc["reference_id"] = doc.pop("subject_id")
                 return {"content": [{"type": "text", "text": json.dumps({"documents": docs, "total": len(docs)}, indent=2, default=str)}]}
             
             elif tool_name == "train_classifier":
@@ -660,10 +666,10 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                     conditions.append("d.risk_score >= :min_risk")
                     params["min_risk"] = min_risk
                 
-                if arguments.get("subject_id"):
+                if arguments.get("reference_id"):
                     conditions.append("d.subject_id = :subject_id")
-                    params["subject_id"] = arguments["subject_id"]
-                
+                    params["subject_id"] = arguments["reference_id"]
+
                 where_clause = " AND ".join(conditions)
                 sql = f"""SELECT d.id, d.original_filename, d.doc_type_slug, d.risk_score, d.created_at
                           FROM documents d
@@ -683,7 +689,7 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 
                 sql = """
                     SELECT 
-                        key, label, description, signal_type,
+                        `key`, label, description, signal_type,
                         COALESCE(source, 'user') as source,
                         COALESCE(compute_kind, 'builtin') as compute_kind,
                         config_json
@@ -695,7 +701,7 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                     sql += " WHERE source = :source"
                     params["source"] = source_filter
                 
-                sql += " ORDER BY source ASC, key"
+                sql += " ORDER BY source ASC, `key`"
                 
                 result = await session.execute(text(sql), params)
                 signals = []
@@ -721,11 +727,11 @@ async def handle_tool_call(tool_name: str, arguments: Dict) -> Dict:
                 result = await session.execute(
                     text("""
                         SELECT 
-                            key, label, description, signal_type,
+                            `key`, label, description, signal_type,
                             COALESCE(source, 'user') as source,
                             COALESCE(compute_kind, 'builtin') as compute_kind,
                             config_json
-                        FROM classification_signals WHERE key = :key
+                        FROM classification_signals WHERE `key` = :key
                     """),
                     {"key": key}
                 )

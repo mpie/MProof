@@ -366,6 +366,29 @@ async def get_document_artifact(
         )
 
 
+@router.get("/documents/{document_id}/llm-artifacts")
+async def list_llm_artifacts(document_id: int, db: AsyncSession = Depends(lambda: None)):
+    """List existing LLM artifact paths for a document (avoids 404 spam from blind probing)."""
+    from app.main import async_session_maker
+
+    async with async_session_maker() as session:
+        result = await session.execute(
+            text("SELECT subject_id FROM documents WHERE id = :document_id"),
+            {"document_id": document_id}
+        )
+        document = result.fetchone()
+
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    llm_dir = Path(settings.data_dir) / "subjects" / str(document.subject_id) / "documents" / str(document_id) / "llm"
+    if not llm_dir.exists():
+        return {"paths": []}
+
+    paths = [f"llm/{p.name}" for p in sorted(llm_dir.iterdir()) if p.is_file()]
+    return {"paths": paths}
+
+
 @router.delete("/documents/{document_id}")
 async def delete_document(document_id: int, db: AsyncSession = Depends(lambda: None)):
     """Delete a document and all its artifacts."""

@@ -13,7 +13,7 @@ import {
 import {
   Document, DocumentEvent, getDocument, analyzeDocument, getDocumentArtifact, getDocumentArtifactText, getDocumentArtifactJson,
   RiskSignal, subscribeToDocumentEvents, getFraudAnalysis, FraudReport, FraudSignal, AdviceCard,
-  submitDocumentFeedback, listDocumentTypeFields, DocumentTypeField,
+  submitDocumentFeedback, listDocumentTypeFields, DocumentTypeField, listDocumentLlmArtifacts,
 } from '@/lib/api';
 
 // Dynamically import PDFViewerWithHighlights to avoid SSR issues with react-pdf
@@ -237,10 +237,16 @@ export function DocumentDetailModal({ documentId, isOpen, onClose, initialTab }:
     queryKey: ['document', documentId],
     queryFn: () => getDocument(documentId!),
     enabled: !!documentId && isOpen,
-    // Poll every 2 seconds when document is processing or queued
+    // SSE provides real-time updates during processing; polling overwrites live progress.
+    // Only poll when not processing/queued (idle keepalive).
     refetchInterval: (query) => {
       const doc = query.state.data as Document | undefined;
-      return doc && (doc.status === 'processing' || doc.status === 'queued') ? 2000 : false;
+      return doc && (doc.status === 'processing' || doc.status === 'queued') ? false : 30000;
+    },
+    // Window focus refetch would overwrite SSE progress with stale DB value (DB only updates at stage boundaries, not per-page).
+    refetchOnWindowFocus: (query) => {
+      const doc = query.state.data as Document | undefined;
+      return !(doc?.status === 'processing' || doc?.status === 'queued');
     },
   });
 
@@ -813,15 +819,15 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
       {(document.doc_type_slug || document.risk_score !== null) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {document.doc_type_slug && (
-            <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+            <div className="bg-[#22d3d3]/5 rounded-lg p-4 border border-[#22d3d3]/20">
               <h3 className="text-slate-800 font-medium mb-3 flex items-center space-x-2">
-                <FontAwesomeIcon icon={faEye} className="text-purple-600 w-4 h-4" />
+                <FontAwesomeIcon icon={faEye} className="text-[#22d3d3] w-4 h-4" />
                 <span>Classification</span>
               </h3>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between items-center">
                   <span className="text-slate-500">Type:</span>
-                  <span className="text-slate-800 font-medium px-2 py-0.5 bg-purple-100 rounded">{formatDocumentTypeName(document.doc_type_slug)}</span>
+                  <span className="text-slate-800 font-medium px-2 py-0.5 bg-[#22d3d3]/15 rounded">{formatDocumentTypeName(document.doc_type_slug)}</span>
                 </div>
                 {document.doc_type_confidence && (
                   <div className="flex justify-between"><span className="text-slate-500">Confidence:</span><span className="text-slate-800">{Math.round(document.doc_type_confidence * 100)}%</span></div>
@@ -887,206 +893,160 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                 </div>
               )}
 
-              {/* Show explanation if document is "unknown" and there's a rejection reason */}
-              {document.doc_type_slug === 'unknown' && document.metadata_validation_json?.classification_scores && (
-                ((document.metadata_validation_json.classification_scores as any)?.naive_bayes?.rejection_reason || 
-                 (document.metadata_validation_json.classification_scores as any)?.bert?.rejection_reason) && (
-                  <div className="mt-3 pt-3 border-t border-slate-200">
+              {/* Classification: decisive factor first, classifiers as secondary context */}
+              {(document.doc_type_rationale || document.metadata_validation_json?.classification_scores || document.skip_marker_used) && (
+                <div className="mt-3 pt-3 border-t border-slate-200 space-y-3">
+                  {/* ★ Bepalende factor — always on top */}
+                  {document.doc_type_rationale && (() => {
+                    const r = document.doc_type_rationale;
+                    const isStrongKeyword = r.includes('STRONG keyword match') || r.includes('STRONG');
+                    const isDeterministic = !isStrongKeyword && r.includes('Deterministic');
+                    const isNB = r.includes('NAIVE_BAYES') || (r.includes('Local classifier') && !r.includes('BERT'));
+                    const isBERT = r.includes('BERT') && !isStrongKeyword && !isDeterministic;
+                    const isLLM = r.includes('LLM') && !isStrongKeyword && !isDeterministic;
+                    const keywords = isStrongKeyword && r.includes('matched keywords:')
+                      ? (r.split('matched keywords:')[1]?.split('|')[0]?.split(',')?.map((k: string) => k.trim())?.filter(Boolean) ?? [])
+                      : [];
+                    return (
+                      <div>
+                        <div className="text-slate-400 text-[10px] font-semibold uppercase tracking-wide mb-1.5">Bepalende factor</div>
+                        {(isStrongKeyword || isDeterministic) ? (
+                          <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
+                            <div className="text-green-700 text-xs font-semibold mb-0.5">
+                              {isStrongKeyword ? '✅ Keyword match — 100% zekerheid' : '⚠️ Keyword/regex match'}
+                            </div>
+                            <div className="text-green-600 text-[10px] mb-1.5">
+                              {isStrongKeyword
+                                ? 'Specifieke sleutelwoorden gevonden — getrainde modellen worden genegeerd'
+                                : 'Keyword/regex patroon gevonden — heeft voorrang boven getrainde modellen'}
+                            </div>
+                            {keywords.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {keywords.map((kw: string, i: number) => (
+                                  <span key={i} className="inline-flex items-center px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px] font-medium">
+                                    {kw}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : isNB ? (
+                          <div className="bg-[#22d3d3]/10 border border-[#22d3d3]/30 rounded-lg p-2.5">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <FontAwesomeIcon icon={faRobot} className="w-3 h-3 text-[#22d3d3]" />
+                              <span className="text-[#22d3d3] text-xs font-semibold">Getraind model (NB)</span>
+                            </div>
+                            <div className="text-slate-500 text-[10px]">Naive Bayes was doorslaggevend</div>
+                          </div>
+                        ) : isBERT ? (
+                          <div className="bg-[#22d3d3]/10 border border-[#22d3d3]/30 rounded-lg p-2.5">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <FontAwesomeIcon icon={faRobot} className="w-3 h-3 text-[#22d3d3]" />
+                              <span className="text-[#22d3d3] text-xs font-semibold">Getraind model (BERT)</span>
+                            </div>
+                            <div className="text-slate-500 text-[10px]">BERT was doorslaggevend</div>
+                          </div>
+                        ) : isLLM ? (
+                          <div className="bg-[#FFC1F3]/15 border border-[#FFC1F3]/40 rounded-lg p-2.5">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <FontAwesomeIcon icon={faRobot} className="w-3 h-3 text-pink-600" />
+                              <span className="text-pink-700 text-xs font-semibold">AI classificatie</span>
+                            </div>
+                            <div className="text-slate-500 text-[10px]">LLM was doorslaggevend</div>
+                          </div>
+                        ) : document.doc_type_slug === 'unknown' ? (
+                          <div className="bg-gray-50 border border-gray-200 rounded p-2">
+                            <div className="text-slate-500 text-[10px]">Geen classificatie — onbekend document type</div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Classifier scores — secondary, labeled as overruled when keyword won */}
+                  {document.metadata_validation_json?.classification_scores && (() => {
+                    const r = document.doc_type_rationale ?? '';
+                    const keywordWon = r.includes('STRONG keyword match') || r.includes('STRONG') || r.includes('Deterministic');
+                    const nb = (document.metadata_validation_json.classification_scores as any)?.naive_bayes;
+                    const bert = (document.metadata_validation_json.classification_scores as any)?.bert;
+                    const nbAllScores = nb?.all_scores as Record<string, number> | undefined;
+                    const nbIsSingleClass = nbAllScores && Object.keys(nbAllScores).length === 1;
+                    const hasAny = nb || bert;
+                    if (!hasAny) return null;
+                    return (
+                      <div>
+                        <div className="text-slate-400 text-[10px] font-semibold uppercase tracking-wide mb-1.5">
+                          Classifiers{keywordWon ? <span className="text-amber-500 font-normal"> — overruled door keyword match</span> : <span className="text-slate-400 font-normal"> (ondersteunend)</span>}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {nb && (
+                            nb.status === 'failed' || nb.status === 'no_result' ? (
+                              <div className="bg-slate-50 border border-slate-200 rounded px-2 py-1.5 opacity-60">
+                                <div className="text-slate-400 text-[10px] font-medium">NB: {nb.status === 'failed' ? 'Fout' : 'Geen model'}</div>
+                              </div>
+                            ) : (
+                              <div className={`bg-[#22d3d3]/5 border border-[#22d3d3]/20 rounded px-2 py-1.5${keywordWon ? ' opacity-50' : ''}`}>
+                                <div className="flex items-center justify-between mb-0.5">
+                                  <span className="text-[#22d3d3] text-[10px] font-medium">NB</span>
+                                  {nb.status === 'rejected' && <span className="text-red-500 text-[9px]">❌ afgewezen</span>}
+                                  {nb.status === 'below_threshold' && <span className="text-amber-500 text-[9px]">⚠️ laag</span>}
+                                </div>
+                                <div className="text-slate-700 text-[10px]">{nb.label} · {Math.round(nb.confidence * 100)}%</div>
+                                {nbIsSingleClass && (
+                                  <div className="text-amber-600 text-[9px] mt-0.5">⚠️ 1 klasse — niet betrouwbaar</div>
+                                )}
+                                {nbAllScores && !nbIsSingleClass && (
+                                  <div className="flex flex-wrap gap-0.5 mt-1">
+                                    {Object.entries(nbAllScores)
+                                      .sort(([, a], [, b]) => b - a)
+                                      .filter(([, s]) => Math.round(s * 100) > 0)
+                                      .map(([lbl, s]) => (
+                                        <span key={lbl} className="text-[8px] bg-[#22d3d3]/10 px-1 py-0.5 rounded text-slate-500">
+                                          {lbl}: {Math.round(s * 100)}%
+                                        </span>
+                                      ))}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          )}
+                          {bert && (
+                            bert.status === 'failed' || bert.status === 'no_result' ? (
+                              <div className="bg-slate-50 border border-slate-200 rounded px-2 py-1.5 opacity-60">
+                                <div className="text-slate-400 text-[10px] font-medium">BERT: {bert.status === 'failed' ? 'Fout' : 'Geen resultaat'}</div>
+                                {bert.status === 'no_result' && bert.reason && (
+                                  <div className="text-slate-400 text-[9px] mt-0.5">{bert.reason}</div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className={`bg-[#22d3d3]/5 border border-[#22d3d3]/20 rounded px-2 py-1.5${keywordWon ? ' opacity-50' : ''}`}>
+                                <div className="flex items-center justify-between mb-0.5">
+                                  <span className="text-[#22d3d3] text-[10px] font-medium">BERT</span>
+                                  {bert.status === 'rejected' && <span className="text-red-500 text-[9px]">❌ afgewezen</span>}
+                                </div>
+                                <div className="text-slate-700 text-[10px]">{bert.label} · {Math.round(bert.confidence * 100)}%</div>
+                              </div>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Unknown doc: rejection explanation */}
+                  {document.doc_type_slug === 'unknown' && document.metadata_validation_json?.classification_scores &&
+                   ((document.metadata_validation_json.classification_scores as any)?.naive_bayes?.rejection_reason ||
+                    (document.metadata_validation_json.classification_scores as any)?.bert?.rejection_reason) && (
                     <div className="bg-green-50 border border-green-200 rounded p-2">
                       <div className="text-green-700 text-[10px] italic">
-                        ✓ Dit is correct gedrag - het systeem voorkomt verkeerde classificaties door deze regel te respecteren
-                      </div>
-                    </div>
-                  </div>
-                )
-              )}
-              
-              {/* Classification Scores - Always show if available, including failures */}
-              {document.metadata_validation_json?.classification_scores && (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <div className="text-slate-400 text-xs mb-1.5">Classifier Scores:</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(document.metadata_validation_json.classification_scores as any)?.naive_bayes && (
-                      (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ||
-                      (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'no_result' ? (
-                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-60">
-                          <div className="text-purple-500 text-[10px] font-medium">NB: {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ? 'Fout' : 'Geen model'}</div>
-                          {/* Show all scores if available - filter out 0% */}
-                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-200">
-                              <div className="flex flex-wrap gap-1">
-                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
-                                  .sort(([, a], [, b]) => b - a)
-                                  .filter(([, score]) => Math.round(score * 100) > 0)
-                                  .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
-                                      {label}: {Math.round(score * 100)}%
-                                    </span>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'rejected' ? (
-                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-75">
-                          <div className="flex items-center justify-between">
-                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
-                            <span className="text-slate-600 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
-                          </div>
-                          <div className="text-red-600 text-[9px]">❌ {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Afgewezen'}</div>
-                          {/* Show all scores if available - filter out 0% */}
-                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-200">
-                              <div className="flex flex-wrap gap-1">
-                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
-                                  .sort(([, a], [, b]) => b - a)
-                                  .filter(([, score]) => Math.round(score * 100) > 0)
-                                  .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
-                                      {label}: {Math.round(score * 100)}%
-                                    </span>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'below_threshold' ? (
-                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-75">
-                          <div className="flex items-center justify-between">
-                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
-                            <span className="text-slate-600 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
-                          </div>
-                          <div className="text-amber-600 text-[9px]">⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)</div>
-                          {/* Show all scores if available - filter out 0% */}
-                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-200">
-                              <div className="flex flex-wrap gap-1">
-                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
-                                  .sort(([, a], [, b]) => b - a)
-                                  .filter(([, score]) => Math.round(score * 100) > 0)
-                                  .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
-                                      {label}: {Math.round(score * 100)}%
-                                    </span>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
-                            <span className="text-slate-800 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
-                          </div>
-                          {/* Show all scores if available - filter out 0% */}
-                          {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-200">
-                              <div className="flex flex-wrap gap-1">
-                                {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
-                                  .sort(([, a], [, b]) => b - a)
-                                  .filter(([, score]) => Math.round(score * 100) > 0)
-                                  .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
-                                      {label}: {Math.round(score * 100)}%
-                                    </span>
-                                  ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    )}
-                    {(document.metadata_validation_json.classification_scores as any).bert && (
-                      (document.metadata_validation_json.classification_scores as any).bert.status === 'failed' || 
-                      (document.metadata_validation_json.classification_scores as any).bert.status === 'no_result' ? (
-                        <div className="bg-blue-50 border border-blue-200 rounded p-2 opacity-60">
-                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-slate-500 text-xs">
-                            {(document.metadata_validation_json.classification_scores as any).bert.status === 'failed' 
-                              ? `Fout: ${(document.metadata_validation_json.classification_scores as any).bert.error?.substring(0, 50) || 'Onbekende fout'}...`
-                              : (document.metadata_validation_json.classification_scores as any).bert.reason || 'Geen resultaat'}
-                          </div>
-                        </div>
-                      ) : (document.metadata_validation_json.classification_scores as any).bert.status === 'rejected' ? (
-                        <div className="bg-blue-50 border border-blue-200 rounded p-2 opacity-75">
-                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-slate-600 text-xs font-medium">
-                            {(document.metadata_validation_json.classification_scores as any).bert.label}
-                          </div>
-                          <div className="text-blue-600 text-[10px] mt-0.5">
-                            {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
-                          </div>
-                          <div className="text-red-600 text-[10px] mt-1">
-                            ❌ Afgewezen: {(document.metadata_validation_json.classification_scores as any).bert.rejection_reason || 'Onbekende reden'}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-blue-50 border border-blue-200 rounded p-2">
-                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-slate-800 text-xs">
-                            {(document.metadata_validation_json.classification_scores as any).bert.label}
-                          </div>
-                          <div className="text-blue-600 text-[10px] mt-0.5">
-                            {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
-                          </div>
-                        </div>
-                      )
-                    )}
-                  </div>
-                </div>
-              )}
-              
-              {document.doc_type_rationale ? (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <div className="text-slate-400 text-xs mb-1.5">Classificatie methode:</div>
-                  <div className="flex flex-wrap gap-1.5 mb-2">
-                    {document.doc_type_rationale.includes('STRONG keyword match') || document.doc_type_rationale.includes('STRONG') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px]">
-                        ✅ 100% Keyword match
-                      </span>
-                    ) : document.doc_type_rationale.includes('Deterministic') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-100 border border-yellow-200 text-yellow-700 text-[10px]">
-                        ⚠️ Keyword/regex match
-                      </span>
-                    ) : null}
-                    {document.doc_type_rationale.includes('Local classifier') || document.doc_type_rationale.includes('NAIVE_BAYES') || document.doc_type_rationale.includes('BERT') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-100 border border-blue-200 text-blue-700 text-[10px]">
-                        🤖 Getraind model
-                      </span>
-                    ) : null}
-                    {document.doc_type_rationale.includes('LLM') && !document.doc_type_rationale.includes('STRONG') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-100 border border-purple-200 text-purple-700 text-[10px]">
-                        🧠 AI classificatie
-                      </span>
-                    ) : null}
-                  </div>
-                  {/* Show matched keywords for strong deterministic matches */}
-                  {document.doc_type_rationale.includes('STRONG keyword match') && document.doc_type_rationale.includes('matched keywords:') && (
-                    <div className="mt-2 bg-green-50 border border-green-200 rounded p-2">
-                      <div className="text-green-700 text-xs font-medium mb-1">Gematchte keywords:</div>
-                      <div className="flex flex-wrap gap-1">
-                        {document.doc_type_rationale
-                          .split('matched keywords:')[1]
-                          ?.split('|')[0]
-                          ?.split(',')
-                          ?.map((kw: string) => kw.trim())
-                          ?.filter(Boolean)
-                          ?.map((keyword: string, i: number) => (
-                            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px]">
-                              {keyword}
-                            </span>
-                          ))}
+                        ✓ Dit is correct gedrag — het systeem voorkomt verkeerde classificaties door deze regel te respecteren
                       </div>
                     </div>
                   )}
-                  
-                  {/* Skip Marker Info */}
+
+                  {/* Skip Marker */}
                   {document.skip_marker_used && (
-                    <div className="mt-2 bg-cyan-50 border border-cyan-200 rounded p-2">
+                    <div className="bg-cyan-50 border border-cyan-200 rounded p-2">
                       <div className="text-cyan-700 text-xs font-medium mb-1 flex items-center gap-1.5">
                         <span>✂️</span>
                         <span>Skip Marker Toegepast</span>
@@ -1101,41 +1061,6 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                       )}
                     </div>
                   )}
-                  
-                  {document.doc_type_rationale.includes('Deterministic') && (
-                    <div className="text-[10px] text-slate-400 italic bg-yellow-500/5 border border-yellow-200 rounded p-2 mt-2">
-                      ⚠️ <strong>Waarom onjuist?</strong> Deterministic matching (keywords/regex) heeft voorrang boven het getrainde model. Als je commitment agreement als bankafschrift wordt herkend, controleer de classification_hints van "bankafschrift" in document types - deze bevatten waarschijnlijk keywords die ook in commitment agreements voorkomen.
-                    </div>
-                  )}
-                </div>
-              ) : document.doc_type_slug === 'unknown' ? (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <div className="text-slate-400 text-xs mb-1.5">Classificatie methode:</div>
-                  <div className="bg-gray-50 border border-gray-200 rounded p-2">
-                    <div className="text-slate-600 text-[10px]">
-                      Voor Onbekend document type wordt geen field matching uitgevoerd
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-              
-              {/* Skip Marker Info - Show even if no rationale */}
-              {!document.doc_type_rationale && document.skip_marker_used && (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <div className="bg-cyan-50 border border-cyan-200 rounded p-2">
-                    <div className="text-cyan-700 text-xs font-medium mb-1 flex items-center gap-1.5">
-                      <span>✂️</span>
-                      <span>Skip Marker Toegepast</span>
-                    </div>
-                    <div className="text-slate-600 text-[11px] font-mono bg-slate-50 rounded px-2 py-1 break-all">
-                      {document.skip_marker_used}
-                    </div>
-                    {document.skip_marker_position != null && (
-                      <div className="text-cyan-600 text-[10px] mt-1">
-                        Tekst afgekapt na positie {document.skip_marker_position.toLocaleString()}
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
             </div>
@@ -1679,39 +1604,34 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     });
   };
 
-  // Fetch LLM artifacts for completed and failed runs so extraction errors are visible in the UI.
   const canFetchArtifacts = document?.status === 'done' || document?.status === 'error';
-  
+
+  // Fetch manifest of existing LLM artifact paths — avoids 404 spam from blind probing
+  const { data: llmPaths, isLoading: manifestLoading } = useQuery({
+    queryKey: ['document-llm-manifest', documentId],
+    queryFn: () => listDocumentLlmArtifacts(documentId),
+    enabled: !!documentId && canFetchArtifacts,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    gcTime: 0,
+  });
+
+  const hasLlmDir = !!llmPaths && llmPaths.length > 0;
+  const has = (path: string) => !!llmPaths?.includes(path);
+
   const { data, isLoading } = useQuery({
     queryKey: ['document-llm', documentId],
     queryFn: async () => {
       const safeText = async (path: string): Promise<string | null> => {
+        if (!has(path)) return null;
         try { return await getDocumentArtifactText(documentId, path); }
         catch { return null; }
       };
       const safeJson = async <T,>(path: string): Promise<T | null> => {
+        if (!has(path)) return null;
         try { return await getDocumentArtifactJson<T>(documentId, path); }
         catch { return null; }
       };
-      const safeChunkArtifacts = async (kind: 'error' | 'warning') => {
-        const paths = Array.from({ length: 50 }, (_, index) => {
-          const chunkNum = index + 1;
-          return {
-            chunkNum,
-            path: `llm/extraction_${kind}_chunk_${chunkNum}.txt`,
-          };
-        });
-        const results = await Promise.all(
-          paths.map(async ({ chunkNum, path }) => ({
-            chunkNum,
-            path,
-            content: await safeText(path),
-          }))
-        );
-
-        return results.filter((item): item is { chunkNum: number; path: string; content: string } => !!item.content);
-      };
-
       const classification = {
         prompt: await safeText('llm/classification_prompt.txt'),
         response: await safeText('llm/classification_response.txt'),
@@ -1721,23 +1641,36 @@ function LLMTab({ documentId, document, downloadArtifact }: {
         local: await safeJson<Record<string, any>>('llm/classification_local.json'),
         timing: await safeJson<Record<string, any>>('llm/classification_timing.json'),
       };
+      const [
+        extractionPrompt, extractionResponse, extractionResult, extractionError,
+        extractionWarningSelectedChunks, extractionTiming, extractionSkipped, extractionChunkSelection,
+      ] = await Promise.all([
+        safeText('llm/extraction_prompt.txt'),
+        safeText('llm/extraction_response.txt'),
+        safeJson<Record<string, any>>('llm/extraction_result.json'),
+        safeText('llm/extraction_error.txt'),
+        safeText('llm/extraction_warning_selected_chunks.txt'),
+        safeJson<Record<string, any>>('llm/extraction_timing.json'),
+        safeJson<Record<string, any>>('llm/extraction_skipped.json'),
+        safeJson<Record<string, any>>('llm/extraction_chunk_selection.json'),
+      ]);
       const extraction = {
-        prompt: await safeText('llm/extraction_prompt.txt'),
-        response: await safeText('llm/extraction_response.txt'),
-        result: await safeJson<Record<string, any>>('llm/extraction_result.json'),
-        error: await safeText('llm/extraction_error.txt'),
-        chunkErrors: await safeChunkArtifacts('error'),
-        chunkWarnings: await safeChunkArtifacts('warning'),
-        timing: await safeJson<Record<string, any>>('llm/extraction_timing.json'),
-        skipped: await safeJson<Record<string, any>>('llm/extraction_skipped.json'),
+        prompt: extractionPrompt,
+        response: extractionResponse,
+        result: extractionResult,
+        error: extractionError,
+        warningSelectedChunks: extractionWarningSelectedChunks,
+        timing: extractionTiming,
+        skipped: extractionSkipped,
+        chunkSelection: extractionChunkSelection,
       };
       return { classification, extraction };
     },
-    enabled: !!documentId && canFetchArtifacts,
+    enabled: !!documentId && canFetchArtifacts && hasLlmDir,
     retry: false,
-    staleTime: 0, // Always refetch to get latest prompts (especially after rerun)
-    refetchOnMount: 'always', // Force refetch when component mounts
-    gcTime: 0, // Don't cache at all (previously called cacheTime)
+    staleTime: 0,
+    refetchOnMount: 'always',
+    gcTime: 0,
   });
 
   // Show appropriate message based on document status - BEFORE any data fetching
@@ -1774,7 +1707,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     );
   }
 
-  if (isLoading) {
+  if (manifestLoading || (hasLlmDir && isLoading)) {
     return (
       <div className="p-4 flex items-center justify-center">
         <FontAwesomeIcon icon={faSpinner} className="text-blue-600 w-6 h-6 animate-spin" />
@@ -1782,23 +1715,30 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     );
   }
 
-  // This is now only reached when status is 'done' but no data was found
-  if (!data) {
+  if (!hasLlmDir) {
     return (
       <div className="p-4 text-center">
         <FontAwesomeIcon icon={faRobot} className="text-slate-400 w-8 h-8 mb-2" />
-        <p className="text-slate-500 text-sm">Run analysis to see LLM logs</p>
+        <p className="text-slate-500 text-sm">Geen LLM data — document is via keyword match geclassificeerd</p>
       </div>
     );
   }
 
-  const hasData = data?.classification.prompt || data?.classification.result || data?.classification.deterministic || data?.classification.local || data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.chunkErrors?.length || data?.extraction.chunkWarnings?.length || data?.extraction.skipped;
+  if (!data) {
+    return (
+      <div className="p-4 flex items-center justify-center">
+        <FontAwesomeIcon icon={faSpinner} className="text-blue-600 w-6 h-6 animate-spin" />
+      </div>
+    );
+  }
+
+  const hasData = data.classification.prompt || data.classification.result || data.classification.deterministic || data.classification.local || data.extraction.prompt || data.extraction.result || data.extraction.error || data.extraction.warningSelectedChunks || data.extraction.skipped;
 
   if (!hasData) {
     return (
       <div className="p-4 text-center">
         <FontAwesomeIcon icon={faRobot} className="text-slate-400 w-8 h-8 mb-2" />
-        <p className="text-slate-500 text-sm">No LLM data available</p>
+        <p className="text-slate-500 text-sm">Geen LLM data beschikbaar</p>
       </div>
     );
   }
@@ -1921,7 +1861,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
       )}
 
       {/* Extraction */}
-      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.chunkErrors?.length || data?.extraction.chunkWarnings?.length || data?.extraction.skipped) && (
+      {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.warningSelectedChunks || data?.extraction.skipped) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-slate-800 font-medium text-sm flex items-center space-x-2">
@@ -1960,68 +1900,18 @@ function LLMTab({ documentId, document, downloadArtifact }: {
             </div>
           )}
 
-          {data.extraction.chunkWarnings && data.extraction.chunkWarnings.length > 0 && (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-yellow-700 text-xs font-semibold">Chunk warnings</div>
-                  <div className="text-yellow-700/70 text-[11px]">
-                    {data.extraction.chunkWarnings.length} chunk{data.extraction.chunkWarnings.length === 1 ? '' : 's'} had schema fallback, maar zijn niet definitief gefaald.
-                  </div>
-                </div>
-                <span className="text-[10px] text-yellow-700/60 bg-yellow-50 border border-yellow-200 rounded px-2 py-0.5">
-                  fallback ok
-                </span>
-              </div>
-              <div className="space-y-1.5">
-                {data.extraction.chunkWarnings.map((chunkWarning) => (
-                  <CollapsiblePromptBlock
-                    key={chunkWarning.path}
-                    id={`ext-chunk-warning-${chunkWarning.chunkNum}`}
-                    title={`Chunk ${chunkWarning.chunkNum} warning`}
-                    content={chunkWarning.content}
-                    downloadPath={chunkWarning.path}
-                    downloadName={`extraction_warning_chunk_${chunkWarning.chunkNum}.txt`}
-                    description="Schema poging faalde, fallback kon doorgaan"
-                    isExpanded={expandedSections.has(`ext-chunk-warning-${chunkWarning.chunkNum}`)}
-                    onToggle={() => toggleSection(`ext-chunk-warning-${chunkWarning.chunkNum}`)}
-                    onDownload={downloadArtifact}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {data.extraction.chunkErrors && data.extraction.chunkErrors.length > 0 && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-red-600 text-xs font-semibold">Chunk errors</div>
-                  <div className="text-red-600 text-[11px]">
-                    {data.extraction.chunkErrors.length} chunk{data.extraction.chunkErrors.length === 1 ? '' : 's'} met extractiefouten gevonden.
-                  </div>
-                </div>
-                <span className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded px-2 py-0.5">
-                  zichtbaar bij status error
-                </span>
-              </div>
-              <div className="space-y-1.5">
-                {data.extraction.chunkErrors.map((chunkError) => (
-                  <CollapsiblePromptBlock
-                    key={chunkError.path}
-                    id={`ext-chunk-error-${chunkError.chunkNum}`}
-                    title={`Chunk ${chunkError.chunkNum} error`}
-                    content={chunkError.content}
-                    downloadPath={chunkError.path}
-                    downloadName={`extraction_error_chunk_${chunkError.chunkNum}.txt`}
-                    description="Schema/fallback fout voor deze chunk"
-                    isExpanded={expandedSections.has(`ext-chunk-error-${chunkError.chunkNum}`)}
-                    onToggle={() => toggleSection(`ext-chunk-error-${chunkError.chunkNum}`)}
-                    onDownload={downloadArtifact}
-                  />
-                ))}
-              </div>
-            </div>
+          {data.extraction.warningSelectedChunks && (
+            <CollapsiblePromptBlock
+              id="ext-warning-selected-chunks"
+              title="Chunk warnings"
+              content={data.extraction.warningSelectedChunks}
+              downloadPath="llm/extraction_warning_selected_chunks.txt"
+              downloadName="extraction_warning_selected_chunks.txt"
+              description="Schema fallback opgetreden tijdens extractie — geen fatale fout"
+              isExpanded={expandedSections.has('ext-warning-selected-chunks')}
+              onToggle={() => toggleSection('ext-warning-selected-chunks')}
+              onDownload={downloadArtifact}
+            />
           )}
 
           {/* Show message if extraction failed (no result but has prompt) */}
@@ -2195,8 +2085,8 @@ function ForensicsTab({ documentId, document, isOpen }: {
         const url = URL.createObjectURL(pngBlob);
         return url;
       } catch (error: any) {
-        // Silently fail for 404 (heatmap doesn't exist yet)
-        if (error?.response?.status === 404 || error?.silent) {
+        // Silently fail for 404, timeouts, and network errors
+        if (error?.response?.status === 404 || error?.silent || error?.code === 'ECONNABORTED') {
           return null;
         }
         console.error('Failed to load ELA heatmap:', error);

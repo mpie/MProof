@@ -1,4 +1,5 @@
 import json
+import os
 import asyncio
 import time
 from typing import Dict, Any, Optional, List, Tuple
@@ -143,8 +144,8 @@ class LLMClient:
         
         if self.provider == "vllm":
             # Calculate available tokens based on actual model context
-            # Use 4096 as conservative default - the model will reject if we exceed
-            MODEL_CONTEXT = 4096
+            # Configurable via MPROOF_VLLM_CONTEXT_LENGTH env var; default 8192
+            MODEL_CONTEXT = int(os.environ.get("MPROOF_VLLM_CONTEXT_LENGTH", "8192"))
             SAFETY_MARGIN = 100  # Buffer for tokenization differences
             
             input_tokens = self._estimate_input_tokens(normalized_messages)
@@ -281,11 +282,27 @@ class LLMClient:
                     logger.error(f"LLM HTTP error {e.response.status_code} response body: {error_body}")
                 except Exception:
                     error_body = "Could not read response body"
-                
+
                 if e.response.status_code == 404:
                     raise LLMClientError(f"Model '{self.model}' not found on {self.provider} server")
                 elif e.response.status_code == 400:
-                    # 400 errors are usually client errors that won't be fixed by retrying
+                    # Check if this is a context-length error — auto-correct and retry once
+                    import re as _re
+                    ctx_match = _re.search(
+                        r'maximum context length is (\d+) tokens and your request has (\d+) input tokens',
+                        error_body
+                    )
+                    if ctx_match and attempt < self.max_retries - 1:
+                        actual_ctx = int(ctx_match.group(1))
+                        actual_input = int(ctx_match.group(2))
+                        available = actual_ctx - actual_input - 50
+                        corrected = max(20, available)
+                        logger.warning(
+                            f"Context limit auto-correct: model_ctx={actual_ctx}, "
+                            f"input_tokens={actual_input}, retrying with max_tokens={corrected}"
+                        )
+                        payload = {**payload, "max_tokens": corrected}
+                        continue  # retry with corrected payload
                     raise LLMClientError(f"LLM request rejected (400): {error_body}")
                 logger.warning(f"LLM HTTP error {e.response.status_code} (attempt {attempt + 1}/{self.max_retries})")
                 if attempt == self.max_retries - 1:

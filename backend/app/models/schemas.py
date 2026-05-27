@@ -71,6 +71,7 @@ class DocumentTypeFieldCreate(BaseModel):
     regex: Optional[str] = None
     description: Optional[str] = None
     examples: Optional[List[str]] = None
+    validation_rules: Optional[List[Dict[str, Any]]] = None
 
 
 class DocumentTypeFieldUpdate(BaseModel):
@@ -82,6 +83,7 @@ class DocumentTypeFieldUpdate(BaseModel):
     regex: Optional[str] = None
     description: Optional[str] = None
     examples: Optional[List[str]] = None
+    validation_rules: Optional[List[Dict[str, Any]]] = None
 
 
 class DocumentTypeFieldResponse(BaseModel):
@@ -95,11 +97,34 @@ class DocumentTypeFieldResponse(BaseModel):
     regex: Optional[str]
     description: Optional[str]
     examples: Optional[List[str]]
+    validation_rules: Optional[List[Dict[str, Any]]]
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @field_validator("enum_values", "examples", mode="before")
+    @classmethod
+    def _parse_str_list(cls, v):
+        if isinstance(v, str):
+            import json as _json
+            try:
+                return _json.loads(v)
+            except Exception:
+                return None
+        return v
+
+    @field_validator("validation_rules", mode="before")
+    @classmethod
+    def _parse_validation_rules(cls, v):
+        if isinstance(v, str):
+            import json as _json
+            try:
+                return _json.loads(v)
+            except Exception:
+                return None
+        return v
 
 
 class DocumentTypeCreate(BaseModel):
@@ -153,6 +178,12 @@ class DocumentTypeResponse(BaseModel):
 # Document schemas
 class DocumentUploadResponse(BaseModel):
     document_id: int
+    duplicate_of: Optional[int] = None
+
+
+class BatchUploadResponse(BaseModel):
+    document_ids: List[int]
+    count: int
 
 
 class DocumentResponse(BaseModel):
@@ -164,6 +195,9 @@ class DocumentResponse(BaseModel):
     mime_type: str
     size_bytes: int
     sha256: str
+    external_reference: Optional[str] = None
+    callback_url: Optional[str] = None
+    missing_required_fields: Optional[List[str]] = None
     status: DocumentStatusEnum
     progress: int
     stage: Optional[str]
@@ -180,6 +214,9 @@ class DocumentResponse(BaseModel):
     ocr_quality: Optional[str]
     skip_marker_used: Optional[str] = None
     skip_marker_position: Optional[int] = None
+    feedback_status: Optional[str] = None
+    corrected_doc_type: Optional[str] = None
+    duplicate_of: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

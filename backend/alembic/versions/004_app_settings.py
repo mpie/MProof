@@ -39,8 +39,8 @@ def upgrade() -> None:
         
         # Insert default LLM provider setting
         op.execute(
-            "INSERT INTO app_settings (key, value, description, created_at, updated_at) "
-            "VALUES ('llm_provider', 'ollama', 'Active LLM provider (ollama or vllm)', datetime('now'), datetime('now'))"
+            "INSERT INTO app_settings (`key`, value, description, created_at, updated_at) "
+            "VALUES ('llm_provider', 'ollama', 'Active LLM provider (ollama or vllm)', NOW(), NOW())"
         )
 
 

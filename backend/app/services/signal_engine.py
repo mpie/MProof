@@ -19,14 +19,29 @@ logger = logging.getLogger(__name__)
 # Generic Regex Patterns (no domain-specific terms)
 # =============================================================================
 
-# IBAN: international standard format
-IBAN_PATTERN = re.compile(r"\b[A-Z]{2}\d{2}(?:[ \-]?[A-Z0-9]){11,30}\b")
+# IBAN: strict match — unformatted (NL91ABNA0417164300) or 4-char group spaced
+# Requires minimum 15 chars total (2 CC + 2 check + 11 BBAN) to avoid short false positives
+IBAN_PATTERN = re.compile(
+    r'\b[A-Z]{2}\d{2}(?:'
+    r'[A-Z0-9]{11,30}'                           # unformatted
+    r'|(?:[A-Z0-9]{4}[\s]){2,7}[A-Z0-9]{1,4}'   # 4-char groups with spaces
+    r')\b'
+)
 
 # Date: DD-MM-YYYY format (common in Dutch/European documents)
 DATE_PATTERN = re.compile(r"\b\d{2}-\d{2}-\d{4}\b")
 
-# Amount: Euro amounts like €1.234,56 or 1.234,56
-AMOUNT_PATTERN = re.compile(r"(?:€\s*)?\d{1,3}(?:\.\d{3})*(?:,\d{2})\b")
+# Amount: monetary values in various currencies (€, $, £, ¥, kr, USD, EUR, GBP etc.)
+# Matches: €1.234,56 | $1,234.56 | £999 | 1.234,56 | 1,234.56 | USD 1,234
+AMOUNT_PATTERN = re.compile(
+    r'(?:'
+    r'(?:€|\$|£|¥|CHF|USD|EUR|GBP|SEK|NOK|DKK|kr\.?)\s*'  # currency prefix
+    r'\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?'
+    r'|\d{1,3}(?:\.\d{3})*,\d{2}'     # Dutch: 1.234,56
+    r'|\d{1,3}(?:,\d{3})*\.\d{2}'     # English: 1,234.56
+    r')'
+    r'\b'
+)
 
 
 # =============================================================================

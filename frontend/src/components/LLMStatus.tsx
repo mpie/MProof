@@ -13,8 +13,8 @@ export function LLMStatus() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center space-x-2 text-white/50 text-sm">
-        <span className="w-2 h-2 bg-white/30 rounded-full animate-pulse"></span>
+      <div className="flex items-center space-x-2 text-slate-400 text-sm">
+        <span className="w-2 h-2 bg-slate-300 rounded-full animate-pulse"></span>
         <span>LLM...</span>
       </div>
     );
@@ -26,7 +26,7 @@ export function LLMStatus() {
   const providerName = activeProvider === 'vllm' ? 'vLLM' : 'Ollama';
 
   return (
-    <div className="flex items-center space-x-2 text-white text-sm">
+    <div className="flex items-center space-x-2 text-slate-800 text-sm">
       <span 
         className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-400' : 'bg-red-400'}`}
         title={isOnline ? 'Online' : 'Offline'}

@@ -21,21 +21,20 @@ def upgrade() -> None:
         inspector = sa.inspect(conn)
         tables = inspector.get_table_names()
     except Exception:
-        # If inspection fails, assume table doesn't exist (safer to try creating)
         tables = []
-    
+
     # Create skip_markers table (only if it doesn't exist)
     if 'skip_markers' not in tables:
         op.create_table(
             'skip_markers',
             sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column('pattern', sa.String(length=500), nullable=False),
-        sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('is_regex', sa.Boolean(), nullable=False, server_default='0'),
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default='1'),
-        sa.Column('created_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-        sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(datetime(\'now\'))'), nullable=False),
-        sa.PrimaryKeyConstraint('id')
+            sa.Column('pattern', sa.String(length=500), nullable=False),
+            sa.Column('description', sa.Text(), nullable=True),
+            sa.Column('is_regex', sa.Boolean(), nullable=False, server_default='0'),
+            sa.Column('is_active', sa.Boolean(), nullable=False, server_default='1'),
+            sa.Column('created_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.Column('updated_at', sa.DateTime(), server_default=sa.text('NOW()'), nullable=False),
+            sa.PrimaryKeyConstraint('id')
         )
 
         # Insert default skip markers (only if table was just created)

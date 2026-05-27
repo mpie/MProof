@@ -34,7 +34,7 @@ def upgrade() -> None:
     for key, label, description, signal_type, source, compute_kind, config_json in builtin_signals:
         # Check if signal already exists
         result = conn.execute(
-            sa.text("SELECT id FROM classification_signals WHERE key = :key"),
+            sa.text("SELECT id FROM classification_signals WHERE `key` = :key"),
             {'key': key}
         )
         if not result.fetchone():
@@ -47,8 +47,8 @@ def upgrade() -> None:
                 config_str = f"'{json.dumps(config_json).replace(chr(39), chr(39)+chr(39))}'"
             
             op.execute(f"""
-                INSERT INTO classification_signals (key, label, description, signal_type, source, compute_kind, config_json, created_at, updated_at)
-                VALUES ('{key}', '{label_escaped}', '{desc_escaped}', '{signal_type}', '{source}', '{compute_kind}', {config_str}, datetime('now'), datetime('now'))
+                INSERT INTO classification_signals (`key`, label, description, signal_type, source, compute_kind, config_json, created_at, updated_at)
+                VALUES ('{key}', '{label_escaped}', '{desc_escaped}', '{signal_type}', '{source}', '{compute_kind}', {config_str}, NOW(), NOW())
             """)
     
     # Check if user signals already exist (idempotent)
@@ -116,7 +116,7 @@ def upgrade() -> None:
             
             op.execute(f"""
                 INSERT INTO document_types (name, slug, description, classification_hints, extraction_prompt_preamble, created_at, updated_at)
-                VALUES ('{name_escaped}', '{doc_type['slug']}', '{desc_escaped}', '{hints_escaped}', '{preamble_escaped}', datetime('now'), datetime('now'))
+                VALUES ('{name_escaped}', '{doc_type['slug']}', '{desc_escaped}', '{hints_escaped}', '{preamble_escaped}', NOW(), NOW())
             """)
             # Get the inserted ID
             result = conn.execute(
@@ -131,7 +131,7 @@ def upgrade() -> None:
         for field in doc_type['fields']:
             # Check if field already exists
             result = conn.execute(
-                sa.text("SELECT id FROM document_type_fields WHERE document_type_id = :doc_type_id AND key = :key"),
+                sa.text("SELECT id FROM document_type_fields WHERE document_type_id = :doc_type_id AND `key` = :key"),
                 {'doc_type_id': doc_type_id, 'key': field['key']}
             )
             if not result.fetchone():
@@ -146,8 +146,8 @@ def upgrade() -> None:
                 
                 op.execute(f"""
                     INSERT INTO document_type_fields 
-                    (document_type_id, key, label, field_type, required, description, enum_values, regex, created_at, updated_at)
-                    VALUES ({doc_type_id}, '{field['key']}', '{label_escaped}', '{field['field_type']}', {1 if field['required'] else 0}, '{desc_escaped}', {enum_vals}, {f"'{regex_escaped}'" if field['regex'] else 'NULL'}, datetime('now'), datetime('now'))
+                    (document_type_id, `key`, label, field_type, required, description, enum_values, regex, created_at, updated_at)
+                    VALUES ({doc_type_id}, '{field['key']}', '{label_escaped}', '{field['field_type']}', {1 if field['required'] else 0}, '{desc_escaped}', {enum_vals}, {f"'{regex_escaped}'" if field['regex'] else 'NULL'}, NOW(), NOW())
                 """)
     
     # Update policies (idempotent - always updates)
