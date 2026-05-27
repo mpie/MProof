@@ -12,7 +12,8 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import {
   Document, DocumentEvent, getDocument, analyzeDocument, getDocumentArtifact, getDocumentArtifactText, getDocumentArtifactJson,
-  RiskSignal, subscribeToDocumentEvents, getFraudAnalysis, FraudReport, FraudSignal
+  RiskSignal, subscribeToDocumentEvents, getFraudAnalysis, FraudReport, FraudSignal, AdviceCard,
+  submitDocumentFeedback, listDocumentTypeFields, DocumentTypeField,
 } from '@/lib/api';
 
 // Dynamically import PDFViewerWithHighlights to avoid SSR issues with react-pdf
@@ -20,7 +21,7 @@ const PDFViewerWithHighlights = dynamic(
   () => import('./PDFViewerWithHighlights').then(mod => ({ default: mod.PDFViewerWithHighlights })),
   { 
     ssr: false,
-    loading: () => <div className="flex items-center justify-center h-full text-white/60">PDF viewer laden...</div>
+    loading: () => <div className="flex items-center justify-center h-full text-slate-500">PDF viewer laden...</div>
   }
 );
 
@@ -56,22 +57,22 @@ function DocumentViewerModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[60] flex items-center justify-center p-0 sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[200] flex items-center justify-center p-0 sm:p-4" onClick={onClose}>
       <div className="glass-card w-full h-full sm:w-[85vw] sm:h-[85vh] max-w-[85vw] max-h-[85vh] flex flex-col rounded-none sm:rounded-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 flex-shrink-0">
           <div className="flex items-center space-x-3 min-w-0">
             <FontAwesomeIcon 
               icon={isPDF ? faFilePdf : isImage ? faImage : faFile} 
-              className="text-white/70 w-5 h-5 flex-shrink-0" 
+              className="text-slate-500 w-5 h-5 flex-shrink-0" 
             />
             <div className="min-w-0">
-              <h2 className="text-white text-lg font-semibold truncate">
+              <h2 className="text-slate-800 text-lg font-semibold truncate">
                 {filename}
               </h2>
-              <p className="text-white/60 text-xs">
+              <p className="text-slate-500 text-xs">
                 Origineel bestand
-                {hasEvidence && <span className="text-blue-400 ml-2">• Met highlights</span>}
+                {hasEvidence && <span className="text-blue-600 ml-2">• Met highlights</span>}
               </p>
             </div>
           </div>
@@ -85,7 +86,7 @@ function DocumentViewerModal({
             </button>
             <button 
               onClick={onClose} 
-              className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg cursor-pointer"
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg cursor-pointer"
             >
               <FontAwesomeIcon icon={faTimes} className="w-5 h-5" />
             </button>
@@ -93,7 +94,7 @@ function DocumentViewerModal({
         </div>
 
         {/* Viewer Content */}
-        <div className="flex-1 overflow-hidden bg-black/30">
+        <div className="flex-1 overflow-hidden bg-white">
           {isPDF ? (
             // Use custom PDF viewer for PDFs; it enables highlights when evidence is available.
             <PDFViewerWithHighlights 
@@ -109,7 +110,7 @@ function DocumentViewerModal({
               />
             </div>
           ) : isWord ? (
-            <div className="text-center text-white/60 w-full h-full flex flex-col items-center justify-center">
+            <div className="text-center text-slate-500 w-full h-full flex flex-col items-center justify-center">
               <FontAwesomeIcon icon={faFile} className="w-16 h-16 mb-4 opacity-50" />
               <p className="mb-4">Word documenten kunnen niet direct in de browser worden weergegeven.</p>
               <button
@@ -121,7 +122,7 @@ function DocumentViewerModal({
               </button>
             </div>
           ) : (
-            <div className="text-center text-white/60 w-full h-full flex flex-col items-center justify-center">
+            <div className="text-center text-slate-500 w-full h-full flex flex-col items-center justify-center">
               <FontAwesomeIcon icon={faFile} className="w-16 h-16 mb-4 opacity-50" />
               <p>Preview niet beschikbaar voor dit bestandstype</p>
               <button
@@ -204,19 +205,20 @@ function formatExampleText(text: string, isUnicode: boolean = false): string {
     .trim();
 }
 
+type TabType = 'overview' | 'text' | 'metadata' | 'llm' | 'forensics';
+
 interface DocumentDetailModalProps {
   documentId: number | null;
   isOpen: boolean;
   onClose: () => void;
+  initialTab?: TabType;
 }
-
-type TabType = 'overview' | 'text' | 'metadata' | 'llm' | 'forensics';
 
 // Build direct API URL for artifacts (bypasses blob URL issues)
 const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDetailModalProps) {
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
+export function DocumentDetailModal({ documentId, isOpen, onClose, initialTab }: DocumentDetailModalProps) {
+  const [activeTab, setActiveTab] = useState<TabType>(initialTab ?? 'overview');
   const [highlightSources, setHighlightSources] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedExamples, setExpandedExamples] = useState<Set<number>>(new Set());
@@ -225,6 +227,11 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
   const [examplesSidebar, setExamplesSidebar] = useState<{ signalIndex: number; examples: any } | null>(null);
   const initializedTabDocumentRef = useRef<number | null>(null);
   const queryClient = useQueryClient();
+
+  // Reset tab when document changes or modal opens with a new initialTab
+  useEffect(() => {
+    if (isOpen && documentId) setActiveTab(initialTab ?? 'overview');
+  }, [documentId, isOpen, initialTab]);
 
   const { data: document, isLoading, refetch } = useQuery({
     queryKey: ['document', documentId],
@@ -292,6 +299,27 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
       
       // Refetch in background
       refetch();
+    },
+  });
+
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectCorrectedType, setRejectCorrectedType] = useState('');
+  const [feedbackDone, setFeedbackDone] = useState<'confirmed' | 'rejected' | null>(null);
+
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+
+  const feedbackMutation = useMutation({
+    mutationFn: ({ action, correctedType }: { action: 'confirmed' | 'rejected'; correctedType?: string }) =>
+      submitDocumentFeedback(documentId!, action, correctedType),
+    onSuccess: (_, vars) => {
+      setFeedbackDone(vars.action);
+      setFeedbackError(null);
+      setShowRejectInput(false);
+      queryClient.invalidateQueries({ queryKey: ['document', documentId] });
+    },
+    onError: (err: any) => {
+      const msg = err?.response?.data?.detail || err?.message || 'Feedback opslaan mislukt';
+      setFeedbackError(msg);
     },
   });
 
@@ -388,10 +416,10 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'done': return 'text-green-400';
-      case 'processing': return 'text-blue-400';
-      case 'error': return 'text-red-400';
-      default: return 'text-yellow-400';
+      case 'done': return 'text-green-600';
+      case 'processing': return 'text-blue-600';
+      case 'error': return 'text-red-600';
+      default: return 'text-amber-600';
     }
   };
 
@@ -426,7 +454,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
     <>
       {!showDocumentViewer && (
         <div 
-          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-0 sm:p-4 overflow-hidden"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[150] flex items-center justify-center p-0 sm:p-4 overflow-hidden"
           onClick={(e) => {
             // Close sidebar if clicking outside the modal
             if (examplesSidebar && e.target === e.currentTarget) {
@@ -437,18 +465,18 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
           <div className="relative w-full max-w-4xl h-full sm:h-[90vh] m-0 sm:m-4 overflow-hidden">
             <div className={`glass-card overflow-hidden flex flex-col w-full h-full min-h-0 transition-all duration-300 rounded-none sm:rounded-xl`}>
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 flex-shrink-0">
           <div className="flex items-center space-x-3 min-w-0">
-            <FontAwesomeIcon icon={faFile} className="text-white/70 w-5 h-5 flex-shrink-0" />
+            <FontAwesomeIcon icon={faFile} className="text-slate-500 w-5 h-5 flex-shrink-0" />
             <div className="min-w-0">
-              <h2 className="text-white text-lg font-semibold truncate">
+              <h2 className="text-slate-800 text-lg font-semibold truncate">
                 {document?.original_filename || 'Loading...'}
               </h2>
               <div className="flex items-center gap-2 text-xs">
-                <span className="text-white/60">Document #{documentId}</span>
+                <span className="text-slate-500">Document #{documentId}</span>
                 {/* Processing Status Indicator */}
                 {(document?.status === 'processing' || document?.status === 'queued') && (
-                  <span className="flex items-center gap-1.5 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full animate-pulse">
+                  <span className="flex items-center gap-1.5 px-2 py-0.5 bg-[#22d3d3]/10 text-[#0e9f9f] rounded-full animate-pulse">
                     <FontAwesomeIcon icon={faSpinner} className="w-3 h-3 animate-spin" />
                     <span>{formatStage(document.stage) || 'Verwerken...'}</span>
                     {document.progress > 0 && <span>({document.progress}%)</span>}
@@ -466,7 +494,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                   setDocumentViewerPath(artifactPath);
                   setShowDocumentViewer(true);
                 }}
-                className="flex items-center space-x-2 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 cursor-pointer"
+                className="flex items-center space-x-2 px-3 py-1.5 bg-slate-100 text-slate-700 text-sm rounded-lg hover:bg-slate-200 border border-slate-200 cursor-pointer"
                 title="Bekijk origineel bestand"
               >
                 <FontAwesomeIcon icon={document.mime_type === 'application/pdf' ? faFilePdf : faImage} className="w-3 h-3" />
@@ -478,8 +506,8 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
               disabled={analyzeMutation.isPending || document?.status === 'processing' || document?.status === 'queued'}
               className={`flex items-center space-x-2 px-3 py-1.5 text-white text-sm rounded-lg disabled:opacity-50 cursor-pointer transition-all ${
                 analyzeMutation.isPending || document?.status === 'processing' || document?.status === 'queued'
-                  ? 'bg-gray-600'
-                  : 'bg-blue-600 hover:bg-blue-700'
+                  ? 'bg-slate-300'
+                  : 'bg-[#22d3d3] hover:bg-[#1ab8b8]'
               }`}
             >
               <FontAwesomeIcon 
@@ -492,7 +520,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                  'Re-run'}
               </span>
             </button>
-            <button onClick={onClose} className="p-2 text-white/60 hover:text-white hover:bg-white/10 rounded-lg">
+            <button onClick={onClose} className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg">
               <FontAwesomeIcon icon={faTimes} className="w-5 h-5" />
             </button>
           </div>
@@ -500,8 +528,8 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
 
         {isLoading && (
           <div className="p-8 text-center">
-            <FontAwesomeIcon icon={faSpinner} className="text-white/40 text-3xl mb-4 animate-spin" />
-            <p className="text-white/60">Loading...</p>
+            <FontAwesomeIcon icon={faSpinner} className="text-slate-400 text-3xl mb-4 animate-spin" />
+            <p className="text-slate-500">Loading...</p>
           </div>
         )}
 
@@ -509,24 +537,24 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
           <>
             {/* Processing Overlay */}
             {(document.status === 'processing' || document.status === 'queued') && (
-              <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border-b border-blue-500/20 px-4 py-3">
+              <div className="bg-gradient-to-r from-[#22d3d3]/8 to-[#FFC1F3]/6 border-b border-[#22d3d3]/20 px-4 py-3">
                 <div className="flex items-center gap-3">
                   <div className="relative">
-                    <FontAwesomeIcon icon={faSpinner} className="w-5 h-5 text-blue-400 animate-spin" />
-                    <div className="absolute inset-0 bg-blue-400/20 rounded-full animate-ping" />
+                    <FontAwesomeIcon icon={faSpinner} className="w-5 h-5 text-blue-600 animate-spin" />
+                    <div className="absolute inset-0 bg-blue-100 rounded-full animate-ping" />
                   </div>
                   <div className="flex-1">
-                    <div className="text-white text-sm font-medium">
+                    <div className="text-slate-800 text-sm font-medium">
                       {document.stage || 'Document wordt verwerkt...'}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500"
+                          className="h-full bg-gradient-to-r from-[#22d3d3] to-[#FFC1F3] rounded-full transition-all duration-500"
                           style={{ width: `${document.progress || 0}%` }}
                         />
                       </div>
-                      <span className="text-white/60 text-xs">{document.progress || 0}%</span>
+                      <span className="text-slate-500 text-xs">{document.progress || 0}%</span>
                     </div>
                   </div>
                 </div>
@@ -534,7 +562,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
             )}
 
             {/* Tabs */}
-            <div className="flex border-b border-white/10 flex-shrink-0 overflow-x-auto">
+            <div className="flex border-b border-slate-200 flex-shrink-0 overflow-x-auto">
               {[
                 { id: 'overview', label: 'Overview', icon: faInfoCircle },
                 { id: 'text', label: 'Text', icon: faFile },
@@ -549,8 +577,8 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                     onClick={() => !isDisabled && setActiveTab(tab.id as TabType)}
                     disabled={isDisabled}
                     className={`flex items-center space-x-1 sm:space-x-2 px-2 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
-                      isDisabled ? 'text-white/30 cursor-not-allowed' :
-                      activeTab === tab.id ? 'text-blue-400 border-b-2 border-blue-400' : 'text-white/60 hover:text-white'
+                      isDisabled ? 'text-slate-500 cursor-not-allowed' :
+                      activeTab === tab.id ? 'text-[#22d3d3] border-b-2 border-[#22d3d3]' : 'text-slate-500 hover:text-slate-800'
                     }`}
                   >
                     <FontAwesomeIcon icon={tab.icon} className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
@@ -561,9 +589,21 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
               })}
             </div>
 
+            {/* Duplicate warning banner */}
+            {document.duplicate_of && (
+              <div className="mx-4 mb-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3 shrink-0" />
+                <span>
+                  Dit bestand is al eerder geüpload als{' '}
+                  <span className="font-mono font-semibold">document #{document.duplicate_of}</span>.
+                  Mogelijk duplicaat of gewijzigde versie.
+                </span>
+              </div>
+            )}
+
             {/* Tab Content */}
             <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
-              {activeTab === 'overview' && <OverviewTab document={document} documentId={documentId} formatFileSize={formatFileSize} formatDate={formatDate} formatDateTime={formatDateTime} formatStage={formatStage} getStatusColor={getStatusColor} getRiskColor={getRiskColor} onShowExamples={(signalIndex, examples) => setExamplesSidebar({ signalIndex, examples })} />}
+              {activeTab === 'overview' && <OverviewTab document={document} documentId={documentId} formatFileSize={formatFileSize} formatDate={formatDate} formatDateTime={formatDateTime} formatStage={formatStage} getStatusColor={getStatusColor} getRiskColor={getRiskColor} onShowExamples={(signalIndex, examples) => setExamplesSidebar({ signalIndex, examples })} feedbackState={{ feedbackDone, showRejectInput, rejectCorrectedType, setShowRejectInput, setRejectCorrectedType, onConfirm: () => { setFeedbackError(null); feedbackMutation.mutate({ action: 'confirmed' }); }, onReject: (t) => { setFeedbackError(null); feedbackMutation.mutate({ action: 'rejected', correctedType: t }); }, isPending: feedbackMutation.isPending, error: feedbackError }} />}
               {activeTab === 'text' && <TextTab document={document} highlightSources={highlightSources} searchTerm={searchTerm} onHighlightToggle={() => setHighlightSources(!highlightSources)} onSearchChange={setSearchTerm} downloadArtifact={downloadArtifact} extractedText={extractedText} textLoading={textLoading} />}
               {activeTab === 'metadata' && <MetadataTab documentId={documentId} document={document} copyToClipboard={copyToClipboard} downloadArtifact={downloadArtifact} />}
               {activeTab === 'llm' && <LLMTab documentId={documentId} document={document} downloadArtifact={downloadArtifact} />}
@@ -575,12 +615,12 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
 
             {/* Examples Sidebar - Bottom sheet on mobile, right side on desktop */}
             {examplesSidebar && (
-              <div className="fixed sm:absolute inset-x-0 bottom-0 sm:inset-auto sm:top-0 sm:left-full sm:ml-0 glass-card w-full sm:w-96 max-h-[70vh] sm:max-h-none flex-shrink-0 border-t sm:border-t-0 sm:border-l border-white/10 flex flex-col rounded-t-xl sm:rounded-none sm:rounded-r-xl sm:h-full shadow-2xl animate-slide-in-up sm:animate-slide-in-right overflow-hidden z-[60]">
-                <div className="flex items-center justify-between p-4 border-b border-white/10 flex-shrink-0">
-                  <h3 className="text-white font-semibold text-sm">Voorbeeldteksten</h3>
+              <div className="fixed sm:absolute inset-x-0 bottom-0 sm:inset-auto sm:top-0 sm:left-full sm:ml-0 glass-card w-full sm:w-96 max-h-[70vh] sm:max-h-none flex-shrink-0 border-t sm:border-t-0 sm:border-l border-slate-200 flex flex-col rounded-t-xl sm:rounded-none sm:rounded-r-xl sm:h-full shadow-2xl animate-slide-in-up sm:animate-slide-in-right overflow-hidden z-[60]">
+                <div className="flex items-center justify-between p-4 border-b border-slate-200 flex-shrink-0">
+                  <h3 className="text-slate-800 font-semibold text-sm">Voorbeeldteksten</h3>
                   <button
                     onClick={() => setExamplesSidebar(null)}
-                    className="p-1.5 text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+                    className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                   >
                     <FontAwesomeIcon icon={faTimes} className="w-4 h-4" />
                   </button>
@@ -588,20 +628,20 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                 <div className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-4 min-h-0">
                   {examplesSidebar.examples.unicode_examples && examplesSidebar.examples.unicode_examples.length > 0 && (
                     <div>
-                      <div className="text-xs font-semibold text-white/80 mb-2">
+                      <div className="text-xs font-semibold text-slate-600 mb-2">
                         Unicode tekens gevonden:
                       </div>
                       <div className="space-y-2">
                         {examplesSidebar.examples.unicode_examples.map((example: string, idx: number) => (
                           <div 
                             key={idx}
-                            className="bg-black/30 rounded-lg p-3 text-xs font-mono text-white/90 border border-white/10 break-all leading-relaxed"
+                            className="bg-white rounded-lg p-3 text-xs font-mono text-slate-700 border border-slate-200 break-all leading-relaxed"
                           >
                             <div className="whitespace-pre-wrap">{formatExampleText(example, true)}</div>
                           </div>
                         ))}
                       </div>
-                      <div className="text-xs text-white/50 mt-2">
+                      <div className="text-xs text-slate-400 mt-2">
                         Deze tekens zijn niet standaard ASCII en kunnen wijzen op manipulatie.
                       </div>
                     </div>
@@ -611,7 +651,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                     <div className="mt-6">
                       <div className="flex items-center gap-2 mb-3">
                         <div className="w-1 h-4 bg-gradient-to-b from-orange-400 to-red-400 rounded-full"></div>
-                        <h4 className="text-sm font-bold text-white">Herhalende tekst patronen</h4>
+                        <h4 className="text-sm font-bold text-slate-800">Herhalende tekst patronen</h4>
                       </div>
                       <div className="space-y-3">
                         {examplesSidebar.examples.repetition_examples.map((example: string, idx: number) => {
@@ -619,21 +659,21 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
                           return (
                             <div 
                               key={idx}
-                              className="bg-gradient-to-br from-orange-500/10 to-red-500/10 rounded-lg p-4 text-sm text-white/95 border border-orange-500/20 break-words shadow-lg"
+                              className="bg-gradient-to-br from-orange-500/10 to-red-500/10 rounded-lg p-4 text-sm text-slate-700 border border-orange-200 break-words shadow-lg"
                             >
                               <div className="flex items-start gap-3">
-                                <span className="text-orange-400 font-bold text-xs mt-0.5 flex-shrink-0">#{idx + 1}</span>
+                                <span className="text-orange-600 font-bold text-xs mt-0.5 flex-shrink-0">#{idx + 1}</span>
                                 <div className="flex-1">
-                                  <div className="leading-relaxed text-white/95">{formattedText}</div>
+                                  <div className="leading-relaxed text-slate-700">{formattedText}</div>
                                 </div>
                               </div>
                             </div>
                           );
                         })}
                       </div>
-                      <div className="mt-4 p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
-                        <div className="text-xs text-white/70 leading-relaxed">
-                          <span className="font-semibold text-orange-300">Waarom is dit verdacht?</span>
+                      <div className="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                        <div className="text-xs text-slate-500 leading-relaxed">
+                          <span className="font-semibold text-orange-600">Waarom is dit verdacht?</span>
                           <br />
                           Deze herhalingen kunnen wijzen op automatische tekst generatie of manipulatie. Woorden die meerdere keren in een zin voorkomen zijn ongebruikelijk in natuurlijke taal.
                         </div>
@@ -655,7 +695,11 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
             setShowDocumentViewer(false);
             setDocumentViewerPath(null);
           }}
-          documentUrl={`${API_BASE_URL}/api/documents/${documentId}/artifact?path=${encodeURIComponent(documentViewerPath)}`}
+          documentUrl={(() => {
+            const token = typeof window !== 'undefined' ? localStorage.getItem('mproof_token') : null;
+            const base = `${API_BASE_URL}/api/documents/${documentId}/artifact?path=${encodeURIComponent(documentViewerPath)}`;
+            return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+          })()}
           filename={document?.original_filename || ''}
           mimeType={document?.mime_type || ''}
           onDownload={() => downloadArtifact(documentViewerPath, document?.original_filename || 'document')}
@@ -666,7 +710,7 @@ export function DocumentDetailModal({ documentId, isOpen, onClose }: DocumentDet
   );
 }
 
-function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, formatStage, getStatusColor, getRiskColor, onShowExamples, documentId }: {
+function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, formatStage, getStatusColor, getRiskColor, onShowExamples, documentId, feedbackState }: {
   document: Document;
   formatFileSize: (bytes: number) => string;
   formatDate: (date: string) => string;
@@ -676,6 +720,17 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
   getRiskColor: (score: number) => string;
   onShowExamples: (signalIndex: number, examples: any) => void;
   documentId?: number;
+  feedbackState?: {
+    feedbackDone: 'confirmed' | 'rejected' | null;
+    showRejectInput: boolean;
+    rejectCorrectedType: string;
+    setShowRejectInput: (v: boolean | ((prev: boolean) => boolean)) => void;
+    setRejectCorrectedType: (v: string) => void;
+    onConfirm: () => void;
+    onReject: (correctedType?: string) => void;
+    isPending: boolean;
+    error?: string | null;
+  };
 }) {
   // Load fraud analysis for forensics signals
   const { data: fraudReport } = useQuery({
@@ -689,50 +744,50 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
     <div className="p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-y-auto">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
         {/* File Info */}
-        <div className="bg-blue-500/10 rounded-lg p-3 sm:p-4 border border-blue-500/20">
-          <h3 className="text-white font-medium mb-2 sm:mb-3 flex items-center space-x-2 text-sm sm:text-base">
-            <FontAwesomeIcon icon={faFile} className="text-blue-400 w-3.5 h-3.5 sm:w-4 sm:h-4" />
+        <div className="bg-blue-50 rounded-lg p-3 sm:p-4 border border-blue-200">
+          <h3 className="text-slate-800 font-medium mb-2 sm:mb-3 flex items-center space-x-2 text-sm sm:text-base">
+            <FontAwesomeIcon icon={faFile} className="text-blue-600 w-3.5 h-3.5 sm:w-4 sm:h-4" />
             <span>File Info</span>
           </h3>
           <div className="space-y-1.5 sm:space-y-2 text-xs sm:text-sm">
-            <div className="flex justify-between"><span className="text-white/60">Size:</span><span className="text-white">{formatFileSize(document.size_bytes)}</span></div>
-            <div className="flex justify-between"><span className="text-white/60">Type:</span><span className="text-white text-xs">{document.mime_type}</span></div>
-            <div className="flex justify-between"><span className="text-white/60">SHA256:</span><span className="text-white font-mono text-xs">{document.sha256?.substring(0, 12)}...</span></div>
-            <div className="flex justify-between"><span className="text-white/60">Uploaded:</span><span className="text-white">{formatDateTime(document.created_at)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Size:</span><span className="text-slate-800">{formatFileSize(document.size_bytes)}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Type:</span><span className="text-slate-800 text-xs">{document.mime_type}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">SHA256:</span><span className="text-slate-800 font-mono text-xs">{document.sha256?.substring(0, 12)}...</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Uploaded:</span><span className="text-slate-800">{formatDateTime(document.created_at)}</span></div>
           </div>
         </div>
 
         {/* Status */}
         <div className={`rounded-lg p-4 border ${
           document.status === 'processing' || document.status === 'queued'
-            ? 'bg-blue-500/10 border-blue-500/20'
+            ? 'bg-blue-50 border-blue-200'
             : document.status === 'error'
-            ? 'bg-red-500/10 border-red-500/20'
-            : 'bg-green-500/10 border-green-500/20'
+            ? 'bg-red-50 border-red-200'
+            : 'bg-green-50 border-green-200'
         }`}>
-          <h3 className="text-white font-medium mb-3 flex items-center space-x-2">
+          <h3 className="text-slate-800 font-medium mb-3 flex items-center space-x-2">
             {(document.status === 'processing' || document.status === 'queued') ? (
-              <FontAwesomeIcon icon={faSpinner} className="text-blue-400 w-4 h-4 animate-spin" />
+              <FontAwesomeIcon icon={faSpinner} className="text-blue-600 w-4 h-4 animate-spin" />
             ) : document.status === 'error' ? (
-              <FontAwesomeIcon icon={faExclamationTriangle} className="text-red-400 w-4 h-4" />
+              <FontAwesomeIcon icon={faExclamationTriangle} className="text-red-600 w-4 h-4" />
             ) : (
-              <FontAwesomeIcon icon={faCheck} className="text-green-400 w-4 h-4" />
+              <FontAwesomeIcon icon={faCheck} className="text-green-600 w-4 h-4" />
             )}
             <span>Status</span>
           </h3>
           <div className="space-y-2 text-sm">
             <div className="flex justify-between items-center">
-              <span className="text-white/60">Status:</span>
+              <span className="text-slate-500">Status:</span>
               <span className={`capitalize font-medium px-2 py-0.5 rounded text-xs ${getStatusColor(document.status)}`}>{document.status}</span>
             </div>
-            {document.stage && <div className="flex justify-between"><span className="text-white/60">Stage:</span><span className="text-white text-sm">{formatStage(document.stage)}</span></div>}
+            {document.stage && <div className="flex justify-between"><span className="text-slate-500">Stage:</span><span className="text-slate-800 text-sm">{formatStage(document.stage)}</span></div>}
             {(document.status === 'processing' || document.status === 'queued') && document.progress !== undefined && (
               <div className="mt-3">
                 <div className="flex justify-between text-xs mb-1">
-                  <span className="text-white/60">Progress</span>
-                  <span className="text-white">{document.progress}%</span>
+                  <span className="text-slate-500">Progress</span>
+                  <span className="text-slate-800">{document.progress}%</span>
                 </div>
-                <div className="w-full bg-white/20 rounded-full h-2">
+                <div className="w-full bg-slate-200 rounded-full h-2">
                   <div className="h-2 bg-blue-400 rounded-full transition-all" style={{ width: `${document.progress}%` }} />
                 </div>
               </div>
@@ -745,27 +800,87 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
       {(document.doc_type_slug || document.risk_score !== null) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {document.doc_type_slug && (
-            <div className="bg-purple-500/10 rounded-lg p-4 border border-purple-500/20">
-              <h3 className="text-white font-medium mb-3 flex items-center space-x-2">
-                <FontAwesomeIcon icon={faEye} className="text-purple-400 w-4 h-4" />
+            <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
+              <h3 className="text-slate-800 font-medium mb-3 flex items-center space-x-2">
+                <FontAwesomeIcon icon={faEye} className="text-purple-600 w-4 h-4" />
                 <span>Classification</span>
               </h3>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between items-center">
-                  <span className="text-white/60">Type:</span>
-                  <span className="text-white font-medium px-2 py-0.5 bg-purple-500/20 rounded">{formatDocumentTypeName(document.doc_type_slug)}</span>
+                  <span className="text-slate-500">Type:</span>
+                  <span className="text-slate-800 font-medium px-2 py-0.5 bg-purple-100 rounded">{formatDocumentTypeName(document.doc_type_slug)}</span>
                 </div>
                 {document.doc_type_confidence && (
-                  <div className="flex justify-between"><span className="text-white/60">Confidence:</span><span className="text-white">{Math.round(document.doc_type_confidence * 100)}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Confidence:</span><span className="text-slate-800">{Math.round(document.doc_type_confidence * 100)}%</span></div>
                 )}
               </div>
+
+              {/* Feedback buttons — only for done, non-unknown docs */}
+              {document.status === 'done' && document.doc_type_slug && document.doc_type_slug !== 'unknown' && feedbackState && (
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  {(feedbackState.feedbackDone ?? document.feedback_status) === 'confirmed' ? (
+                    <div className="flex items-center gap-1.5 text-green-600 text-xs">
+                      <FontAwesomeIcon icon={faCheck} className="w-3 h-3" />
+                      <span>Classificatie bevestigd — document toegevoegd aan trainingsdata</span>
+                    </div>
+                  ) : (feedbackState.feedbackDone ?? document.feedback_status) === 'rejected' ? (
+                    <div className="flex items-center gap-1.5 text-red-600 text-xs">
+                      <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3" />
+                      <span>Afgekeurd{document.corrected_doc_type ? ` → ${document.corrected_doc_type}` : ''}</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-slate-400 text-xs">Classificatie correct?</div>
+                      {feedbackState.error && (
+                        <div className="text-red-500 text-xs">{feedbackState.error}</div>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => feedbackState.onConfirm()}
+                          disabled={feedbackState.isPending}
+                          className="flex items-center gap-1 px-2 py-1 text-xs bg-green-100 hover:bg-green-200 text-green-700 rounded border border-green-200 transition-colors disabled:opacity-50"
+                        >
+                          <FontAwesomeIcon icon={faCheck} className="w-3 h-3" />
+                          Correct
+                        </button>
+                        <button
+                          onClick={() => feedbackState.setShowRejectInput((v: boolean) => !v)}
+                          className="flex items-center gap-1 px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-600 rounded border border-red-200 transition-colors"
+                        >
+                          <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3" />
+                          Fout type
+                        </button>
+                      </div>
+                      {feedbackState.showRejectInput && (
+                        <div className="flex gap-2 items-center">
+                          <input
+                            type="text"
+                            placeholder="Juist type slug (optioneel)"
+                            value={feedbackState.rejectCorrectedType}
+                            onChange={e => feedbackState.setRejectCorrectedType(e.target.value)}
+                            className="flex-1 text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 placeholder-slate-300 focus:outline-none focus:border-red-500/50"
+                          />
+                          <button
+                            onClick={() => feedbackState.onReject(feedbackState.rejectCorrectedType || undefined)}
+                            disabled={feedbackState.isPending}
+                            className="px-2 py-1 text-xs bg-red-100 hover:bg-red-200 text-red-600 rounded border border-red-200 transition-colors disabled:opacity-50"
+                          >
+                            {feedbackState.isPending ? '...' : 'Bevestig'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Show explanation if document is "unknown" and there's a rejection reason */}
               {document.doc_type_slug === 'unknown' && document.metadata_validation_json?.classification_scores && (
                 ((document.metadata_validation_json.classification_scores as any)?.naive_bayes?.rejection_reason || 
                  (document.metadata_validation_json.classification_scores as any)?.bert?.rejection_reason) && (
-                  <div className="mt-3 pt-3 border-t border-white/10">
-                    <div className="bg-green-500/10 border border-green-500/20 rounded p-2">
-                      <div className="text-green-300 text-[10px] italic">
+                  <div className="mt-3 pt-3 border-t border-slate-200">
+                    <div className="bg-green-50 border border-green-200 rounded p-2">
+                      <div className="text-green-700 text-[10px] italic">
                         ✓ Dit is correct gedrag - het systeem voorkomt verkeerde classificaties door deze regel te respecteren
                       </div>
                     </div>
@@ -775,23 +890,23 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               
               {/* Classification Scores - Always show if available, including failures */}
               {document.metadata_validation_json?.classification_scores && (
-                <div className="mt-3 pt-3 border-t border-white/10">
-                  <div className="text-white/50 text-xs mb-1.5">Classifier Scores:</div>
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  <div className="text-slate-400 text-xs mb-1.5">Classifier Scores:</div>
                   <div className="grid grid-cols-2 gap-2">
                     {(document.metadata_validation_json.classification_scores as any)?.naive_bayes && (
                       (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ||
                       (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'no_result' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-60">
-                          <div className="text-purple-300 text-[10px] font-medium">NB: {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ? 'Fout' : 'Geen model'}</div>
+                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-60">
+                          <div className="text-purple-500 text-[10px] font-medium">NB: {(document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'failed' ? 'Fout' : 'Geen model'}</div>
                           {/* Show all scores if available - filter out 0% */}
                           {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                            <div className="mt-1 pt-1 border-t border-purple-200">
                               <div className="flex flex-wrap gap-1">
                                 {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
                                   .sort(([, a], [, b]) => b - a)
                                   .filter(([, score]) => Math.round(score * 100) > 0)
                                   .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
                                       {label}: {Math.round(score * 100)}%
                                     </span>
                                   ))}
@@ -800,22 +915,22 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                           )}
                         </div>
                       ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'rejected' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-75">
+                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-75">
                           <div className="flex items-center justify-between">
-                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
-                            <span className="text-white/80 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
+                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
+                            <span className="text-slate-600 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
-                          <div className="text-red-400 text-[9px]">❌ {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Afgewezen'}</div>
+                          <div className="text-red-600 text-[9px]">❌ {(document.metadata_validation_json.classification_scores as any).naive_bayes.rejection_reason || 'Afgewezen'}</div>
                           {/* Show all scores if available - filter out 0% */}
                           {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                            <div className="mt-1 pt-1 border-t border-purple-200">
                               <div className="flex flex-wrap gap-1">
                                 {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
                                   .sort(([, a], [, b]) => b - a)
                                   .filter(([, score]) => Math.round(score * 100) > 0)
                                   .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
                                       {label}: {Math.round(score * 100)}%
                                     </span>
                                   ))}
@@ -824,22 +939,22 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                           )}
                         </div>
                       ) : (document.metadata_validation_json.classification_scores as any).naive_bayes.status === 'below_threshold' ? (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5 opacity-75">
+                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 opacity-75">
                           <div className="flex items-center justify-between">
-                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
-                            <span className="text-white/80 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
+                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
+                            <span className="text-slate-600 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
-                          <div className="text-yellow-400 text-[9px]">⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)</div>
+                          <div className="text-amber-600 text-[9px]">⚠️ Onder threshold ({Math.round(((document.metadata_validation_json.classification_scores as any).naive_bayes.threshold || 0) * 100)}%)</div>
                           {/* Show all scores if available - filter out 0% */}
                           {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                            <div className="mt-1 pt-1 border-t border-purple-200">
                               <div className="flex flex-wrap gap-1">
                                 {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
                                   .sort(([, a], [, b]) => b - a)
                                   .filter(([, score]) => Math.round(score * 100) > 0)
                                   .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
                                       {label}: {Math.round(score * 100)}%
                                     </span>
                                   ))}
@@ -848,21 +963,21 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                           )}
                         </div>
                       ) : (
-                        <div className="bg-purple-500/10 border border-purple-500/20 rounded px-2 py-1.5">
+                        <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5">
                           <div className="flex items-center justify-between">
-                            <span className="text-purple-300 text-[10px] font-medium">NB:</span>
-                            <span className="text-white text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
-                            <span className="text-purple-400 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
+                            <span className="text-purple-500 text-[10px] font-medium">NB:</span>
+                            <span className="text-slate-800 text-[10px]">{(document.metadata_validation_json.classification_scores as any).naive_bayes.label}</span>
+                            <span className="text-purple-600 text-[10px]">{Math.round((document.metadata_validation_json.classification_scores as any).naive_bayes.confidence * 100)}%</span>
                           </div>
                           {/* Show all scores if available - filter out 0% */}
                           {(document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores && (
-                            <div className="mt-1 pt-1 border-t border-purple-500/20">
+                            <div className="mt-1 pt-1 border-t border-purple-200">
                               <div className="flex flex-wrap gap-1">
                                 {Object.entries((document.metadata_validation_json.classification_scores as any).naive_bayes.all_scores as Record<string, number>)
                                   .sort(([, a], [, b]) => b - a)
                                   .filter(([, score]) => Math.round(score * 100) > 0)
                                   .map(([label, score]) => (
-                                    <span key={label} className="text-[9px] bg-purple-500/20 px-1.5 py-0.5 rounded text-white/70">
+                                    <span key={label} className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded text-slate-500">
                                       {label}: {Math.round(score * 100)}%
                                     </span>
                                   ))}
@@ -875,34 +990,34 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                     {(document.metadata_validation_json.classification_scores as any).bert && (
                       (document.metadata_validation_json.classification_scores as any).bert.status === 'failed' || 
                       (document.metadata_validation_json.classification_scores as any).bert.status === 'no_result' ? (
-                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-60">
-                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-white/60 text-xs">
+                        <div className="bg-blue-50 border border-blue-200 rounded p-2 opacity-60">
+                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-slate-500 text-xs">
                             {(document.metadata_validation_json.classification_scores as any).bert.status === 'failed' 
                               ? `Fout: ${(document.metadata_validation_json.classification_scores as any).bert.error?.substring(0, 50) || 'Onbekende fout'}...`
                               : (document.metadata_validation_json.classification_scores as any).bert.reason || 'Geen resultaat'}
                           </div>
                         </div>
                       ) : (document.metadata_validation_json.classification_scores as any).bert.status === 'rejected' ? (
-                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 opacity-75">
-                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-white/80 text-xs font-medium">
+                        <div className="bg-blue-50 border border-blue-200 rounded p-2 opacity-75">
+                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-slate-600 text-xs font-medium">
                             {(document.metadata_validation_json.classification_scores as any).bert.label}
                           </div>
-                          <div className="text-blue-400 text-[10px] mt-0.5">
+                          <div className="text-blue-600 text-[10px] mt-0.5">
                             {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
                           </div>
-                          <div className="text-red-400 text-[10px] mt-1">
+                          <div className="text-red-600 text-[10px] mt-1">
                             ❌ Afgewezen: {(document.metadata_validation_json.classification_scores as any).bert.rejection_reason || 'Onbekende reden'}
                           </div>
                         </div>
                       ) : (
-                        <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
-                          <div className="text-blue-300 text-xs font-medium mb-0.5">BERT</div>
-                          <div className="text-white text-xs">
+                        <div className="bg-blue-50 border border-blue-200 rounded p-2">
+                          <div className="text-blue-500 text-xs font-medium mb-0.5">BERT</div>
+                          <div className="text-slate-800 text-xs">
                             {(document.metadata_validation_json.classification_scores as any).bert.label}
                           </div>
-                          <div className="text-blue-400 text-[10px] mt-0.5">
+                          <div className="text-blue-600 text-[10px] mt-0.5">
                             {Math.round((document.metadata_validation_json.classification_scores as any).bert.confidence * 100)}% confidence
                           </div>
                         </div>
@@ -913,33 +1028,33 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               )}
               
               {document.doc_type_rationale ? (
-                <div className="mt-3 pt-3 border-t border-white/10">
-                  <div className="text-white/50 text-xs mb-1.5">Classificatie methode:</div>
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  <div className="text-slate-400 text-xs mb-1.5">Classificatie methode:</div>
                   <div className="flex flex-wrap gap-1.5 mb-2">
                     {document.doc_type_rationale.includes('STRONG keyword match') || document.doc_type_rationale.includes('STRONG') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px]">
                         ✅ 100% Keyword match
                       </span>
                     ) : document.doc_type_rationale.includes('Deterministic') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-500/20 border border-yellow-500/30 text-yellow-200 text-[10px]">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-yellow-100 border border-yellow-200 text-yellow-700 text-[10px]">
                         ⚠️ Keyword/regex match
                       </span>
                     ) : null}
                     {document.doc_type_rationale.includes('Local classifier') || document.doc_type_rationale.includes('NAIVE_BAYES') || document.doc_type_rationale.includes('BERT') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/20 border border-blue-500/30 text-blue-200 text-[10px]">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-100 border border-blue-200 text-blue-700 text-[10px]">
                         🤖 Getraind model
                       </span>
                     ) : null}
                     {document.doc_type_rationale.includes('LLM') && !document.doc_type_rationale.includes('STRONG') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px]">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-100 border border-purple-200 text-purple-700 text-[10px]">
                         🧠 AI classificatie
                       </span>
                     ) : null}
                   </div>
                   {/* Show matched keywords for strong deterministic matches */}
                   {document.doc_type_rationale.includes('STRONG keyword match') && document.doc_type_rationale.includes('matched keywords:') && (
-                    <div className="mt-2 bg-green-500/10 border border-green-500/20 rounded p-2">
-                      <div className="text-green-300 text-xs font-medium mb-1">Gematchte keywords:</div>
+                    <div className="mt-2 bg-green-50 border border-green-200 rounded p-2">
+                      <div className="text-green-700 text-xs font-medium mb-1">Gematchte keywords:</div>
                       <div className="flex flex-wrap gap-1">
                         {document.doc_type_rationale
                           .split('matched keywords:')[1]
@@ -948,7 +1063,7 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                           ?.map((kw: string) => kw.trim())
                           ?.filter(Boolean)
                           ?.map((keyword: string, i: number) => (
-                            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px]">
                               {keyword}
                             </span>
                           ))}
@@ -958,16 +1073,16 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                   
                   {/* Skip Marker Info */}
                   {document.skip_marker_used && (
-                    <div className="mt-2 bg-cyan-500/10 border border-cyan-500/20 rounded p-2">
-                      <div className="text-cyan-300 text-xs font-medium mb-1 flex items-center gap-1.5">
+                    <div className="mt-2 bg-cyan-50 border border-cyan-200 rounded p-2">
+                      <div className="text-cyan-700 text-xs font-medium mb-1 flex items-center gap-1.5">
                         <span>✂️</span>
                         <span>Skip Marker Toegepast</span>
                       </div>
-                      <div className="text-white/80 text-[11px] font-mono bg-black/20 rounded px-2 py-1 break-all">
+                      <div className="text-slate-600 text-[11px] font-mono bg-slate-50 rounded px-2 py-1 break-all">
                         {document.skip_marker_used}
                       </div>
                       {document.skip_marker_position != null && (
-                        <div className="text-cyan-400/70 text-[10px] mt-1">
+                        <div className="text-cyan-600 text-[10px] mt-1">
                           Tekst afgekapt na positie {document.skip_marker_position.toLocaleString()}
                         </div>
                       )}
@@ -975,16 +1090,16 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                   )}
                   
                   {document.doc_type_rationale.includes('Deterministic') && (
-                    <div className="text-[10px] text-white/50 italic bg-yellow-500/5 border border-yellow-500/20 rounded p-2 mt-2">
+                    <div className="text-[10px] text-slate-400 italic bg-yellow-500/5 border border-yellow-200 rounded p-2 mt-2">
                       ⚠️ <strong>Waarom onjuist?</strong> Deterministic matching (keywords/regex) heeft voorrang boven het getrainde model. Als je commitment agreement als bankafschrift wordt herkend, controleer de classification_hints van "bankafschrift" in document types - deze bevatten waarschijnlijk keywords die ook in commitment agreements voorkomen.
                     </div>
                   )}
                 </div>
               ) : document.doc_type_slug === 'unknown' ? (
-                <div className="mt-3 pt-3 border-t border-white/10">
-                  <div className="text-white/50 text-xs mb-1.5">Classificatie methode:</div>
-                  <div className="bg-gray-500/10 border border-gray-500/20 rounded p-2">
-                    <div className="text-gray-300 text-[10px]">
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  <div className="text-slate-400 text-xs mb-1.5">Classificatie methode:</div>
+                  <div className="bg-gray-50 border border-gray-200 rounded p-2">
+                    <div className="text-slate-600 text-[10px]">
                       Voor Onbekend document type wordt geen field matching uitgevoerd
                     </div>
                   </div>
@@ -993,17 +1108,17 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
               
               {/* Skip Marker Info - Show even if no rationale */}
               {!document.doc_type_rationale && document.skip_marker_used && (
-                <div className="mt-3 pt-3 border-t border-white/10">
-                  <div className="bg-cyan-500/10 border border-cyan-500/20 rounded p-2">
-                    <div className="text-cyan-300 text-xs font-medium mb-1 flex items-center gap-1.5">
+                <div className="mt-3 pt-3 border-t border-slate-200">
+                  <div className="bg-cyan-50 border border-cyan-200 rounded p-2">
+                    <div className="text-cyan-700 text-xs font-medium mb-1 flex items-center gap-1.5">
                       <span>✂️</span>
                       <span>Skip Marker Toegepast</span>
                     </div>
-                    <div className="text-white/80 text-[11px] font-mono bg-black/20 rounded px-2 py-1 break-all">
+                    <div className="text-slate-600 text-[11px] font-mono bg-slate-50 rounded px-2 py-1 break-all">
                       {document.skip_marker_used}
                     </div>
                     {document.skip_marker_position != null && (
-                      <div className="text-cyan-400/70 text-[10px] mt-1">
+                      <div className="text-cyan-600 text-[10px] mt-1">
                         Tekst afgekapt na positie {document.skip_marker_position.toLocaleString()}
                       </div>
                     )}
@@ -1015,39 +1130,39 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
 
           {/* Risk & Forensics - Always show, even if no signals */}
           {document.status === 'done' && (
-            <div className="bg-red-500/10 rounded-lg p-4 border border-red-500/20">
-              <h3 className="text-white font-medium mb-3 flex items-center space-x-2">
-                <FontAwesomeIcon icon={faShieldAlt} className="text-red-400 w-4 h-4" />
+            <div className="bg-red-50 rounded-lg p-4 border border-red-200">
+              <h3 className="text-slate-800 font-medium mb-3 flex items-center space-x-2">
+                <FontAwesomeIcon icon={faShieldAlt} className="text-red-600 w-4 h-4" />
                 <span>Risk & Forensics</span>
               </h3>
               {document.risk_score !== null && document.risk_score !== undefined ? (
                 <div className="flex items-center space-x-3 mb-3">
-                  <span className={`text-2xl font-bold ${(document.risk_score ?? 0) >= 70 ? 'text-red-400' : (document.risk_score ?? 0) >= 40 ? 'text-yellow-400' : 'text-green-400'}`}>
+                  <span className={`text-2xl font-bold ${(document.risk_score ?? 0) >= 70 ? 'text-red-600' : (document.risk_score ?? 0) >= 40 ? 'text-amber-600' : 'text-green-600'}`}>
                     {document.risk_score ?? 0}
                   </span>
-                  <div className="flex-1 bg-white/20 rounded-full h-2">
+                  <div className="flex-1 bg-slate-200 rounded-full h-2">
                     <div className={`h-2 rounded-full ${getRiskColor(document.risk_score ?? 0)}`} style={{ width: `${document.risk_score ?? 0}%` }} />
                   </div>
                 </div>
               ) : (
-                <div className="mb-3 text-white/60 text-xs">
+                <div className="mb-3 text-slate-500 text-xs">
                   Risk score niet beschikbaar
                 </div>
               )}
               
               {fraudReport?.semantic_context?.top_matches?.length ? (
-                <div className="mb-3 pb-3 border-b border-white/10">
-                  <div className="text-xs text-white/60 mb-2">Documentcontext (BERT)</div>
-                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
-                    <div className="text-blue-200 text-xs mb-2">{fraudReport.semantic_context.summary}</div>
+                <div className="mb-3 pb-3 border-b border-slate-200">
+                  <div className="text-xs text-slate-500 mb-2">Documentcontext (BERT)</div>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div className="text-blue-700 text-xs mb-2">{fraudReport.semantic_context.summary}</div>
                     <div className="flex flex-wrap gap-1.5">
                       {fraudReport.semantic_context.top_matches.map((match) => (
-                        <span key={match.label} className="text-[10px] bg-blue-500/20 text-blue-100 px-2 py-0.5 rounded">
+                        <span key={match.label} className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
                           {formatDocumentTypeName(match.label)} {Math.round(match.confidence * 100)}%
                         </span>
                       ))}
                     </div>
-                    <div className="text-white/40 text-[10px] mt-2">
+                    <div className="text-slate-400 text-[10px] mt-2">
                       Model: {fraudReport.semantic_context.model_used} · margin {Math.round(fraudReport.semantic_context.margin * 100)}%
                     </div>
                   </div>
@@ -1059,7 +1174,7 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
                 const signalsToShow = actionableSignals.slice(0, 4);
                 if (signalsToShow.length === 0) {
                   return (
-                    <div className="mt-3 text-white/60 text-xs">
+                    <div className="mt-3 text-slate-500 text-xs">
                       Alleen lage context- of kwaliteitswaarschuwingen gevonden. Geen sterke fraude-indicatoren.
                     </div>
                   );
@@ -1067,51 +1182,51 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
 
                 return (
                   <div className="space-y-2 mt-3">
-                    <div className="text-xs text-white/60 mb-2">
+                    <div className="text-xs text-slate-500 mb-2">
                       {actionableSignals.length} fraude-indicator{actionableSignals.length !== 1 ? 'en' : ''} gevonden:
                     </div>
                     {signalsToShow.map((signal, i) => (
                       <div
                         key={`${signal.name}-${i}`}
-                        className={`bg-white/5 rounded-lg p-3 border ${
+                        className={`bg-slate-50 rounded-lg p-3 border ${
                           signal.risk_level === 'critical' || signal.risk_level === 'high'
-                            ? 'border-red-500/30 bg-red-500/5'
+                            ? 'border-red-200 bg-red-50'
                             : signal.risk_level === 'medium'
-                              ? 'border-yellow-500/30 bg-yellow-500/5'
-                              : 'border-blue-500/30 bg-blue-500/5'
+                              ? 'border-yellow-200 bg-yellow-50'
+                              : 'border-blue-200 bg-blue-50'
                         }`}
                       >
                         <div className="flex items-start gap-2">
                           <FontAwesomeIcon
                             icon={signal.risk_level === 'critical' || signal.risk_level === 'high' ? faExclamationTriangle : faInfoCircle}
                             className={`w-4 h-4 mt-0.5 ${
-                              signal.risk_level === 'critical' || signal.risk_level === 'high' ? 'text-red-400' : 'text-yellow-400'
+                              signal.risk_level === 'critical' || signal.risk_level === 'high' ? 'text-red-600' : 'text-amber-600'
                             }`}
                           />
                           <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-sm text-white mb-1">{signal.name.replace(/_/g, ' ')}</div>
-                            <div className="text-white/70 text-xs leading-relaxed">{signal.description}</div>
+                            <div className="font-semibold text-sm text-slate-800 mb-1">{signal.name.replace(/_/g, ' ')}</div>
+                            <div className="text-slate-500 text-xs leading-relaxed">{signal.description}</div>
                             {signal.recommendation && (
-                              <div className="mt-2 pt-2 border-t border-white/10 text-white/60 text-xs italic">
+                              <div className="mt-2 pt-2 border-t border-slate-200 text-slate-500 text-xs italic">
                                 {signal.recommendation}
                               </div>
                             )}
                           </div>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 shrink-0">
                             {Math.round(signal.confidence * 100)}%
                           </span>
                         </div>
                       </div>
                     ))}
                     {actionableSignals.length > signalsToShow.length && (
-                      <div className="text-[10px] text-white/50">
+                      <div className="text-[10px] text-slate-400">
                         +{actionableSignals.length - signalsToShow.length} meer in de Forensics tab
                       </div>
                     )}
                   </div>
                 );
               })() : (
-                <div className="mt-3 text-white/60 text-xs">
+                <div className="mt-3 text-slate-500 text-xs">
                   Geen fraude-indicatoren gevonden. Document lijkt schoon.
                 </div>
               )}
@@ -1121,12 +1236,12 @@ function OverviewTab({ document, formatFileSize, formatDate, formatDateTime, for
       )}
 
       {document.error_message && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
           <div className="flex items-start space-x-2">
-            <FontAwesomeIcon icon={faExclamationTriangle} className="text-red-400 w-4 h-4 mt-0.5" />
+            <FontAwesomeIcon icon={faExclamationTriangle} className="text-red-600 w-4 h-4 mt-0.5" />
             <div>
-              <h4 className="text-red-400 font-medium text-sm">Error</h4>
-              <p className="text-red-300 text-xs mt-1">{document.error_message}</p>
+              <h4 className="text-red-600 font-medium text-sm">Error</h4>
+              <p className="text-red-600 text-xs mt-1">{document.error_message}</p>
             </div>
           </div>
         </div>
@@ -1144,6 +1259,14 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
   const [copiedForExcel, setCopiedForExcel] = useState(false);
   const [expandedEvidenceKey, setExpandedEvidenceKey] = useState<string | null>(null);
   const hasDbData = !!document.metadata_json && Object.keys(document.metadata_json || {}).length > 0;
+
+  const { data: docTypeFields } = useQuery<DocumentTypeField[]>({
+    queryKey: ['doc-type-fields', document.doc_type_slug],
+    queryFn: () => listDocumentTypeFields(document.doc_type_slug!),
+    enabled: !!document.doc_type_slug,
+    staleTime: 5 * 60 * 1000,
+  });
+  const fieldTypeMap = Object.fromEntries((docTypeFields || []).map(f => [f.key, f.field_type]));
   const { data: artifactData } = useQuery({
     queryKey: ['document-metadata-artifact', documentId],
     queryFn: () => getDocumentArtifactJson<Record<string, any>>(documentId, 'metadata/result.json'),
@@ -1188,16 +1311,63 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
     window.setTimeout(() => setCopiedForExcel(false), 1500);
   };
 
-  const renderMetadataValue = (value: unknown) => {
+  // Detect value type from content for smart rendering
+  const detectValueType = (key: string, value: unknown): 'iban' | 'amount' | 'date' | 'email' | 'url' | 'bsn' | 'phone' | 'default' => {
+    const k = key.toLowerCase();
+    const s = String(value ?? '').trim();
+    if (/iban/.test(k) || /^[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7,}/.test(s)) return 'iban';
+    if (/bsn/.test(k) || /^\d{9}$/.test(s)) return 'bsn';
+    if (/email/.test(k) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return 'email';
+    if (/url|link|website/.test(k) || /^https?:\/\//.test(s)) return 'url';
+    if (/bedrag|amount|prijs|waarde|kosten|rente|inkomen|schuld|hypotheek|lening|saldo|totaal/.test(k) ||
+        /^[€$]?\s*[\d.,]+\s*$/.test(s) || /^[\d.,]+\s*euro$/i.test(s)) return 'amount';
+    if (/phone|telefoon|tel/.test(k) || /^\+?[\d\s\-()]{7,}$/.test(s)) return 'phone';
+    if (/datum|date|geldig|vervalt|aanvang|eind/.test(k) ||
+        /^\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}$/.test(s) ||
+        /^\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s) ||
+        /^\d{1,2}\s+(jan|feb|mrt|apr|mei|jun|jul|aug|sep|okt|nov|dec)/i.test(s)) return 'date';
+    return 'default';
+  };
+
+  const formatIban = (s: string) => s.replace(/\s/g, '').replace(/(.{4})/g, '$1 ').trim();
+
+  const parseAmountString = (s: string): number => {
+    let clean = s.replace(/[€$£¥\s]/g, '');
+    const lastDot = clean.lastIndexOf('.');
+    const lastComma = clean.lastIndexOf(',');
+    if (lastDot > lastComma) {
+      // American/English: 39,212.40 — comma is thousands separator
+      clean = clean.replace(/,/g, '');
+    } else if (lastComma > lastDot) {
+      // Dutch/European: 39.212,40 — dot is thousands separator
+      clean = clean.replace(/\./g, '').replace(',', '.');
+    } else if (lastComma !== -1) {
+      // Only commas — check if decimal (≤2 digits after) or thousands
+      const afterComma = clean.slice(lastComma + 1);
+      clean = afterComma.length <= 2
+        ? clean.replace(',', '.')
+        : clean.replace(/,/g, '');
+    }
+    return parseFloat(clean);
+  };
+
+  const formatAmount = (s: string) => {
+    const currency = /\$/.test(s) ? 'USD' : /£/.test(s) ? 'GBP' : /¥/.test(s) ? 'JPY' : 'EUR';
+    const num = parseAmountString(s);
+    if (isNaN(num)) return s;
+    return new Intl.NumberFormat('nl-NL', { style: 'currency', currency }).format(num);
+  };
+
+  const renderMetadataValue = (key: string, value: unknown) => {
     if (value === null || value === undefined || value === '') {
-      return <span className="text-white/35 italic">Niet gevonden</span>;
+      return <span className="text-slate-500 italic">Niet gevonden</span>;
     }
 
     if (Array.isArray(value)) {
       return (
         <div className="flex flex-wrap gap-1">
           {value.map((item, i) => (
-            <span key={i} className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] text-purple-200">
+            <span key={i} className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] text-purple-700">
               {typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item)}
             </span>
           ))}
@@ -1207,25 +1377,72 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
 
     if (typeof value === 'object') {
       return (
-        <pre className="max-h-24 overflow-auto rounded bg-black/20 p-2 text-[10px] text-white/75">
+        <pre className="max-h-24 overflow-auto rounded bg-slate-50 p-2 text-[10px] text-slate-500">
           {JSON.stringify(value, null, 2)}
         </pre>
       );
     }
 
-    return <span className="text-white/95 break-words">{String(value)}</span>;
+    const s = String(value);
+    // Use field_type from document type definition first, fall back to heuristic detection
+    const dbFieldType = fieldTypeMap[key];
+    const type = dbFieldType === 'money' || dbFieldType === 'currency' ? 'amount'
+      : dbFieldType === 'iban' ? 'iban'
+      : dbFieldType === 'date' ? 'date'
+      : dbFieldType === 'number' ? 'default'
+      : detectValueType(key, s);
+
+    switch (type) {
+      case 'iban':
+        return (
+          <span className="font-mono text-green-700 text-xs tracking-wider break-all">
+            {formatIban(s)}
+          </span>
+        );
+      case 'amount':
+        return (
+          <span className="font-mono text-yellow-700 text-xs font-medium">
+            {formatAmount(s)}
+          </span>
+        );
+      case 'date':
+        return <span className="text-blue-700 text-xs">{s}</span>;
+      case 'bsn':
+        return (
+          <span className="font-mono text-orange-600 text-xs tracking-wider" title="BSN — gevoelig gegeven">
+            {s.slice(0, 3)} {s.slice(3, 6)} {s.slice(6)}
+          </span>
+        );
+      case 'email':
+        return <span className="text-cyan-700 text-xs break-all">{s}</span>;
+      case 'url':
+        return <span className="text-cyan-700 text-xs break-all underline">{s}</span>;
+      default:
+        return <span className="text-slate-700 break-words text-xs">{s}</span>;
+    }
+  };
+
+  const getEvidenceMethodLabel = (method: string) => {
+    switch (method) {
+      case 'evidence':              return { label: 'exact', color: 'text-green-700 bg-green-50 border-green-200' };
+      case 'auto_found':            return { label: 'auto', color: 'text-amber-700 bg-yellow-50 border-yellow-200' };
+      case 'auto_found_normalized': return { label: 'norm', color: 'text-yellow-700 bg-yellow-50 border-yellow-200' };
+      case 'regex':                 return { label: 'regex', color: 'text-purple-700 bg-purple-50 border-purple-200' };
+      case 'deterministic':         return { label: 'det', color: 'text-blue-600 bg-blue-50 border-blue-200' };
+      default:                      return { label: method || '?', color: 'text-slate-400 bg-slate-50 border-slate-200' };
+    }
   };
 
   return (
     <div className="overflow-y-auto p-2 sm:p-3">
-      <div className="sticky top-0 z-10 -mx-2 -mt-2 mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-slate-950/90 px-2 py-2 backdrop-blur sm:-mx-3 sm:-mt-3 sm:px-3">
+      <div className="sticky top-0 z-10 -mx-2 -mt-2 mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-white px-2 py-2 backdrop-blur sm:-mx-3 sm:-mt-3 sm:px-3">
         <div className="min-w-0">
-          <div className="text-xs font-semibold uppercase tracking-wide text-white/70">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Data
-            {hasData && <span className="ml-2 font-normal normal-case tracking-normal text-white/40">{Object.keys(data!).length} velden</span>}
+            {hasData && <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">{Object.keys(data!).length} velden</span>}
           </div>
           {document.doc_type_slug && (
-            <div className="truncate text-[11px] text-white/35">{formatDocumentTypeName(document.doc_type_slug)}</div>
+            <div className="truncate text-[11px] text-slate-500">{formatDocumentTypeName(document.doc_type_slug)}</div>
           )}
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -1237,11 +1454,11 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
             <FontAwesomeIcon icon={copiedForExcel ? faCheck : faCopy} className="w-3 h-3" />
             <span>{copiedForExcel ? 'Gekopieerd' : 'Excel copy'}</span>
           </button>
-          <button onClick={() => downloadArtifact('metadata/result.json', 'metadata.json')} className="flex items-center space-x-1 rounded-md bg-white/10 px-2 py-1.5 text-[11px] text-white/80 hover:bg-white/20">
+          <button onClick={() => downloadArtifact('metadata/result.json', 'metadata.json')} className="flex items-center space-x-1 rounded-md bg-slate-100 px-2 py-1.5 text-[11px] text-slate-600 hover:bg-slate-200">
             <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
             <span>JSON</span>
           </button>
-          <button onClick={() => downloadArtifact('metadata/evidence.json', 'evidence.json')} className="flex items-center space-x-1 rounded-md bg-white/10 px-2 py-1.5 text-[11px] text-white/80 hover:bg-white/20">
+          <button onClick={() => downloadArtifact('metadata/evidence.json', 'evidence.json')} className="flex items-center space-x-1 rounded-md bg-slate-100 px-2 py-1.5 text-[11px] text-slate-600 hover:bg-slate-200">
             <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
             <span>Bronnen</span>
           </button>
@@ -1249,9 +1466,9 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
       </div>
 
       {hasData ? (
-        <div className="overflow-hidden rounded-lg border border-white/10 bg-black/10">
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
           <div
-            className="grid gap-3 border-b border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/35"
+            className="grid gap-3 border-b border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500"
             style={{ gridTemplateColumns: 'minmax(120px, 180px) minmax(0, 1fr)' }}
           >
             <div>Veld</div>
@@ -1263,22 +1480,22 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
             const isExpanded = expandedEvidenceKey === key;
             
             return (
-              <div key={key} className="border-b border-white/10 last:border-b-0">
+              <div key={key} className="border-b border-slate-200 last:border-b-0">
                 <div
-                  className="grid gap-3 px-2.5 py-1.5 text-xs transition-colors odd:bg-white/[0.015] hover:bg-white/[0.055]"
+                  className="grid gap-3 px-2.5 py-1.5 text-xs transition-colors odd:bg-slate-50 hover:bg-slate-100"
                   style={{ gridTemplateColumns: 'minmax(120px, 180px) minmax(0, 1fr)' }}
                 >
-                  <div className="truncate font-medium text-blue-200/75">
+                  <div className="truncate font-medium text-blue-700/75">
                     {key.replace(/_/g, ' ')}
                   </div>
-                  <div className="flex min-w-0 items-start justify-between gap-2 leading-relaxed text-white/90">
+                  <div className="flex min-w-0 items-start justify-between gap-2 leading-relaxed text-slate-700">
                     <div className="min-w-0 flex-1">
-                      {renderMetadataValue(value)}
+                      {renderMetadataValue(key, value)}
                     </div>
                     {hasEvidence ? (
                       <button
                         onClick={() => setExpandedEvidenceKey(isExpanded ? null : key)}
-                        className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-200 hover:bg-blue-500/25"
+                        className="shrink-0 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-200"
                         title={`${fieldEvidence.length} bron${fieldEvidence.length === 1 ? '' : 'nen'}`}
                       >
                         bron {fieldEvidence.length}
@@ -1287,18 +1504,27 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
                   </div>
                 </div>
                 {hasEvidence && isExpanded && (
-                  <div className="space-y-1 bg-black/20 px-2.5 pb-2" style={{ paddingLeft: 'calc(min(max(120px, 28vw), 180px) + 1.25rem)' }}>
-                    {fieldEvidence.map((ev: any, i: number) => (
-                      <div
-                        key={i}
-                        className="rounded border border-blue-500/15 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-100"
-                        title={`Pagina ${(ev.page || 0) + 1}, positie ${ev.start}-${ev.end}`}
-                      >
-                        <span className="text-blue-300/70">p{(ev.page || 0) + 1}</span>
-                        <span className="mx-1.5 text-blue-300/40">·</span>
-                        <span>{ev.quote}</span>
-                      </div>
-                    ))}
+                  <div className="space-y-1 bg-slate-50 px-2.5 pb-2" style={{ paddingLeft: 'calc(min(max(120px, 28vw), 180px) + 1.25rem)' }}>
+                    {fieldEvidence.map((ev: any, i: number) => {
+                      const methodInfo = getEvidenceMethodLabel(ev.method || '');
+                      return (
+                        <div
+                          key={i}
+                          className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] text-blue-700"
+                          title={`Pagina ${(ev.page || 0) + 1}, positie ${ev.start}-${ev.end}`}
+                        >
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-blue-600">p{(ev.page || 0) + 1}</span>
+                            <span className={`rounded border px-1 py-0 text-[9px] font-medium ${methodInfo.color}`}>{methodInfo.label}</span>
+                            {ev.verified === false && (
+                              <span className="rounded border border-red-200 bg-red-50 px-1 py-0 text-[9px] text-red-600">niet geverif.</span>
+                            )}
+                            <span className="text-blue-600">·</span>
+                            <span className="flex-1">{ev.quote || ev.snippet}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1307,8 +1533,8 @@ function MetadataTab({ documentId, document, copyToClipboard, downloadArtifact }
         </div>
       ) : (
         <div className="text-center py-8">
-          <FontAwesomeIcon icon={faInfoCircle} className="text-white/40 w-8 h-8 mb-2" />
-          <p className="text-white/60 text-sm">No extracted data</p>
+          <FontAwesomeIcon icon={faInfoCircle} className="text-slate-400 w-8 h-8 mb-2" />
+          <p className="text-slate-500 text-sm">No extracted data</p>
         </div>
       )}
     </div>
@@ -1351,16 +1577,16 @@ function CollapsiblePromptBlock({
   };
 
   return (
-    <div className="border border-white/10 rounded-lg overflow-hidden">
+    <div className="border border-slate-200 rounded-lg overflow-hidden">
       <div 
-        className="flex items-center justify-between p-2 bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
+        className="flex items-center justify-between p-2 bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer"
         onClick={onToggle}
       >
-        <div className="flex-1 text-left text-white/80 text-xs font-medium hover:text-white">
+        <div className="flex-1 text-left text-slate-600 text-xs font-medium hover:text-slate-800">
           <div className="flex items-center gap-2">
             <span>{title}</span>
             {description && (
-              <span className="text-white/40 text-[10px] font-normal">({description})</span>
+              <span className="text-slate-400 text-[10px] font-normal">({description})</span>
             )}
           </div>
         </div>
@@ -1371,34 +1597,34 @@ function CollapsiblePromptBlock({
                 e.stopPropagation();
                 onDownload(downloadPath, downloadName || 'download.txt');
               }}
-              className="text-white/40 hover:text-white p-1 cursor-pointer"
+              className="text-slate-400 hover:text-slate-800 p-1 cursor-pointer"
               title="Download"
             >
               <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
             </button>
           )}
-          <div className="text-white/40 p-1">
+          <div className="text-slate-400 p-1">
             <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} className="w-3 h-3" />
           </div>
         </div>
       </div>
       {isExpanded ? (
         <div 
-          className="max-h-64 overflow-y-auto bg-black/20"
+          className="max-h-64 overflow-y-auto bg-slate-50"
           onScroll={handleScroll}
           onWheel={(e) => e.stopPropagation()}
           onTouchMove={(e) => e.stopPropagation()}
           ref={scrollRef}
         >
           <pre 
-            className="text-white/80 text-xs font-mono whitespace-pre-wrap break-words p-3 cursor-text select-text"
+            className="text-slate-600 text-xs font-mono whitespace-pre-wrap break-words p-3 cursor-text select-text"
             style={{ margin: 0 }}
           >
             {content}
           </pre>
         </div>
       ) : (
-        <div className="text-white/50 text-xs font-mono p-2 truncate cursor-pointer" onClick={onToggle}>{preview}</div>
+        <div className="text-slate-400 text-xs font-mono p-2 truncate cursor-pointer" onClick={onToggle}>{preview}</div>
       )}
     </div>
   );
@@ -1486,12 +1712,12 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     if (document?.status === 'processing') {
       return (
         <div className="p-4">
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 text-center">
-            <FontAwesomeIcon icon={faRobot} className="text-blue-400 w-8 h-8 mb-2 animate-pulse" />
-            <p className="text-white font-medium text-sm">Processing...</p>
-            <p className="text-white/60 text-xs">{formatStage(document.stage)}</p>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+            <FontAwesomeIcon icon={faRobot} className="text-blue-600 w-8 h-8 mb-2 animate-pulse" />
+            <p className="text-slate-800 font-medium text-sm">Processing...</p>
+            <p className="text-slate-500 text-xs">{formatStage(document.stage)}</p>
             {document.progress !== undefined && (
-              <div className="w-full bg-white/20 rounded-full h-1.5 mt-2">
+              <div className="w-full bg-slate-200 rounded-full h-1.5 mt-2">
                 <div className="h-1.5 bg-blue-400 rounded-full transition-all" style={{ width: `${document.progress}%` }} />
               </div>
             )}
@@ -1503,8 +1729,8 @@ function LLMTab({ documentId, document, downloadArtifact }: {
     // For pending, queued, error, or any non-done status
     return (
       <div className="p-4 text-center">
-        <FontAwesomeIcon icon={faRobot} className="text-white/40 w-8 h-8 mb-2" />
-        <p className="text-white/60 text-sm">
+        <FontAwesomeIcon icon={faRobot} className="text-slate-400 w-8 h-8 mb-2" />
+        <p className="text-slate-500 text-sm">
           {document?.status === 'pending' || document?.status === 'queued' 
             ? 'Click "Re-run" to start analysis' 
             : document?.status === 'error'
@@ -1518,7 +1744,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
   if (isLoading) {
     return (
       <div className="p-4 flex items-center justify-center">
-        <FontAwesomeIcon icon={faSpinner} className="text-blue-400 w-6 h-6 animate-spin" />
+        <FontAwesomeIcon icon={faSpinner} className="text-blue-600 w-6 h-6 animate-spin" />
       </div>
     );
   }
@@ -1527,8 +1753,8 @@ function LLMTab({ documentId, document, downloadArtifact }: {
   if (!data) {
     return (
       <div className="p-4 text-center">
-        <FontAwesomeIcon icon={faRobot} className="text-white/40 w-8 h-8 mb-2" />
-        <p className="text-white/60 text-sm">Run analysis to see LLM logs</p>
+        <FontAwesomeIcon icon={faRobot} className="text-slate-400 w-8 h-8 mb-2" />
+        <p className="text-slate-500 text-sm">Run analysis to see LLM logs</p>
       </div>
     );
   }
@@ -1538,8 +1764,8 @@ function LLMTab({ documentId, document, downloadArtifact }: {
   if (!hasData) {
     return (
       <div className="p-4 text-center">
-        <FontAwesomeIcon icon={faRobot} className="text-white/40 w-8 h-8 mb-2" />
-        <p className="text-white/60 text-sm">No LLM data available</p>
+        <FontAwesomeIcon icon={faRobot} className="text-slate-400 w-8 h-8 mb-2" />
+        <p className="text-slate-500 text-sm">No LLM data available</p>
       </div>
     );
   }
@@ -1566,30 +1792,30 @@ function LLMTab({ documentId, document, downloadArtifact }: {
       {(data?.classification.prompt || data?.classification.result || data?.classification.error) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h3 className="text-white font-medium text-sm flex items-center space-x-2">
-              <FontAwesomeIcon icon={faRobot} className="text-blue-400 w-3 h-3" />
+            <h3 className="text-slate-800 font-medium text-sm flex items-center space-x-2">
+              <FontAwesomeIcon icon={faRobot} className="text-blue-600 w-3 h-3" />
               <span>LLM Classification Logs</span>
             </h3>
             {data.classification.timing && (
-              <div className="text-white/60 text-xs flex items-center gap-1.5">
+              <div className="text-slate-500 text-xs flex items-center gap-1.5">
                 <FontAwesomeIcon icon={faBolt} className="w-3 h-3" />
                 <span>{data.classification.timing.duration_seconds ? `${data.classification.timing.duration_seconds.toFixed(2)}s` : 'N/A'}</span>
                 {data.classification.timing.provider && (
-                  <span className="text-white/40">({data.classification.timing.provider})</span>
+                  <span className="text-slate-400">({data.classification.timing.provider})</span>
                 )}
               </div>
             )}
           </div>
 
           {data.classification.error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded p-2 text-xs text-red-300">
+            <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-600">
               <strong>Error:</strong> {data.classification.error.substring(0, 200)}...
             </div>
           )}
 
           {/* Show message if classification failed (no result but has prompt) */}
           {!data.classification.result && !data.classification.error && data.classification.prompt && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-700">
               <strong>Let op:</strong> Classificatie is niet gelukt. Er is wel een prompt verzonden, maar geen resultaat ontvangen.
             </div>
           )}
@@ -1622,7 +1848,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                 return (
                   <>
                     {wasRejected && (
-                      <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
+                      <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-700">
                         <strong>Validatie waarschuwing:</strong> De LLM response is afgewezen door validatie. 
                         Het evidence dat de LLM heeft gegeven kon niet worden gevonden in de document tekst.
                       </div>
@@ -1639,15 +1865,15 @@ function LLMTab({ documentId, document, downloadArtifact }: {
             {data.classification.local && (
               <>
                 {data.classification.local.method === 'deterministic_strong' && data.classification.local.matched_keywords && (
-                  <div className="bg-green-500/10 border border-green-500/20 rounded p-3 mt-3">
-                    <div className="text-green-300 text-xs font-medium mb-2 flex items-center gap-2">
+                  <div className="bg-green-50 border border-green-200 rounded p-3 mt-3">
+                    <div className="text-green-700 text-xs font-medium mb-2 flex items-center gap-2">
                       <span>✅</span>
                       <span>STRONG Keyword Match (100% confidence)</span>
                     </div>
-                    <div className="text-white/80 text-xs mb-1">Gematchte keywords:</div>
+                    <div className="text-slate-600 text-xs mb-1">Gematchte keywords:</div>
                     <div className="flex flex-wrap gap-1.5">
                       {data.classification.local.matched_keywords.map((keyword: string, i: number) => (
-                        <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-500/20 border border-green-500/30 text-green-200 text-[10px]">
+                        <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-100 border border-green-200 text-green-700 text-[10px]">
                           {keyword}
                         </span>
                       ))}
@@ -1665,16 +1891,16 @@ function LLMTab({ documentId, document, downloadArtifact }: {
       {(data?.extraction.prompt || data?.extraction.result || data?.extraction.error || data?.extraction.chunkErrors?.length || data?.extraction.chunkWarnings?.length || data?.extraction.skipped) && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <h3 className="text-white font-medium text-sm flex items-center space-x-2">
-              <FontAwesomeIcon icon={faSearch} className="text-purple-400 w-3 h-3" />
+            <h3 className="text-slate-800 font-medium text-sm flex items-center space-x-2">
+              <FontAwesomeIcon icon={faSearch} className="text-purple-600 w-3 h-3" />
               <span>Metadata Extraction</span>
             </h3>
             {data.extraction.timing && (
-              <div className="text-white/60 text-xs flex items-center gap-1.5">
+              <div className="text-slate-500 text-xs flex items-center gap-1.5">
                 <FontAwesomeIcon icon={faBolt} className="w-3 h-3" />
                 <span>{data.extraction.timing.duration_seconds ? `${data.extraction.timing.duration_seconds.toFixed(2)}s` : 'N/A'}</span>
                 {data.extraction.timing.provider && (
-                  <span className="text-white/40">({data.extraction.timing.provider})</span>
+                  <span className="text-slate-400">({data.extraction.timing.provider})</span>
                 )}
               </div>
             )}
@@ -1682,35 +1908,35 @@ function LLMTab({ documentId, document, downloadArtifact }: {
 
           {/* Show message if extraction was skipped */}
           {data.extraction.skipped && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-700">
               <strong>Extractie overgeslagen:</strong> {data.extraction.skipped.reason || 'Onbekende reden'}
               {data.extraction.skipped.doc_type_slug && (
-                <div className="mt-1 text-yellow-200/80">
+                <div className="mt-1 text-yellow-700/80">
                   Document type: <span className="font-mono">{data.extraction.skipped.doc_type_slug}</span>
                 </div>
               )}
-              <div className="mt-1 text-yellow-200/60 text-[10px]">
+              <div className="mt-1 text-yellow-700/60 text-[10px]">
                 Voeg fields toe aan dit document type om extractie mogelijk te maken.
               </div>
             </div>
           )}
 
           {data.extraction.error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded p-2 text-xs text-red-300">
+            <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-600">
               <strong>Error:</strong> {data.extraction.error.substring(0, 200)}...
             </div>
           )}
 
           {data.extraction.chunkWarnings && data.extraction.chunkWarnings.length > 0 && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 space-y-2">
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <div className="text-yellow-300 text-xs font-semibold">Chunk warnings</div>
-                  <div className="text-yellow-200/70 text-[11px]">
+                  <div className="text-yellow-700 text-xs font-semibold">Chunk warnings</div>
+                  <div className="text-yellow-700/70 text-[11px]">
                     {data.extraction.chunkWarnings.length} chunk{data.extraction.chunkWarnings.length === 1 ? '' : 's'} had schema fallback, maar zijn niet definitief gefaald.
                   </div>
                 </div>
-                <span className="text-[10px] text-yellow-200/60 bg-yellow-500/10 border border-yellow-500/20 rounded px-2 py-0.5">
+                <span className="text-[10px] text-yellow-700/60 bg-yellow-50 border border-yellow-200 rounded px-2 py-0.5">
                   fallback ok
                 </span>
               </div>
@@ -1734,15 +1960,15 @@ function LLMTab({ documentId, document, downloadArtifact }: {
           )}
 
           {data.extraction.chunkErrors && data.extraction.chunkErrors.length > 0 && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3 space-y-2">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <div className="text-red-300 text-xs font-semibold">Chunk errors</div>
-                  <div className="text-red-200/70 text-[11px]">
+                  <div className="text-red-600 text-xs font-semibold">Chunk errors</div>
+                  <div className="text-red-600 text-[11px]">
                     {data.extraction.chunkErrors.length} chunk{data.extraction.chunkErrors.length === 1 ? '' : 's'} met extractiefouten gevonden.
                   </div>
                 </div>
-                <span className="text-[10px] text-red-200/60 bg-red-500/10 border border-red-500/20 rounded px-2 py-0.5">
+                <span className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded px-2 py-0.5">
                   zichtbaar bij status error
                 </span>
               </div>
@@ -1767,7 +1993,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
 
           {/* Show message if extraction failed (no result but has prompt) */}
           {!data.extraction.result && !data.extraction.error && !data.extraction.skipped && data.extraction.prompt && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded p-2 text-xs text-yellow-300">
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-2 text-xs text-yellow-700">
               <strong>Let op:</strong> Extractie is niet gelukt. Er is wel een prompt verzonden, maar geen resultaat ontvangen.
             </div>
           )}
@@ -1799,7 +2025,7 @@ function LLMTab({ documentId, document, downloadArtifact }: {
                 return (
                   <>
                     {isDifferent && (
-                      <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2 text-xs text-blue-300">
+                      <div className="bg-blue-50 border border-blue-200 rounded p-2 text-xs text-blue-500">
                         <strong>Info:</strong> De LLM response is aangepast na validatie. 
                         Sommige velden zijn mogelijk gefilterd of gecorrigeerd.
                       </div>
@@ -1839,54 +2065,54 @@ function TextTab({ document, highlightSources, searchTerm, onHighlightToggle, on
             value={searchTerm}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search..."
-            className="w-full px-3 py-1.5 pl-8 bg-white/10 border border-white/20 rounded text-white text-sm placeholder-white/60 focus:ring-1 focus:ring-blue-400"
+            className="w-full px-3 py-1.5 pl-8 bg-slate-100 border border-slate-300 rounded text-slate-800 text-sm placeholder-slate-400 focus:ring-1 focus:ring-blue-400"
           />
-          <FontAwesomeIcon icon={faSearch} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-white/60 w-3 h-3" />
+          <FontAwesomeIcon icon={faSearch} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-slate-500 w-3 h-3" />
         </div>
         <div className="flex space-x-2">
           <button
             onClick={onHighlightToggle}
-            className={`flex items-center space-x-1 px-2 py-1.5 text-xs rounded ${highlightSources ? 'bg-blue-600 text-white' : 'bg-white/10 text-white hover:bg-white/20'}`}
+            className={`flex items-center space-x-1 px-2 py-1.5 text-xs rounded ${highlightSources ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
           >
             <FontAwesomeIcon icon={faHighlighter} className="w-3 h-3" />
             <span>Evidence</span>
           </button>
-          <button onClick={() => downloadArtifact('text/extracted.txt', 'text.txt')} className="flex items-center space-x-1 px-2 py-1.5 bg-white/10 text-white text-xs rounded hover:bg-white/20">
+          <button onClick={() => downloadArtifact('text/extracted.txt', 'text.txt')} className="flex items-center space-x-1 px-2 py-1.5 bg-slate-100 text-slate-800 text-xs rounded hover:bg-slate-200">
             <FontAwesomeIcon icon={faDownload} className="w-3 h-3" />
           </button>
         </div>
       </div>
 
-      <div className="bg-white/5 rounded-lg p-3">
+      <div className="bg-slate-50 rounded-lg p-3">
         <div className="max-h-64 overflow-y-auto">
           {textLoading ? (
             <div className="flex items-center justify-center py-4">
-              <FontAwesomeIcon icon={faSpinner} className="text-blue-400 w-5 h-5 animate-spin" />
+              <FontAwesomeIcon icon={faSpinner} className="text-blue-600 w-5 h-5 animate-spin" />
             </div>
           ) : (
-            <pre className="text-white text-xs whitespace-pre-wrap">{extractedText || 'No text'}</pre>
+            <pre className="text-slate-800 text-xs whitespace-pre-wrap">{extractedText || 'No text'}</pre>
           )}
         </div>
       </div>
 
       {highlightSources && document.metadata_evidence_json && Object.keys(document.metadata_evidence_json).length > 0 && (
         <div className="space-y-2">
-          <h3 className="text-white font-medium text-sm">Evidence</h3>
+          <h3 className="text-slate-800 font-medium text-sm">Evidence</h3>
           {Object.entries(document.metadata_evidence_json).map(([field, spans]) => (
-            <div key={field} className="bg-white/5 rounded overflow-hidden">
+            <div key={field} className="bg-slate-50 rounded overflow-hidden">
               <button
                 onClick={() => setExpandedHighlights(prev => { const n = new Set(prev); n.has(field) ? n.delete(field) : n.add(field); return n; })}
-                className="w-full flex items-center justify-between p-2 text-left hover:bg-white/10"
+                className="w-full flex items-center justify-between p-2 text-left hover:bg-slate-100"
               >
-                <span className="text-white text-xs font-medium">{field}</span>
-                <FontAwesomeIcon icon={expandedHighlights.has(field) ? faChevronUp : faChevronDown} className="text-white/60 w-3 h-3" />
+                <span className="text-slate-800 text-xs font-medium">{field}</span>
+                <FontAwesomeIcon icon={expandedHighlights.has(field) ? faChevronUp : faChevronDown} className="text-slate-500 w-3 h-3" />
               </button>
               {expandedHighlights.has(field) && Array.isArray(spans) && (
                 <div className="px-2 pb-2 space-y-1">
                   {spans.map((span: any, i: number) => (
-                    <div key={i} className="bg-blue-500/10 rounded p-1.5 text-xs">
-                      <span className="text-blue-300">Page {span.page}</span>
-                      {span.quote && <div className="text-white mt-1">"{span.quote}"</div>}
+                    <div key={i} className="bg-blue-50 rounded p-1.5 text-xs">
+                      <span className="text-blue-500">Page {span.page}</span>
+                      {span.quote && <div className="text-slate-800 mt-1">"{span.quote}"</div>}
                     </div>
                   ))}
                 </div>
@@ -1983,11 +2209,11 @@ function ForensicsTab({ documentId, document, isOpen }: {
 
   const getRiskColor = (risk: string) => {
     switch (risk) {
-      case 'critical': return 'text-red-400 bg-red-500/20 border-red-500/30';
-      case 'high': return 'text-orange-400 bg-orange-500/20 border-orange-500/30';
-      case 'medium': return 'text-yellow-400 bg-yellow-500/20 border-yellow-500/30';
-      case 'low': return 'text-green-400 bg-green-500/20 border-green-500/30';
-      default: return 'text-white/60 bg-white/10 border-white/20';
+      case 'critical': return 'text-red-700 bg-red-100 border-red-200';
+      case 'high': return 'text-orange-700 bg-orange-100 border-orange-200';
+      case 'medium': return 'text-amber-700 bg-yellow-100 border-yellow-200';
+      case 'low': return 'text-green-700 bg-green-100 border-green-200';
+      default: return 'text-slate-500 bg-slate-100 border-slate-300';
     }
   };
 
@@ -2014,8 +2240,8 @@ function ForensicsTab({ documentId, document, isOpen }: {
   if (document?.status !== 'done') {
     return (
       <div className="p-8 text-center">
-        <FontAwesomeIcon icon={faSpinner} className="text-white/40 text-2xl animate-spin mb-2" />
-        <p className="text-white/60 text-sm">Document wordt verwerkt...</p>
+        <FontAwesomeIcon icon={faSpinner} className="text-slate-400 text-2xl animate-spin mb-2" />
+        <p className="text-slate-500 text-sm">Document wordt verwerkt...</p>
       </div>
     );
   }
@@ -2023,8 +2249,8 @@ function ForensicsTab({ documentId, document, isOpen }: {
   if (isLoading) {
     return (
       <div className="p-8 text-center">
-        <FontAwesomeIcon icon={faSpinner} className="text-white/40 text-2xl animate-spin mb-2" />
-        <p className="text-white/60 text-sm">Forensische analyse wordt uitgevoerd...</p>
+        <FontAwesomeIcon icon={faSpinner} className="text-slate-400 text-2xl animate-spin mb-2" />
+        <p className="text-slate-500 text-sm">Forensische analyse wordt uitgevoerd...</p>
       </div>
     );
   }
@@ -2032,8 +2258,8 @@ function ForensicsTab({ documentId, document, isOpen }: {
   if (error) {
     return (
       <div className="p-4">
-        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4">
-          <p className="text-red-400 text-sm">Fout bij laden van forensische analyse</p>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-red-600 text-sm">Fout bij laden van forensische analyse</p>
         </div>
       </div>
     );
@@ -2042,7 +2268,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
   if (!fraudReport) {
     return (
       <div className="p-8 text-center">
-        <p className="text-white/60 text-sm">Geen forensische data beschikbaar</p>
+        <p className="text-slate-500 text-sm">Geen forensische data beschikbaar</p>
       </div>
     );
   }
@@ -2077,37 +2303,67 @@ function ForensicsTab({ documentId, document, isOpen }: {
       </div>
 
       {fraudReport.semantic_context?.top_matches?.length ? (
-        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
-          <h3 className="text-white font-semibold text-base mb-2">Documentcontext (BERT)</h3>
-          <p className="text-blue-100 text-sm mb-3">{fraudReport.semantic_context.summary}</p>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h3 className="text-slate-800 font-semibold text-base mb-2">Documentcontext (BERT)</h3>
+          <p className="text-blue-700 text-sm mb-3">{fraudReport.semantic_context.summary}</p>
           <div className="flex flex-wrap gap-2">
             {fraudReport.semantic_context.top_matches.map((match) => (
-              <span key={match.label} className="text-xs bg-blue-500/20 text-blue-100 px-2 py-1 rounded">
+              <span key={match.label} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
                 {match.label}: {Math.round(match.confidence * 100)}%
               </span>
             ))}
           </div>
-          <p className="text-white/40 text-xs mt-3">
+          <p className="text-slate-400 text-xs mt-3">
             BERT is hier context en fallback, geen harde fraudebeslisser. Model: {fraudReport.semantic_context.model_used} · margin {Math.round(fraudReport.semantic_context.margin * 100)}%
           </p>
         </div>
       ) : null}
 
+      {/* Advice Cards */}
+      {fraudReport.advice && fraudReport.advice.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-slate-800 font-semibold text-sm flex items-center gap-2 px-1">
+            <FontAwesomeIcon icon={faExclamationTriangle} className="text-[#FFC1F3] w-4 h-4" />
+            Adviezen ({fraudReport.advice.length})
+          </h3>
+          {fraudReport.advice.map((card: AdviceCard, i: number) => {
+            const priorityColors: Record<string, string> = {
+              high: 'border-red-300 bg-red-50 text-red-600',
+              medium: 'border-amber-300 bg-amber-50 text-amber-700',
+              low: 'border-green-200 bg-green-50 text-green-700',
+            };
+            return (
+              <div key={i} className={`rounded-lg border p-3 ${priorityColors[card.priority] ?? 'border-slate-300 bg-slate-50 text-slate-600'}`}>
+                <div className="flex items-start gap-2">
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold shrink-0 ${priorityColors[card.priority] ?? ''}`}>
+                    {card.priority}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-xs mb-1">{card.title}</p>
+                    <p className="text-[11px] opacity-80 leading-relaxed">{card.action}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Signals List - Accordion (only one open at a time) */}
       {filteredSignals.length > 0 ? (
         <div className="space-y-2">
           {/* Static header - not clickable */}
-          <div className="w-full flex items-center justify-between p-3 bg-white/5 rounded-lg border border-white/10">
-            <h3 className="text-white font-semibold text-base flex items-center gap-2">
-              <FontAwesomeIcon icon={faShieldAlt} className="text-blue-400 w-5 h-5" />
+          <div className="w-full flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200">
+            <h3 className="text-slate-800 font-semibold text-base flex items-center gap-2">
+              <FontAwesomeIcon icon={faShieldAlt} className="text-blue-600 w-5 h-5" />
               Gedetecteerde Signalen
             </h3>
             <div className="flex items-center gap-2">
-              <span className="text-white/60 text-xs bg-black/20 px-2 py-1 rounded">
+              <span className="text-slate-500 text-xs bg-slate-50 px-2 py-1 rounded">
                 {filteredSignals.length} totaal
               </span>
               {expandedSignalIndex !== null && (
-                <span className="text-blue-400 text-xs">
+                <span className="text-blue-600 text-xs">
                   1 open
                 </span>
               )}
@@ -2130,18 +2386,18 @@ function ForensicsTab({ documentId, document, isOpen }: {
                       setExpandedSignalIndex(index); // Open this one, closes others automatically
                     }
                   }}
-                  className="w-full flex items-start justify-between gap-2 p-2.5 hover:bg-black/10 transition-colors text-left cursor-pointer"
+                  className="w-full flex items-start justify-between gap-2 p-2.5 hover:bg-slate-100 transition-colors text-left cursor-pointer"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                       <FontAwesomeIcon icon={getRiskIcon(signal.risk_level)} className="w-3.5 h-3.5 shrink-0" />
                       <span className="font-medium text-xs truncate">{signal.name.replace(/_/g, ' ')}</span>
                       {signal.category && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 shrink-0">
                           {signal.category.replace(/_/g, ' ')}
                         </span>
                       )}
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 shrink-0">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-50 shrink-0">
                         {Math.round(signal.confidence * 100)}%
                       </span>
                     </div>
@@ -2149,7 +2405,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                   </div>
                   <FontAwesomeIcon 
                     icon={isExpanded ? faChevronUp : faChevronDown} 
-                    className="text-white/40 w-3 h-3 shrink-0 mt-0.5"
+                    className="text-slate-400 w-3 h-3 shrink-0 mt-0.5"
                   />
                 </button>
 
@@ -2179,7 +2435,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                         <div className="text-[10px] opacity-60 mb-1">Bewijs:</div>
                         <div className="flex flex-wrap gap-1">
                           {signal.evidence.map((e, i) => (
-                            <span key={i} className="text-[10px] bg-black/20 px-1.5 py-0.5 rounded">
+                            <span key={i} className="text-[10px] bg-slate-50 px-1.5 py-0.5 rounded">
                               {e}
                             </span>
                           ))}
@@ -2190,7 +2446,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     {signal.recommendation && (
                       <div className="pt-2">
                         <div className="text-[10px] opacity-60 mb-1">Aanbeveling:</div>
-                        <div className="text-[10px] opacity-80 leading-relaxed bg-black/20 rounded p-2">
+                        <div className="text-[10px] opacity-80 leading-relaxed bg-slate-50 rounded p-2">
                           {signal.recommendation}
                         </div>
                       </div>
@@ -2200,7 +2456,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     {Object.keys(signal.details).length > 0 && (
                       <div className="pt-2">
                         <div className="text-[10px] opacity-60 mb-1.5 font-medium">Technische details</div>
-                        <pre className="text-[10px] bg-black/20 p-1.5 rounded overflow-x-auto max-h-32 overflow-y-auto">
+                        <pre className="text-[10px] bg-slate-50 p-1.5 rounded overflow-x-auto max-h-32 overflow-y-auto">
                           {JSON.stringify(signal.details, null, 2)}
                         </pre>
                       </div>
@@ -2212,37 +2468,37 @@ function ForensicsTab({ documentId, document, isOpen }: {
           })}
         </div>
       ) : (
-        <div className="text-center py-4 bg-green-500/10 border border-green-500/20 rounded-lg">
-          <p className="text-green-400 font-medium text-sm">✓ Geen verdachte signalen</p>
-          <p className="text-white/50 text-xs mt-0.5">Dit document lijkt veilig</p>
+        <div className="text-center py-4 bg-green-50 border border-green-200 rounded-lg">
+          <p className="text-green-700 font-medium text-sm">✓ Geen verdachte signalen</p>
+          <p className="text-slate-400 text-xs mt-0.5">Dit document lijkt veilig</p>
         </div>
       )}
 
       {/* ELA Heatmap - Collapsible */}
-      <div className="bg-white/5 rounded-lg border border-white/10 overflow-hidden">
+      <div className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
         <button
           onClick={() => setShowHeatmap(!showHeatmap)}
-          className="w-full flex items-center justify-between p-2.5 hover:bg-white/5 transition-colors cursor-pointer"
+          className="w-full flex items-center justify-between p-2.5 hover:bg-slate-50 transition-colors cursor-pointer"
         >
-          <h4 className="text-white/70 text-sm font-medium flex items-center gap-2">
-            <FontAwesomeIcon icon={faImage} className="text-purple-400 w-4 h-4" />
+          <h4 className="text-slate-500 text-sm font-medium flex items-center gap-2">
+            <FontAwesomeIcon icon={faImage} className="text-purple-600 w-4 h-4" />
             ELA Heatmap
           </h4>
           <FontAwesomeIcon 
             icon={showHeatmap ? faChevronUp : faChevronDown} 
-            className="text-white/60 w-3 h-3"
+            className="text-slate-500 w-3 h-3"
           />
         </button>
         
         {showHeatmap && (
           <div className="px-2.5 pb-2.5">
             {elaHeatmapUrl ? (
-              <div className="bg-black/20 rounded-lg p-2 border border-white/10">
+              <div className="bg-slate-50 rounded-lg p-2 border border-slate-200">
                 <img 
                   key={`ela-heatmap-${documentId}-${elaHeatmapUrl}`}
                   src={elaHeatmapUrl || undefined} 
                   alt="ELA Heatmap" 
-                  className="w-full h-auto rounded border border-white/10 max-h-64 object-contain mx-auto"
+                  className="w-full h-auto rounded border border-slate-200 max-h-64 object-contain mx-auto"
                   onError={(e) => {
                     console.error('Failed to load ELA heatmap image', {
                       src: elaHeatmapUrl,
@@ -2254,7 +2510,7 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     if (container) {
                       e.currentTarget.style.display = 'none';
                       const errorMsg = window.document.createElement('p');
-                      errorMsg.className = 'text-red-400 text-xs mt-2';
+                      errorMsg.className = 'text-red-600 text-xs mt-2';
                       errorMsg.textContent = 'Kon heatmap niet laden. Probeer de pagina te verversen.';
                       if (!container.querySelector('.error-msg')) {
                         errorMsg.classList.add('error-msg');
@@ -2266,17 +2522,17 @@ function ForensicsTab({ documentId, document, isOpen }: {
                     console.log('ELA heatmap image loaded successfully', { documentId, url: elaHeatmapUrl });
                   }}
                 />
-                <p className="text-white/50 text-xs mt-2">
+                <p className="text-slate-400 text-xs mt-2">
                   Compressieverschillen. Heldere gebieden = mogelijke manipulatie.
                   {fraudReport?.signals?.some(s => s.name === 'ela_manipulation_detected') && (
-                    <span className="block mt-1 text-yellow-300 text-[10px]">
+                    <span className="block mt-1 text-yellow-700 text-[10px]">
                       ⚠️ Manipulatie gedetecteerd
                     </span>
                   )}
                 </p>
               </div>
             ) : (
-              <p className="text-white/50 text-xs py-2">
+              <p className="text-slate-400 text-xs py-2">
                 Geen heatmap beschikbaar
               </p>
             )}
@@ -2285,44 +2541,44 @@ function ForensicsTab({ documentId, document, isOpen }: {
       </div>
 
       {/* Analysis Methods Info - Always visible */}
-      <div className="bg-white/5 rounded-lg p-3 border border-white/10">
-        <h4 className="text-white/70 text-sm font-medium mb-2">Analyse Methodes</h4>
+      <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+        <h4 className="text-slate-500 text-sm font-medium mb-2">Analyse Methodes</h4>
         <div className="grid grid-cols-2 gap-1.5 text-xs">
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-              <FontAwesomeIcon icon={faFilePdf} className="w-2.5 h-2.5 text-blue-400" />
+            <div className="w-4 h-4 rounded bg-blue-100 border border-blue-200 flex items-center justify-center shrink-0">
+              <FontAwesomeIcon icon={faFilePdf} className="w-2.5 h-2.5 text-blue-600" />
             </div>
-            <span className="text-white/60 text-[10px]">PDF Metadata</span>
+            <span className="text-slate-500 text-[10px]">PDF Metadata</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-purple-500/20 border border-purple-500/30 flex items-center justify-center shrink-0">
-              <FontAwesomeIcon icon={faImage} className="w-2.5 h-2.5 text-purple-400" />
+            <div className="w-4 h-4 rounded bg-purple-100 border border-purple-200 flex items-center justify-center shrink-0">
+              <FontAwesomeIcon icon={faImage} className="w-2.5 h-2.5 text-purple-600" />
             </div>
-            <span className="text-white/60 text-[10px]">ELA Analyse</span>
+            <span className="text-slate-500 text-[10px]">ELA Analyse</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-amber-500/20 border border-amber-500/30 flex items-center justify-center shrink-0">
+            <div className="w-4 h-4 rounded bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0">
               <FontAwesomeIcon icon={faExclamationTriangle} className="w-2.5 h-2.5 text-amber-400" />
             </div>
-            <span className="text-white/60 text-[10px]">Unicode</span>
+            <span className="text-slate-500 text-[10px]">Unicode</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-green-500/20 border border-green-500/30 flex items-center justify-center shrink-0">
-              <FontAwesomeIcon icon={faRedo} className="w-2.5 h-2.5 text-green-400" />
+            <div className="w-4 h-4 rounded bg-green-100 border border-green-200 flex items-center justify-center shrink-0">
+              <FontAwesomeIcon icon={faRedo} className="w-2.5 h-2.5 text-green-600" />
             </div>
-            <span className="text-white/60 text-[10px]">Herhaling</span>
+            <span className="text-slate-500 text-[10px]">Herhaling</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center shrink-0">
+            <div className="w-4 h-4 rounded bg-cyan-100 border border-cyan-200 flex items-center justify-center shrink-0">
               <FontAwesomeIcon icon={faBullseye} className="w-2.5 h-2.5 text-cyan-400" />
             </div>
-            <span className="text-white/60 text-[10px]">Confidence</span>
+            <span className="text-slate-500 text-[10px]">Confidence</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-4 h-4 rounded bg-pink-500/20 border border-pink-500/30 flex items-center justify-center shrink-0">
+            <div className="w-4 h-4 rounded bg-pink-100 border border-pink-200 flex items-center justify-center shrink-0">
               <FontAwesomeIcon icon={faCog} className="w-2.5 h-2.5 text-pink-400" />
             </div>
-            <span className="text-white/60 text-[10px]">Software</span>
+            <span className="text-slate-500 text-[10px]">Software</span>
           </div>
         </div>
       </div>

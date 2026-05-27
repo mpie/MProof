@@ -91,6 +91,22 @@ async def list_documents(
         )
 
 
+@router.get("/documents/by-reference/{reference}")
+async def get_document_by_reference(reference: str):
+    """Get document by external reference."""
+    from app.main import async_session_maker
+    from app.models.schemas import DocumentResponse
+    async with async_session_maker() as session:
+        result = await session.execute(
+            text("SELECT d.*, s.name as subject_name, s.context as subject_context FROM documents d LEFT JOIN subjects s ON s.id = d.subject_id WHERE d.external_reference = :ref ORDER BY d.created_at DESC LIMIT 20"),
+            {"ref": reference}
+        )
+        rows = result.mappings().fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No documents found with this reference")
+        return {"documents": [dict(r) for r in rows], "total": len(rows)}
+
+
 @router.get("/documents/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: int,
@@ -121,6 +137,26 @@ async def get_document(
             doc_dict['metadata_validation_json'] = json.loads(doc_dict['metadata_validation_json'])
         if doc_dict.get('metadata_evidence_json'):
             doc_dict['metadata_evidence_json'] = json.loads(doc_dict['metadata_evidence_json'])
+
+        # Compute missing required fields for done documents
+        if doc_dict.get('status') == 'done' and doc_dict.get('doc_type_slug') and doc_dict.get('metadata_json'):
+            from sqlalchemy import text as _text
+            req_rows = (await session.execute(
+                _text("""SELECT dtf.key FROM document_type_fields dtf
+                         JOIN document_types dt ON dtf.document_type_id = dt.id
+                         WHERE dt.slug = :slug AND dtf.required = 1"""),
+                {"slug": doc_dict['doc_type_slug']}
+            )).fetchall()
+            meta = doc_dict['metadata_json'] if isinstance(doc_dict['metadata_json'], dict) else {}
+            doc_dict['missing_required_fields'] = [r.key for r in req_rows if r.key not in meta or meta[r.key] is None]
+
+        # Duplicate detection: find oldest document with same sha256
+        if doc_dict.get('sha256'):
+            dup_row = (await session.execute(
+                text("SELECT id FROM documents WHERE sha256 = :sha256 AND id != :id ORDER BY id ASC LIMIT 1"),
+                {"sha256": doc_dict['sha256'], "id": document_id}
+            )).fetchone()
+            doc_dict['duplicate_of'] = dup_row.id if dup_row else None
 
         return DocumentResponse(**doc_dict)
 
@@ -333,9 +369,9 @@ async def get_document_artifact(
 @router.delete("/documents/{document_id}")
 async def delete_document(document_id: int, db: AsyncSession = Depends(lambda: None)):
     """Delete a document and all its artifacts."""
+    import app.main as app_main
     from app.main import async_session_maker
     async with async_session_maker() as session:
-        # Check if document exists
         result = await session.execute(
             text("SELECT id, subject_id FROM documents WHERE id = :document_id"),
             {"document_id": document_id}
@@ -345,12 +381,14 @@ async def delete_document(document_id: int, db: AsyncSession = Depends(lambda: N
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Delete document record (cascade will handle related records)
+        # Cancel any in-progress or queued job before deleting
+        if app_main.job_queue is not None:
+            app_main.job_queue.cancel_document(document_id)
+
         await session.execute(
             text("DELETE FROM documents WHERE id = :document_id"),
             {"document_id": document_id}
         )
-
         await session.commit()
 
         return {"ok": True, "message": "Document deleted"}
@@ -453,6 +491,86 @@ async def get_fraud_analysis(document_id: int, db: AsyncSession = Depends(lambda
             "analyzed_at": document.updated_at.isoformat() if hasattr(document.updated_at, "isoformat") else str(document.updated_at),
             "semantic_context": None,
         }
+
+
+@router.post("/documents/{document_id}/feedback")
+async def submit_document_feedback(
+    document_id: int,
+    body: dict,
+):
+    """
+    Mark a document as confirmed correct or rejected (wrong classification).
+    On confirm: copies original file to NaiveBayes training pool.
+    On reject with corrected_type: copies to correct training folder instead.
+    body: { "action": "confirm" | "reject", "corrected_type": optional str }
+    """
+    from app.main import async_session_maker
+    from datetime import datetime, timezone
+    import shutil
+
+    action = body.get("action")
+    if action not in ("confirmed", "rejected"):
+        raise HTTPException(status_code=400, detail="action must be 'confirmed' or 'rejected'")
+
+    corrected_type: Optional[str] = body.get("corrected_type") or None
+
+    async with async_session_maker() as session:
+        row = await session.execute(
+            text("SELECT id, subject_id, doc_type_slug, original_filename, status FROM documents WHERE id = :id"),
+            {"id": document_id}
+        )
+        doc = row.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.status != "done":
+            raise HTTPException(status_code=400, detail="Document must be done before submitting feedback")
+
+        target_slug = corrected_type if corrected_type else doc.doc_type_slug
+        if not target_slug or target_slug == "unknown":
+            raise HTTPException(status_code=400, detail="Cannot add training example for unknown document type")
+
+        # Persist feedback in DB
+        await session.execute(
+            text("""UPDATE documents SET
+                   feedback_status = :feedback_status,
+                   corrected_doc_type = :corrected_doc_type,
+                   updated_at = :updated_at
+                   WHERE id = :id"""),
+            {
+                "feedback_status": action,
+                "corrected_doc_type": corrected_type,
+                "updated_at": datetime.now(timezone.utc),
+                "id": document_id,
+            }
+        )
+        await session.commit()
+
+    # Copy original file to training pool (only on confirmed, or rejected with corrected_type)
+    trained = False
+    if action == "confirmed" or (action == "rejected" and corrected_type):
+        original_dir = (
+            Path(settings.data_dir) / "subjects" / str(doc.subject_id)
+            / "documents" / str(document_id) / "original"
+        )
+        original_files = list(original_dir.glob("*")) if original_dir.exists() else []
+        if original_files:
+            src_file = original_files[0]
+            from app.services.doc_type_classifier import _dataset_dir, classifier_service
+            training_dir = _dataset_dir() / target_slug
+            training_dir.mkdir(parents=True, exist_ok=True)
+            dest = training_dir / f"feedback_{document_id}{src_file.suffix}"
+            shutil.copy2(src_file, dest)
+            logger.info(f"Feedback: copied {src_file} -> {dest}")
+
+            # Trigger incremental retrain so model learns immediately
+            try:
+                await classifier_service().train()
+                trained = True
+                logger.info(f"Feedback: incremental retrain triggered for slug '{target_slug}'")
+            except Exception as e:
+                logger.warning(f"Feedback: retrain failed (file saved, will train on next manual run): {e}")
+
+    return {"ok": True, "action": action, "document_id": document_id, "training_slug": target_slug if (action == "confirmed" or corrected_type) else None, "retrained": trained}
 
 
 @router.post("/documents/analyze-fraud")

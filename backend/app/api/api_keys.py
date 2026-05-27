@@ -9,17 +9,20 @@ import secrets
 import hashlib
 from pydantic import BaseModel
 
+from app.dependencies.auth import get_current_principal, Principal, UserRoleEnum
+
 router = APIRouter()
 
 
 class ApiKeyCreate(BaseModel):
     name: str
     scopes: Optional[List[str]] = None
-    expires_days: Optional[int] = None  # None = never expires
+    expires_days: Optional[int] = None
 
 
 class ApiKeyResponse(BaseModel):
     id: int
+    user_id: Optional[int]
     name: str
     client_id: str
     scopes: Optional[List[str]]
@@ -30,7 +33,6 @@ class ApiKeyResponse(BaseModel):
 
 
 class ApiKeyCreatedResponse(ApiKeyResponse):
-    """Response when a new key is created - includes the secret (only shown once)."""
     client_secret: str
 
 
@@ -41,22 +43,18 @@ class ApiKeyUpdate(BaseModel):
 
 
 def generate_client_id() -> str:
-    """Generate a random client ID (16 bytes hex = 32 chars)."""
     return secrets.token_hex(16)
 
 
 def generate_client_secret() -> str:
-    """Generate a random client secret (32 bytes hex = 64 chars)."""
     return secrets.token_hex(32)
 
 
 def hash_secret(secret: str) -> str:
-    """Hash the client secret using SHA256."""
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
 def format_datetime(dt) -> Optional[str]:
-    """Format datetime to ISO string, handling both datetime objects and strings."""
     if dt is None:
         return None
     if isinstance(dt, str):
@@ -66,36 +64,52 @@ def format_datetime(dt) -> Optional[str]:
     return str(dt)
 
 
+def _is_admin(principal: Principal) -> bool:
+    return principal.role in (UserRoleEnum.admin, UserRoleEnum.super_admin)
+
+
 @router.get("/api-keys", response_model=List[ApiKeyResponse])
-async def list_api_keys():
-    """List all API keys (without secrets)."""
+async def list_api_keys(principal: Principal = Depends(get_current_principal)):
+    """List API keys. Admins see all; regular users see only their own."""
     from app.main import async_session_maker
     import json
-    
+
     async with async_session_maker() as session:
-        result = await session.execute(
-            text("""
-                SELECT id, name, client_id, scopes, is_active, 
-                       last_used_at, expires_at, created_at
-                FROM api_keys
-                ORDER BY created_at DESC
-            """)
-        )
+        if _is_admin(principal):
+            result = await session.execute(
+                text("""
+                    SELECT id, user_id, name, client_id, scopes, is_active,
+                           last_used_at, expires_at, created_at
+                    FROM api_keys
+                    ORDER BY created_at DESC
+                """)
+            )
+        else:
+            result = await session.execute(
+                text("""
+                    SELECT id, user_id, name, client_id, scopes, is_active,
+                           last_used_at, expires_at, created_at
+                    FROM api_keys
+                    WHERE user_id = :uid
+                    ORDER BY created_at DESC
+                """),
+                {"uid": principal.user_id},
+            )
         keys = result.fetchall()
-        
+
         result_list = []
         for row in keys:
-            # Parse scopes JSON if present
             scopes = None
             if row.scopes:
                 try:
                     scopes = json.loads(row.scopes) if isinstance(row.scopes, str) else row.scopes
                 except (json.JSONDecodeError, TypeError):
                     scopes = None
-            
+
             result_list.append(
                 ApiKeyResponse(
                     id=row.id,
+                    user_id=row.user_id,
                     name=row.name,
                     client_id=row.client_id,
                     scopes=scopes,
@@ -109,32 +123,35 @@ async def list_api_keys():
 
 
 @router.post("/api-keys", response_model=ApiKeyCreatedResponse)
-async def create_api_key(data: ApiKeyCreate):
-    """Create a new API key. The secret is only returned once!"""
+async def create_api_key(
+    data: ApiKeyCreate,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Create a new API key bound to the requesting user. Secret shown only once."""
     from app.main import async_session_maker
     import json
     import logging
-    
+
     logger = logging.getLogger(__name__)
-    
+
     client_id = generate_client_id()
     client_secret = generate_client_secret()
     secret_hash = hash_secret(client_secret)
-    
-    # Calculate expiration if specified
+
     expires_at = None
     if data.expires_days:
         from datetime import timedelta
         expires_at = datetime.now(timezone.utc) + timedelta(days=data.expires_days)
-    
+
     try:
         async with async_session_maker() as session:
             result = await session.execute(
                 text("""
-                    INSERT INTO api_keys (name, client_id, client_secret_hash, scopes, is_active, expires_at, created_at, updated_at)
-                    VALUES (:name, :client_id, :secret_hash, :scopes, :is_active, :expires_at, :created_at, :updated_at)
+                    INSERT INTO api_keys (user_id, name, client_id, client_secret_hash, scopes, is_active, expires_at, created_at, updated_at)
+                    VALUES (:user_id, :name, :client_id, :secret_hash, :scopes, :is_active, :expires_at, :created_at, :updated_at)
                 """),
                 {
+                    "user_id": principal.user_id,
                     "name": data.name,
                     "client_id": client_id,
                     "secret_hash": secret_hash,
@@ -146,22 +163,22 @@ async def create_api_key(data: ApiKeyCreate):
                 }
             )
             await session.commit()
-            
-            # Get the created key
+
             result = await session.execute(
                 text("SELECT id, created_at FROM api_keys WHERE client_id = :client_id"),
                 {"client_id": client_id}
             )
             row = result.fetchone()
-            
+
             if not row:
                 raise HTTPException(status_code=500, detail="Failed to retrieve created API key")
-            
+
             return ApiKeyCreatedResponse(
                 id=row.id,
+                user_id=principal.user_id,
                 name=data.name,
                 client_id=client_id,
-                client_secret=client_secret,  # Only returned once!
+                client_secret=client_secret,
                 scopes=data.scopes,
                 is_active=True,
                 last_used_at=None,
@@ -173,25 +190,34 @@ async def create_api_key(data: ApiKeyCreate):
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {str(e)}")
 
 
+def _assert_key_access(row, principal: Principal):
+    """Raises 403 if non-admin tries to touch another user's key."""
+    if not _is_admin(principal) and row.user_id != principal.user_id:
+        raise HTTPException(status_code=403, detail="Not your API key")
+
+
 @router.put("/api-keys/{key_id}", response_model=ApiKeyResponse)
-async def update_api_key(key_id: int, data: ApiKeyUpdate):
-    """Update an API key (name, scopes, or active status)."""
+async def update_api_key(
+    key_id: int,
+    data: ApiKeyUpdate,
+    principal: Principal = Depends(get_current_principal),
+):
     from app.main import async_session_maker
     import json
-    
+
     async with async_session_maker() as session:
-        # Check if key exists
         result = await session.execute(
-            text("SELECT id FROM api_keys WHERE id = :id"),
+            text("SELECT id, user_id FROM api_keys WHERE id = :id"),
             {"id": key_id}
         )
-        if not result.fetchone():
+        row = result.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="API key not found")
-        
-        # Build update query
+        _assert_key_access(row, principal)
+
         updates = []
         params = {"id": key_id, "updated_at": datetime.now(timezone.utc)}
-        
+
         if data.name is not None:
             updates.append("name = :name")
             params["name"] = data.name
@@ -201,37 +227,36 @@ async def update_api_key(key_id: int, data: ApiKeyUpdate):
         if data.is_active is not None:
             updates.append("is_active = :is_active")
             params["is_active"] = data.is_active
-        
+
         updates.append("updated_at = :updated_at")
-        
+
         if updates:
             await session.execute(
                 text(f"UPDATE api_keys SET {', '.join(updates)} WHERE id = :id"),
                 params
             )
             await session.commit()
-        
-        # Return updated key
+
         result = await session.execute(
             text("""
-                SELECT id, name, client_id, scopes, is_active, 
+                SELECT id, user_id, name, client_id, scopes, is_active,
                        last_used_at, expires_at, created_at
                 FROM api_keys WHERE id = :id
             """),
             {"id": key_id}
         )
         row = result.fetchone()
-        
-        # Parse scopes JSON if present
+
         scopes = None
         if row.scopes:
             try:
                 scopes = json.loads(row.scopes) if isinstance(row.scopes, str) else row.scopes
             except (json.JSONDecodeError, TypeError):
                 scopes = None
-        
+
         return ApiKeyResponse(
             id=row.id,
+            user_id=row.user_id,
             name=row.name,
             client_id=row.client_id,
             scopes=scopes,
@@ -243,34 +268,40 @@ async def update_api_key(key_id: int, data: ApiKeyUpdate):
 
 
 @router.delete("/api-keys/{key_id}")
-async def delete_api_key(key_id: int):
-    """Delete an API key."""
+async def delete_api_key(
+    key_id: int,
+    principal: Principal = Depends(get_current_principal),
+):
     from app.main import async_session_maker
-    
+
     async with async_session_maker() as session:
         result = await session.execute(
-            text("SELECT id FROM api_keys WHERE id = :id"),
+            text("SELECT id, user_id FROM api_keys WHERE id = :id"),
             {"id": key_id}
         )
-        if not result.fetchone():
+        row = result.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="API key not found")
-        
+        _assert_key_access(row, principal)
+
         await session.execute(
             text("DELETE FROM api_keys WHERE id = :id"),
             {"id": key_id}
         )
         await session.commit()
-        
+
         return {"ok": True, "message": "API key deleted"}
 
 
 @router.post("/api-keys/{key_id}/regenerate", response_model=ApiKeyCreatedResponse)
-async def regenerate_api_key(key_id: int):
-    """Regenerate the secret for an API key. The new secret is only returned once!"""
+async def regenerate_api_key(
+    key_id: int,
+    principal: Principal = Depends(get_current_principal),
+):
+    """Regenerate secret for an API key. New secret shown only once."""
     from app.main import async_session_maker
-    
+
     async with async_session_maker() as session:
-        # Check if key exists
         result = await session.execute(
             text("SELECT * FROM api_keys WHERE id = :id"),
             {"id": key_id}
@@ -278,14 +309,14 @@ async def regenerate_api_key(key_id: int):
         row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="API key not found")
-        
-        # Generate new secret
+        _assert_key_access(row, principal)
+
         client_secret = generate_client_secret()
         secret_hash = hash_secret(client_secret)
-        
+
         await session.execute(
             text("""
-                UPDATE api_keys 
+                UPDATE api_keys
                 SET client_secret_hash = :secret_hash, updated_at = :updated_at
                 WHERE id = :id
             """),
@@ -296,21 +327,21 @@ async def regenerate_api_key(key_id: int):
             }
         )
         await session.commit()
-        
+
         import json
-        # Parse scopes JSON if present
         scopes = None
         if row.scopes:
             try:
                 scopes = json.loads(row.scopes) if isinstance(row.scopes, str) else row.scopes
             except (json.JSONDecodeError, TypeError):
                 scopes = None
-        
+
         return ApiKeyCreatedResponse(
             id=row.id,
+            user_id=row.user_id,
             name=row.name,
             client_id=row.client_id,
-            client_secret=client_secret,  # Only returned once!
+            client_secret=client_secret,
             scopes=scopes,
             is_active=bool(row.is_active),
             last_used_at=format_datetime(row.last_used_at),

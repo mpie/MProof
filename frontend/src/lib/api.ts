@@ -10,10 +10,22 @@ const api = axios.create({
   timeout: 30000,
 });
 
-// Suppress 404 errors for artifact requests
+// Attach JWT token to every request
+api.interceptors.request.use((config) => {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('mproof_token') : null;
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// Suppress 404 errors for artifact requests; redirect to login on 401
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error.response?.status === 401 && typeof window !== 'undefined') {
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+      }
+    }
     if (error.response?.status === 404 && error.config?.url?.includes('/artifact')) {
       return Promise.reject({ ...error, silent: true });
     }
@@ -46,6 +58,11 @@ export interface DocumentType {
   fields: DocumentTypeField[];
 }
 
+export interface ValidationRule {
+  validation_type: 'amount_range' | 'date_max_age_days' | 'cross_field_ratio' | 'date_not_expired';
+  params: Record<string, unknown>;
+}
+
 export interface DocumentTypeField {
   id: number;
   document_type_id: number;
@@ -57,6 +74,7 @@ export interface DocumentTypeField {
   regex?: string;
   description?: string;
   examples?: string[];
+  validation_rules?: ValidationRule[];
   created_at: string;
   updated_at: string;
 }
@@ -91,8 +109,16 @@ export interface Document {
   ocr_quality?: string;
   skip_marker_used?: string;
   skip_marker_position?: number;
+  feedback_status?: 'confirmed' | 'rejected' | null;
+  corrected_doc_type?: string | null;
+  duplicate_of?: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentUploadResponse {
+  document_id: number;
+  duplicate_of?: number | null;
 }
 
 // =============================================================================
@@ -239,10 +265,6 @@ export interface SubjectGroupResponse {
 export interface DocumentListResponse {
   documents: Document[];
   total: number;
-}
-
-export interface DocumentUploadResponse {
-  document_id: number;
 }
 
 export interface DocumentEvent {
@@ -405,6 +427,14 @@ export interface SemanticContext {
   summary: string;
 }
 
+export interface AdviceCard {
+  priority: 'high' | 'medium' | 'low';
+  category: string;
+  title: string;
+  action: string;
+  signals: string[];
+}
+
 export interface FraudReport {
   document_id: number | null;
   filename: string;
@@ -414,6 +444,7 @@ export interface FraudReport {
   summary: string;
   analyzed_at: string;
   semantic_context?: SemanticContext | null;
+  advice?: AdviceCard[];
 }
 
 // =============================================================================
@@ -469,6 +500,18 @@ export const getDocument = async (documentId: number): Promise<Document> => {
 
 export const analyzeDocument = async (documentId: number): Promise<{ ok: boolean }> => {
   const response = await api.post(`/documents/${documentId}/analyze`);
+  return response.data;
+};
+
+export const submitDocumentFeedback = async (
+  documentId: number,
+  action: 'confirmed' | 'rejected',
+  correctedType?: string
+): Promise<{ ok: boolean; action: string; training_slug: string | null }> => {
+  const response = await api.post(`/documents/${documentId}/feedback`, {
+    action,
+    corrected_type: correctedType ?? null,
+  });
   return response.data;
 };
 
@@ -604,12 +647,12 @@ export const listDocumentTypeFields = async (slug: string): Promise<DocumentType
   return response.data;
 };
 
-export const createDocumentTypeField = async (slug: string, data: { key: string; label: string; field_type: string; required: boolean; enum_values?: string[]; regex?: string; description?: string; examples?: string[] }): Promise<DocumentTypeField> => {
+export const createDocumentTypeField = async (slug: string, data: { key: string; label: string; field_type: string; required: boolean; enum_values?: string[]; regex?: string; description?: string; examples?: string[]; validation_rules?: ValidationRule[] }): Promise<DocumentTypeField> => {
   const response = await api.post(`/document-types/${slug}/fields`, data);
   return response.data;
 };
 
-export const updateDocumentTypeField = async (slug: string, fieldId: number, data: Partial<{ key: string; label: string; field_type: string; required: boolean; enum_values: string[]; regex: string; description: string; examples: string[] }>): Promise<DocumentTypeField> => {
+export const updateDocumentTypeField = async (slug: string, fieldId: number, data: Partial<{ key: string; label: string; field_type: string; required: boolean; enum_values: string[]; regex: string; description: string; examples: string[]; validation_rules: ValidationRule[] }>): Promise<DocumentTypeField> => {
   const response = await api.put(`/document-types/${slug}/fields/${fieldId}`, data);
   return response.data;
 };
@@ -679,7 +722,11 @@ export const previewEligibility = async (slug: string, text: string, policy?: Cl
 // =============================================================================
 
 export const subscribeToDocumentEvents = (documentId: number, onEvent: (event: DocumentEvent) => void, onError?: (error: Event) => void): EventSource => {
-  const eventSource = new EventSource(`${API_BASE_URL}/documents/${documentId}/events`);
+  const token = typeof window !== 'undefined' ? localStorage.getItem('mproof_token') : null;
+  const url = token
+    ? `${API_BASE_URL}/documents/${documentId}/events?token=${encodeURIComponent(token)}`
+    : `${API_BASE_URL}/documents/${documentId}/events`;
+  const eventSource = new EventSource(url);
   const handleMessage = (event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data);
@@ -699,6 +746,16 @@ export const subscribeToDocumentEvents = (documentId: number, onEvent: (event: D
 
 export const getQueueStatus = async (): Promise<QueueStatus> => {
   const response = await api.get('/queue/status');
+  return response.data;
+};
+
+export const reprocessDocument = async (documentId: number): Promise<{ status: string; document_id: number }> => {
+  const response = await api.post(`/queue/reprocess/${documentId}`);
+  return response.data;
+};
+
+export const cancelDocument = async (documentId: number): Promise<{ status: string; document_id: number }> => {
+  const response = await api.post(`/queue/cancel/${documentId}`);
   return response.data;
 };
 
@@ -892,4 +949,89 @@ export const getLLMHealth = async (checkAll: boolean = false): Promise<LLMHealth
 export const switchLLMProvider = async (provider: 'ollama' | 'vllm'): Promise<SwitchProviderResponse> => {
   const response = await api.post('/llm/switch', { provider });
   return response.data;
+};
+
+export interface UpdateProviderSettingsRequest {
+  base_url?: string;
+  model?: string;
+  timeout?: number;
+  max_retries?: number;
+  max_tokens?: number;
+}
+
+export const updateLLMSettings = async (provider: 'ollama' | 'vllm', data: UpdateProviderSettingsRequest): Promise<{ updated: string[]; provider: string }> => {
+  const response = await api.put(`/llm/settings/${provider}`, data);
+  return response.data;
+};
+
+// =============================================================================
+// Auth API
+// =============================================================================
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user_id: number;
+  email: string;
+  name: string;
+  role: string;
+}
+
+export const authLogin = async (email: string, password: string): Promise<LoginResponse> => {
+  const response = await api.post('/auth/login', { email, password });
+  return response.data;
+};
+
+export const changePassword = async (current_password: string, new_password: string): Promise<void> => {
+  await api.post('/auth/change-password', { current_password, new_password });
+};
+
+// =============================================================================
+// User Management Types & API
+// =============================================================================
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: 'super_admin' | 'admin' | 'user';
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserRequest {
+  email: string;
+  name: string;
+  password: string;
+  role: 'super_admin' | 'admin' | 'user';
+}
+
+export interface UpdateUserRequest {
+  name?: string;
+  is_active?: boolean;
+  role?: 'super_admin' | 'admin' | 'user';
+}
+
+export const listUsers = async (): Promise<User[]> => {
+  const response = await api.get('/users');
+  return response.data;
+};
+
+export const createUser = async (data: CreateUserRequest): Promise<User> => {
+  const response = await api.post('/users', data);
+  return response.data;
+};
+
+export const updateUser = async (userId: number, data: UpdateUserRequest): Promise<User> => {
+  const response = await api.put(`/users/${userId}`, data);
+  return response.data;
+};
+
+export const deleteUser = async (userId: number): Promise<void> => {
+  await api.delete(`/users/${userId}`);
+};
+
+export const resetUserPassword = async (userId: number, new_password: string): Promise<void> => {
+  await api.post(`/users/${userId}/reset-password`, { new_password });
 };

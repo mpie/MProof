@@ -27,6 +27,12 @@ class FieldTypeEnum(str, enum.Enum):
     enum = "enum"
 
 
+class UserRoleEnum(str, enum.Enum):
+    super_admin = "super_admin"
+    admin = "admin"
+    user = "user"
+
+
 class DocumentStatusEnum(str, enum.Enum):
     queued = "queued"
     processing = "processing"
@@ -76,6 +82,7 @@ class DocumentTypeField(Base):
     regex: Mapped[Optional[str]] = mapped_column(String(500))
     description: Mapped[Optional[str]] = mapped_column(Text)
     examples: Mapped[Optional[list]] = mapped_column(JSON)
+    validation_rules: Mapped[Optional[list]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -91,6 +98,8 @@ class Document(Base):
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    callback_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     status: Mapped[DocumentStatusEnum] = mapped_column(Enum(DocumentStatusEnum), default=DocumentStatusEnum.queued)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     stage: Mapped[Optional[str]] = mapped_column(String(100))
@@ -105,22 +114,39 @@ class Document(Base):
     risk_signals_json: Mapped[Optional[list]] = mapped_column(JSON)
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False)
     ocr_quality: Mapped[Optional[str]] = mapped_column(String(20))
-    skip_marker_used: Mapped[Optional[str]] = mapped_column(String(500))  # Pattern that matched
-    skip_marker_position: Mapped[Optional[int]] = mapped_column(Integer)  # Position where text was truncated
+    skip_marker_used: Mapped[Optional[str]] = mapped_column(String(500))
+    skip_marker_position: Mapped[Optional[int]] = mapped_column(Integer)
+    feedback_status: Mapped[Optional[str]] = mapped_column(String(20))
+    corrected_doc_type: Mapped[Optional[str]] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     subject: Mapped["Subject"] = relationship("Subject", back_populates="documents")
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRoleEnum] = mapped_column(Enum(UserRoleEnum), nullable=False, default=UserRoleEnum.user)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class ApiKey(Base):
     __tablename__ = "api_keys"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     client_id: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
-    client_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA256 hash
-    scopes: Mapped[Optional[list]] = mapped_column(JSON)  # ["read", "write", "admin"]
+    client_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scopes: Mapped[Optional[list]] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
