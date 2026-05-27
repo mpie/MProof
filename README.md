@@ -1,4 +1,4 @@
-# MProof
+# MProof — Document Analyse Platform
 
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 ![Node.js](https://img.shields.io/badge/node.js-18+-green.svg)
@@ -9,130 +9,131 @@
 ![MCP](https://img.shields.io/badge/MCP-2024--11--05-00d4aa.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-AI-powered document analysis platform with classification, fraud detection, and MCP integration.
+MProof analyseert documenten met AI: classificatie, metadata-extractie, fraudedetectie en MCP-integratie voor AI-assistenten.
 
-## Overview
+---
 
-MProof analyzes documents using multiple AI methods:
+## Wat doet MProof?
 
-- **Naive Bayes Classifier** - Fast word-frequency based classification (~1ms)
-- **BERT Embeddings** - Semantic understanding with deep learning (~100ms)
-- **LLM Classification** - Ollama or vLLM-powered analysis as fallback (vLLM supports parallel processing)
-- **Fraud Detection** - PDF metadata, image forensics (ELA), text anomaly detection
-- **MCP Server** - Integration with AI assistants (Claude, Cursor, etc.)
+| Functie | Beschrijving |
+|---------|-------------|
+| **Documentclassificatie** | Herkent het documenttype via Naive Bayes, BERT en/of LLM |
+| **Metadata-extractie** | Haalt gestructureerde velden op (bedragen, namen, datums, …) via LLM |
+| **Fraudedetectie** | Beoordeelt risico op basis van PDF-metadata, afbeeldingsanalyse en tekstafwijkingen |
+| **MCP-server** | Koppeling met AI-assistenten zoals Claude of Cursor |
+| **Meerdere modellen** | Train aparte classificatiemodellen per gebruik (bijv. `backoffice`, `mdoc`) |
 
-## Tech Stack
+---
 
-| Component | Technology |
+## Technologie
+
+| Onderdeel | Technologie |
 |-----------|------------|
 | Backend | Python 3.9+, FastAPI, SQLAlchemy, SQLite |
 | Frontend | Next.js 14, TypeScript, Tailwind CSS |
-| AI/ML | BERT (sentence-transformers), Naive Bayes, Ollama/vLLM |
-| OCR | Tesseract with rotation detection |
+| AI/ML | BERT (sentence-transformers), Naive Bayes, Ollama / vLLM |
+| OCR | Tesseract met automatische rotatiedetectie |
 | Protocol | MCP (Model Context Protocol) |
 
-## Features
+---
 
-### Document Processing
-- Upload PDF, images (JPG/PNG), Office documents (DOCX/XLSX)
-- Real-time processing with Server-Sent Events (SSE)
-- Inline PDF preview with zoom
+## Functies
 
-### Smart Text Extraction
-| Feature | Description |
-|---------|-------------|
-| Multi-method PDF extraction | PyMuPDF → pypdf → pdfminer → OCR (automatic fallback) |
-| Garbage text detection | Detects corrupted font encoding and triggers OCR |
-| Rotation detection | OCR tries 0°, 90°, 180°, 270° and picks best result |
-| Quality assessment | Automatic low/medium/high quality scoring |
+### Documentverwerking
 
-**Garbage Detection Checks:**
-- High ratio of special characters (`&'/!%.&'1&+$`) vs letters
-- Too few recognizable words (3+ letter sequences)
-- Control characters or unicode artifacts
-- Lack of common Dutch/English stop words
+- Upload PDF, afbeeldingen (JPG/PNG) en Office-bestanden (DOCX/XLSX)
+- Verwerking in real-time via Server-Sent Events (SSE)
+- Inline PDF-viewer met zoom en blauw gemarkeerde evidence
 
-### Classification
-| Priority | Method | Description | Speed |
-|----------|--------|-------------|-------|
-| 1 | Deterministic (STRONG) | Keywords/regex - ALL kw: rules must match | <1ms |
-| 2 | Naive Bayes | Word frequency classifier | ~1ms |
-| 2 | BERT | Semantic embeddings (runs in parallel, wins if significantly better) | ~100ms |
-| 3 | Deterministic (Fallback) | Keywords/regex matching (when trained models fail or low confidence) | <1ms |
-| 4 | LLM | Ollama/vLLM AI classification | ~2-5s |
+### Tekstextractie
 
-**Multi-Model Support:**
-- Train separate NB and BERT models per use case (e.g., `backoffice`, `mdoc`)
-- Automatic fallback to default model if named model doesn't exist
-- Confidence scores from both NB and BERT shown in UI
+MProof probeert meerdere methoden achtereenvolgens:
 
-### Fraud Detection
+| Methode | Wanneer |
+|---------|---------|
+| PyMuPDF | Eerste keuze voor PDFs |
+| pypdf | Terugval als PyMuPDF faalt |
+| pdfminer | Tweede terugval |
+| Tesseract OCR | Als de tekst onleesbaar of gecorrumpeerd is |
 
-**Risk Scoring:** 0-100% per document with signal-based analysis.
+**Automatische kwaliteitscontrole:**
+- Detecteert "rommel-tekst" door gecorrumpeerde lettertypen (hoge ratio bijzondere tekens, weinig herkenbare woorden)
+- Probeert automatisch OCR als de tekst onbruikbaar is
+- OCR test vier rotaties (0°, 90°, 180°, 270°) en kiest de beste
 
-| Category | Signals |
-|----------|---------|
-| **PDF Metadata** | Suspicious generators (FPDF, TCPDF, wkhtmltopdf), timestamp mismatches, missing producer |
-| **Image Forensics** | Error Level Analysis (ELA) for JPEG manipulation detection |
-| **Text Anomalies** | Unicode manipulation, invisible characters, repeating patterns |
-| **EXIF Analysis** | Photo editing software detection (Photoshop, GIMP) |
+### Classificatie
 
-**ELA Detection:**
-- Detects JPEG compression inconsistencies indicating manipulation
-- Shows confidence percentage based on bright pixel ratio
-- Visual heatmap highlighting suspicious regions
-- Threshold: >20% bright pixels in error image = potential manipulation
+| Prioriteit | Methode | Snelheid | Beschrijving |
+|-----------|---------|----------|-------------|
+| 1 | Deterministisch (STERK) | <1ms | Trefwoordregels — álle regels moeten matchen |
+| 2 | Naive Bayes | ~1ms | Woordfrequentieclassificator |
+| 2 | BERT | ~100ms | Semantische embeddings (parallel met NB, wint bij significant hogere score) |
+| 3 | Deterministisch (terugval) | <1ms | Trefwoordregels — bij lage modelbetrouwbaarheid |
+| 4 | LLM | ~2–5s | Ollama of vLLM als alle andere methoden falen |
 
-### LLM Integration
+**Meerdere modellen:**
+- Trainbare NB- en BERT-modellen per toepassing (bijv. `backoffice`, `mdoc`)
+- Automatische terugval naar standaardmodel als het gevraagde model niet bestaat
+- Betrouwbaarheidsscores van zowel NB als BERT zichtbaar in de UI
 
-**Dual Provider Support:**
-| Feature | Ollama | vLLM |
-|---------|--------|------|
-| API | `/api/chat` | `/v1/chat/completions` (OpenAI-compatible) |
-| Processing | Sequential | Parallel (faster for batches) |
-| Port | 11434 | 8000 |
-| Best For | Development | Production |
+### Fraudedetectie
 
-**Robust JSON Handling:**
-- Automatic repair of truncated/malformed LLM responses
-- Merges separate `{"data": ...}` and `{"evidence": ...}` objects
-- Strips echoed instructions from responses
-- Converts string `"null"` to proper `null` values
-- Response time tracking (shown in UI)
+Elk document krijgt een risicoscore van 0–100%.
 
-**Provider Switching:**
-- Active provider stored in database (persists across restarts)
-- Switch via Settings page or API: `POST /api/llm/switch`
-- Health check only queries active provider (not both)
+| Categorie | Signalen |
+|-----------|---------|
+| **PDF-metadata** | Verdachte generatoren (FPDF, TCPDF, wkhtmltopdf), tijdstempelafwijkingen, ontbrekende producent |
+| **Afbeeldingsforensics** | Error Level Analysis (ELA) — detecteert JPEG-manipulatie |
+| **Tekstafwijkingen** | Unicode-manipulatie, onzichtbare tekens, herhalende patronen |
+| **EXIF-analyse** | Detecteert bewerkingssoftware (Photoshop, GIMP) |
 
-### Skip Markers
+ELA werkt door het document opnieuw op te slaan als JPEG en het verschil te meten. Pixels die sterk afwijken duiden op bewerking. Bij meer dan 20% afwijkende pixels geeft MProof een waarschuwing.
 
-Skip markers are text patterns that indicate where document processing should stop. When a skip marker is found, all text after it is ignored. This is useful for:
+### LLM-integratie
 
-- **Disclaimers**: Legal text at the end of documents
-- **Footers**: Repeated page footers with irrelevant info
-- **Terms & Conditions**: Standard contract appendices
-- **Signatures**: "Getekend te" or signature blocks
+**Twee providers:**
 
-When a skip marker is applied, the document shows which pattern matched and at what position the text was truncated.
+| | Ollama | vLLM |
+|-|--------|------|
+| API-formaat | `/api/chat` | `/v1/chat/completions` (OpenAI-compatibel) |
+| Verwerking | Sequentieel | Parallel (sneller bij meerdere verzoeken) |
+| Standaardpoort | 11434 | 8000 |
+| Aanbevolen voor | Ontwikkeling | Productie |
 
-### Signal-Based Classification Policy
+De actieve provider wordt opgeslagen in de database (blijft ingesteld na herstart). Wisselen via Instellingen of `POST /api/llm/switch`.
 
-Documents are evaluated against configurable signals and policies:
+**Robuuste JSON-verwerking:**
+- Herstelt automatisch afgekapte of misvormde LLM-antwoorden
+- Voegt losse `{"data": …}` en `{"evidence": …}` objecten samen
+- Verwijdert per ongeluk mee-geëchode instructies
+- Converteert string `"null"` naar echte `null`
 
-**Built-in Signals:**
-| Signal | Type | Description |
-|--------|------|-------------|
-| `iban_present` | boolean | Document contains IBAN |
-| `date_count` | count | Number of dates (DD-MM-YYYY) |
-| `amount_count` | count | Number of amounts (€X.XXX,XX) |
-| `date_amount_row_count` | count | Lines with both date and amount |
-| `line_count` | count | Non-empty lines |
-| `token_count` | count | Word count |
+### Sla-over-markeringen (Skip Markers)
 
-**User-Defined Signals:** Create custom keyword or regex-based signals.
+Definieer tekstpatronen waarná de documentverwerking stopt. Handig voor:
+- Disclaimers en juridische teksten onderaan documenten
+- Herhalende paginavoetteksten
+- Standaard algemene voorwaarden
+- Handtekeningblokken ("Getekend te …")
 
-**Policy Example:**
+### Signalenbeleid
+
+Documenten worden getoetst aan configureerbare signalen en beleidsregels.
+
+**Ingebouwde signalen:**
+
+| Signaal | Type | Beschrijving |
+|---------|------|-------------|
+| `iban_present` | boolean | Document bevat een IBAN |
+| `date_count` | getal | Aantal datums (DD-MM-YYYY) |
+| `amount_count` | getal | Aantal bedragen (€X.XXX,XX) |
+| `date_amount_row_count` | getal | Regels met zowel datum als bedrag |
+| `line_count` | getal | Niet-lege regels |
+| `token_count` | getal | Aantal woorden |
+
+Naast ingebouwde signalen kunt u eigen trefwoord- of regex-signalen aanmaken.
+
+**Voorbeeld beleid:**
 ```json
 {
   "requirements": [
@@ -150,57 +151,54 @@ Documents are evaluated against configurable signals and policies:
 }
 ```
 
-## Requirements
+---
 
-- macOS or Linux
+## Installatie
+
+### Vereisten
+
+- macOS of Linux
 - Python 3.9+
-- Node.js 18+ (20 recommended)
-- Ollama or vLLM (for LLM features - vLLM recommended for parallel processing)
+- Node.js 18+ (20 aanbevolen)
+- Ollama of vLLM
 - Tesseract OCR
-- ~500MB RAM for BERT model (optional)
+- ~500 MB RAM voor het BERT-model (optioneel)
 
-## Installation
-
-### 1. Clone Repository
+### 1. Repository klonen
 
 ```bash
 git clone <repository>
 cd MProof
 ```
 
-### 2. Backend Setup
+### 2. Backend installeren
 
 ```bash
 cd backend
 python3 -m venv venv
 source venv/bin/activate
 
-# Install CPU-only PyTorch first (avoids downloading 2GB+ NVIDIA CUDA packages)
-# Skip this step if you have a GPU and want GPU acceleration
+# Installeer PyTorch zonder CUDA (aanbevolen op servers zonder GPU)
+# Sla deze stap over als u een GPU heeft
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install remaining dependencies
+# Overige afhankelijkheden
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-> **Note:** 
-> - **CPU-only (recommended for servers without GPU):** Install PyTorch CPU version first to avoid downloading 2GB+ of NVIDIA CUDA packages
-> - **GPU acceleration:** If you have an NVIDIA GPU, skip the `torch` installation step and let `sentence-transformers` install the GPU version automatically
-> - **Already installed GPU version?** To switch to CPU-only: `pip uninstall torch torchvision torchaudio` then reinstall with CPU version
+> **GPU vs. CPU:** Zonder GPU is de CPU-versie van PyTorch ~2 GB kleiner en voldoende snel voor BERT-classificatie. Met een NVIDIA GPU kunt u de bovenste stap overslaan en installeert `sentence-transformers` automatisch de GPU-versie.
 
-### 3. Frontend Setup
+### 3. Frontend installeren
 
 ```bash
 cd frontend
 npm install
 ```
 
-### 4. Install LLM Provider
+### 4. LLM-provider installeren
 
-Choose one or both:
-
-**Option A: Ollama (Development)**
+**Optie A: Ollama (ontwikkeling)**
 ```bash
 # macOS
 brew install ollama
@@ -208,70 +206,57 @@ brew install ollama
 # Linux
 curl -fsSL https://ollama.ai/install.sh | sh
 
-# Download model
+# Model downloaden
 ollama pull mistral
 ```
 
-**Option B: vLLM (Production - Parallel Processing)**
+**Optie B: vLLM (productie — parallelle verwerking)**
 ```bash
-# Install vLLM
 pip install vllm
 
-# Run vLLM server (example)
 python -m vllm.entrypoints.openai.api_server \
   --model meta-llama/Llama-3.2-3B-Instruct \
   --served-model-name llama3.2:3b \
   --port 8000
 ```
 
-> **Note:** vLLM supports parallel requests, making it faster for batch processing. Ollama processes requests sequentially. You can switch between providers in the Settings page.
-
-### 5. Install System Dependencies (Ubuntu/Debian)
-
-**Required for production:**
+### 5. Systeemsoftware (Ubuntu/Debian)
 
 ```bash
-# Tesseract OCR (required for text extraction from images/PDFs)
+# Tesseract OCR
 sudo apt install tesseract-ocr
 
-# Dutch language pack (optional but recommended)
+# Nederlands taalpakket (aanbevolen)
 sudo apt install tesseract-ocr-nld
 
-# Pillow/PIL dependencies (required for image processing)
+# Afbeeldingsbibliotheken voor Pillow
 sudo apt install libtiff5-dev libjpeg8-dev libopenjp2-7-dev zlib1g-dev \
     libfreetype6-dev liblcms2-dev libwebp-dev libharfbuzz-dev \
     libfribidi-dev libxcb1-dev
 
-# Build tools (may be needed for some Python packages)
+# Bouwhulpmiddelen
 sudo apt install build-essential python3-dev
 ```
 
 **macOS:**
-
 ```bash
-# Tesseract OCR
-brew install tesseract
-
-# Dutch language pack
-brew install tesseract-lang
+brew install tesseract tesseract-lang
 ```
 
-> **Note:** Pillow dependencies are usually pre-installed on macOS, but if you encounter issues, you may need to install them via Homebrew.
+---
 
-## Configuration
+## Configuratie
 
 ### Backend (`backend/.env`)
 
-MProof supports two LLM providers: **Ollama** and **vLLM**. Configure both in `.env`, then switch between them via the Settings page (the choice is stored in the database).
-
 ```env
-# Ollama Configuration
+# Ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2:3b
 OLLAMA_TIMEOUT=180.0
 OLLAMA_MAX_RETRIES=3
 
-# vLLM Configuration (OpenAI-compatible)
+# vLLM (OpenAI-compatibel)
 VLLM_BASE_URL=http://localhost:8000
 VLLM_MODEL=llama3.2:3b
 VLLM_TIMEOUT=180.0
@@ -280,19 +265,11 @@ VLLM_MAX_RETRIES=3
 # Database
 DATABASE_URL=sqlite+aiosqlite:///./data/app.db
 
-# Storage
+# Opslag
 DATA_DIR=./data
 ```
 
-**Starting vLLM:**
-
-```bash
-# Example: Run vLLM with a model
-python -m vllm.entrypoints.openai.api_server \
-  --model meta-llama/Llama-3.2-3B-Instruct \
-  --served-model-name llama3.2:3b \
-  --port 8000
-```
+> De actieve provider en alle LLM-instellingen (URL, model, max tokens, contextvenster) worden opgeslagen in de database en zijn te wijzigen via **Instellingen → LLM** in de UI.
 
 ### Frontend (`frontend/.env.local`)
 
@@ -300,43 +277,49 @@ python -m vllm.entrypoints.openai.api_server \
 NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 ```
 
-## Running
+---
 
-### Quick Start
+## Starten
+
+### Snel starten
 
 ```bash
 ./start.sh
 ```
 
-### Manual Start
+### Handmatig starten
 
-Terminal 1 - Backend:
+**Terminal 1 — Backend:**
 ```bash
 cd backend
 source venv/bin/activate
 uvicorn app.main:app --reload --port 8000
 ```
 
-Terminal 2 - Frontend:
+**Terminal 2 — Frontend:**
 ```bash
 cd frontend
 npm run dev
 ```
 
-### Access
+### Adressen
 
-- **Frontend**: http://localhost:3000
-- **API Docs**: http://localhost:8000/docs
-- **API**: http://localhost:8000/api
+| | Adres |
+|-|-------|
+| Frontend | http://localhost:3000 |
+| API-documentatie | http://localhost:8000/docs |
+| API | http://localhost:8000/api |
 
-## Multi-Model Architecture
+---
 
-Organize training data by model:
+## Meerdere modellen trainen
+
+Organiseer trainingsdata per model:
 
 ```
 data/
 ├── backoffice/           # Model "backoffice"
-│   ├── bankafschrift/    # Document type with sample PDFs
+│   ├── bankafschrift/    # Documenttype met voorbeeld-PDFs
 │   ├── factuur/
 │   └── loonstrook/
 └── mdoc/                 # Model "mdoc"
@@ -344,110 +327,106 @@ data/
     └── rapport/
 ```
 
-Train models via Settings page or API:
+Trainen via de UI (Instellingen) of API:
 
 ```bash
-# Train Naive Bayes
+# Naive Bayes trainen
 curl -X POST "http://localhost:8000/api/classifier/train?model_name=backoffice"
 
-# Train BERT
+# BERT trainen
 curl -X POST "http://localhost:8000/api/classifier/bert/train?model_name=backoffice"
 ```
 
-**Model Fallback:**
-- If a named NB model doesn't exist, falls back to default model
-- BERT tries all available models and picks best confidence
+Als een gevraagd model niet bestaat, valt het systeem automatisch terug op het standaardmodel.
 
-## API Reference
+---
 
-### Core Endpoints
+## API-overzicht
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/health` | Health check (includes active LLM provider) |
-| GET | `/api/documents` | List documents |
-| GET | `/api/documents/{id}` | Get document |
-| POST | `/api/upload` | Upload document |
-| POST | `/api/documents/{id}/analyze` | Re-analyze document |
-| GET | `/api/documents/{id}/events` | SSE stream |
-| GET | `/api/documents/{id}/fraud-analysis` | Fraud analysis |
+### Documenten
 
-### LLM Settings
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/health` | Statuscontrole (incl. actieve LLM-provider) |
+| GET | `/api/documents` | Documenten opvragen |
+| GET | `/api/documents/{id}` | Één document opvragen |
+| POST | `/api/upload` | Document uploaden |
+| POST | `/api/documents/{id}/analyze` | Document opnieuw analyseren |
+| GET | `/api/documents/{id}/events` | SSE-stream (live voortgang) |
+| GET | `/api/documents/{id}/fraud-analysis` | Fraudeanalyse opvragen |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/llm/health` | Check LLM provider health |
-| POST | `/api/llm/switch` | Switch active provider |
+### LLM-instellingen
 
-### Subjects
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/llm/health` | Controleer beschikbaarheid van de provider |
+| GET | `/api/llm/settings` | Huidige instellingen opvragen |
+| PUT | `/api/llm/settings/{provider}` | Instellingen bijwerken |
+| POST | `/api/llm/switch` | Wissel van actieve provider |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/subjects` | Search subjects |
-| POST | `/api/subjects` | Create subject |
-| GET | `/api/subjects/{id}` | Get subject |
+### Subjecten
 
-### Document Types
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/subjects` | Subjecten zoeken |
+| POST | `/api/subjects` | Subject aanmaken |
+| GET | `/api/subjects/{id}` | Één subject opvragen |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/document-types` | List types |
-| POST | `/api/document-types` | Create type |
-| PUT | `/api/document-types/{slug}` | Update type |
-| DELETE | `/api/document-types/{slug}` | Delete type |
+### Documenttypen
 
-### Signals
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/document-types` | Lijst van typen |
+| POST | `/api/document-types` | Type aanmaken |
+| PUT | `/api/document-types/{slug}` | Type bijwerken |
+| DELETE | `/api/document-types/{slug}` | Type verwijderen |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/signals` | List all signals |
-| POST | `/api/signals` | Create user signal |
-| PUT | `/api/signals/{key}` | Update signal |
-| DELETE | `/api/signals/{key}` | Delete user signal |
-| POST | `/api/signals/test` | Test signals on text |
+### Signalen
 
-### Classification Policy
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/signals` | Alle signalen opvragen |
+| POST | `/api/signals` | Eigen signaal aanmaken |
+| PUT | `/api/signals/{key}` | Signaal bijwerken |
+| DELETE | `/api/signals/{key}` | Eigen signaal verwijderen |
+| POST | `/api/signals/test` | Signalen testen op tekst |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/document-types/{slug}/policy` | Get policy |
-| PUT | `/api/document-types/{slug}/policy` | Update policy |
-| DELETE | `/api/document-types/{slug}/policy` | Reset to default |
-| POST | `/api/document-types/{slug}/policy/preview` | Preview eligibility |
+### Classificatiebeleid
 
-### Classifier
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/document-types/{slug}/policy` | Beleid opvragen |
+| PUT | `/api/document-types/{slug}/policy` | Beleid bijwerken |
+| DELETE | `/api/document-types/{slug}/policy` | Beleid resetten naar standaard |
+| POST | `/api/document-types/{slug}/policy/preview` | Beleid testen op tekst |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/classifier/status` | Get NB status |
-| POST | `/api/classifier/train` | Train Naive Bayes |
-| GET | `/api/classifier/bert/status` | Get BERT status |
-| POST | `/api/classifier/bert/train` | Train BERT |
+### Classificator
 
-### API Keys
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET | `/api/classifier/status` | Status Naive Bayes |
+| POST | `/api/classifier/train` | Naive Bayes trainen |
+| GET | `/api/classifier/bert/status` | Status BERT |
+| POST | `/api/classifier/bert/train` | BERT trainen |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/api-keys` | List keys |
-| POST | `/api/api-keys` | Create key |
-| DELETE | `/api/api-keys/{id}` | Delete key |
+### API-sleutels & Sla-over-markeringen
 
-### Skip Markers
+| Methode | Endpoint | Beschrijving |
+|---------|----------|-------------|
+| GET/POST | `/api/api-keys` | Sleutels beheren |
+| DELETE | `/api/api-keys/{id}` | Sleutel verwijderen |
+| GET/POST | `/api/skip-markers` | Markeringen beheren |
+| PUT/DELETE | `/api/skip-markers/{id}` | Markering bijwerken of verwijderen |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/skip-markers` | List all skip markers |
-| POST | `/api/skip-markers` | Create skip marker |
-| PUT | `/api/skip-markers/{id}` | Update skip marker |
-| DELETE | `/api/skip-markers/{id}` | Delete skip marker |
+---
 
-## MCP Integration
+## MCP-integratie
 
-MProof provides an HTTP-based Model Context Protocol server for AI assistants.
+MProof biedt een HTTP-gebaseerde MCP-server voor gebruik met AI-assistenten zoals Claude of Cursor.
 
-### Configuration
+### Configuratie
 
-Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
+Voeg toe aan uw MCP-clientconfiguratie (bijv. `~/.cursor/mcp.json`):
 
 ```json
 {
@@ -455,98 +434,93 @@ Add to your MCP client config (e.g., `~/.cursor/mcp.json`):
     "mproof": {
       "url": "http://localhost:8000/mcp",
       "headers": {
-        "X-Client-ID": "<your_client_id>",
-        "X-Client-Secret": "<your_client_secret>"
+        "X-Client-ID": "<uw_client_id>",
+        "X-Client-Secret": "<uw_client_secret>"
       }
     }
   }
 }
 ```
 
-**Scopes:**
-- `documents:read` - Read documents, text, metadata
-- `documents:write` - Upload and analyze documents
-- `subjects:read` - Search and read subjects
-- `classification:read` - Read document types, signals, policies
-- `fraud:read` - Read fraud analysis results
+### Rechten (scopes)
 
-### Available Tools
+| Scope | Toegang |
+|-------|---------|
+| `documents:read` | Documenten, tekst en metadata lezen |
+| `documents:write` | Documenten uploaden en analyseren |
+| `subjects:read` | Subjecten zoeken en lezen |
+| `classification:read` | Documenttypen, signalen en beleid lezen |
+| `fraud:read` | Fraudeanalyseresultaten lezen |
 
-**Document Management:**
-- `list_documents` - List with filters
-- `get_document` - Get details
-- `get_document_text` - Get extracted text
-- `get_document_metadata` - Get metadata
-- `analyze_document` - Queue for processing (optional `model_name` to specify classifier model)
-- `search_documents` - Search by text/type/risk
+### Beschikbare tools
 
-**Fraud Detection:**
-- `get_fraud_analysis` - Full fraud analysis
-- `list_high_risk_documents` - Filter by risk score/level
+**Documentbeheer:**
+- `list_documents` — Documenten opvragen met filters
+- `get_document` — Details van één document opvragen
+- `get_document_text` — Geëxtraheerde tekst opvragen
+- `get_document_metadata` — Geëxtraheerde metadatavelden opvragen
+- `analyze_document` — Document in de wachtrij zetten voor analyse (optioneel: `model_name` om een specifiek classificatiemodel te kiezen)
+- `search_documents` — Zoeken op tekst, type of risico
 
-**Classification:**
-- `list_signals` - List all signals
-- `get_signal` - Get signal details
-- `list_document_types` - List types with policies
-- `get_document_type_policy` - Get policy
-- `preview_eligibility` - Test text against policy
-- `compute_signals` - Compute all signals for text
+**Fraudedetectie:**
+- `get_fraud_analysis` — Volledige fraudeanalyse opvragen
+- `list_high_risk_documents` — Filteren op risicoscore of -niveau
 
-**Training:**
-- `train_classifier` - Train Naive Bayes
-- `train_bert_classifier` - Train BERT
-- `get_classifier_status` - Naive Bayes status
-- `get_bert_classifier_status` - BERT status
-- `list_classifier_models` - List available classifier models with their document types
+**Classificatie:**
+- `list_signals` — Alle signalen opvragen
+- `get_signal` — Details van één signaal opvragen
+- `list_document_types` — Documenttypen met bijbehorend beleid opvragen
+- `get_document_type_policy` — Beleid van een documenttype opvragen
+- `preview_eligibility` — Tekst toetsen aan beleid
+- `compute_signals` — Alle signalen berekenen voor een tekst
 
-**Subjects:**
-- `list_subjects` - Search subjects
+**Trainen:**
+- `train_classifier` — Naive Bayes trainen
+- `train_bert_classifier` — BERT trainen
+- `get_classifier_status` — Status van Naive Bayes opvragen
+- `get_bert_classifier_status` — Status van BERT opvragen
+- `list_classifier_models` — Beschikbare classificatiemodellen opvragen (met bijbehorende documenttypen)
 
-## Document Processing Pipeline
+**Subjecten:**
+- `list_subjects` — Subjecten zoeken
 
-| Stage | Progress | Description |
-|-------|----------|-------------|
-| Sniffing | 0-10% | MIME detection, SHA256 hash |
-| Text Extraction | 10-45% | Multi-method with OCR fallback |
-| Classification | 45-60% | NB + BERT → Deterministic → LLM |
-| Metadata Extraction | 60-85% | Schema-driven field extraction |
-| Risk Analysis | 85-100% | Fraud detection and scoring |
+---
 
-### How Data Extraction Works
+## Verwerkingspijplijn
 
-MProof extracts structured metadata from documents in a 4-step process:
+| Fase | Voortgang | Beschrijving |
+|------|-----------|-------------|
+| Inspectie | 0–10% | MIME-detectie, SHA256-hash |
+| Tekstextractie | 10–45% | Multi-methode met OCR-terugval |
+| Classificatie | 45–60% | NB + BERT → Deterministisch → LLM |
+| Metadata-extractie | 60–85% | Veldextractie via LLM |
+| Risicoanalyse | 85–100% | Fraudedetectie en scoring |
 
-#### Step 1: Document Classification
-The system first identifies the **document type** (e.g., "invoice", "payslip", "commitment-agreement"). This uses trained AI models:
-- **Naive Bayes**: Fast word-frequency based classification (~1ms)
-- **BERT**: Semantic embeddings for better understanding (~100ms)
-- **LLM Fallback**: When trained models have low confidence
+### Hoe werkt de metadata-extractie?
 
-#### Step 2: Metadata Extraction (LLM)
-Based on the document type, the system asks the LLM to extract specific fields defined for that type:
+#### Stap 1: Classificatie
+Het systeem bepaalt eerst het documenttype (bijv. `factuur`, `loonstrook`, `taxatierapport`). Hiervoor worden Naive Bayes, BERT en eventueel een LLM ingezet.
+
+#### Stap 2: Veldextractie via LLM
+Op basis van het documenttype vraagt het systeem de LLM om specifieke velden te extraheren:
 ```
-Example "commitment-agreement":
-→ participant, fund_manager, commitment (amount), date, address
+Voorbeeld "taxatierapport":
+→ adres, bouwjaar, WOZ-waarde, marktwaarde, energielabel, oppervlakte
 ```
-For large documents (>2500 chars), the text is split into chunks and processed in **parallel**.
+Relevante tekstfragmenten worden geselecteerd op basis van trefwoorden en budget, en in één LLM-aanroep verwerkt. De UI toont hoeveel fragmenten verwerkt worden (bijv. `Extractie (3/9)`).
 
-#### Step 3: Evidence Finding (All Pages)
-For each extracted value, the system searches **ALL pages** of the document to find where the value appears:
+#### Stap 3: Evidence zoeken
+Voor elke geëxtraheerde waarde zoekt het systeem in het volledige document naar de exacte tekstlocatie:
 
-| Match Type | Description | Example |
-|------------|-------------|---------|
-| **Exact** | Literal text match | "P.C.M. Vastgoed Holding B.V." |
-| **Normalized** | Whitespace differences (OCR) | "Calle Aloe 2A" vs "Calle  Aloe  2A" |
-| **Numeric formats** | Number formatting variations | 100000 → "100.000" → "€ 100.000,-" |
-| **Case-insensitive** | Different capitalization | "AMSTERDAM" = "Amsterdam" |
+| Matchtype | Beschrijving | Voorbeeld |
+|-----------|-------------|---------|
+| Exact | Letterlijke tekst | "P.C.M. Vastgoed Holding B.V." |
+| Genormaliseerd | Witruimteverschillen (OCR) | "Calle Aloe 2A" vs. "Calle  Aloe  2A" |
+| Numeriek | Opmaakvarianten | 100000 → "100.000" → "€ 100.000,-" |
+| Hoofdletterverschil | Andere kapitalisatie | "AMSTERDAM" = "Amsterdam" |
 
-This ensures evidence is found even when:
-- The LLM extracts from chunk 1 (page 1) but doesn't provide evidence spans
-- OCR adds extra whitespace or line breaks
-- Currency amounts have different formats (€, EUR, no symbol)
-
-#### Step 4: PDF Highlighting
-In the PDF viewer, all evidence locations are **highlighted in blue**. Navigation buttons at the bottom allow quick jumps to pages with evidence.
+#### Stap 4: Markering in PDF
+Alle gevonden locaties worden blauw gemarkeerd in de PDF-viewer. Met navigatieknoppen springt u direct naar pagina's met evidence.
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -555,9 +529,9 @@ In the PDF viewer, all evidence locations are **highlighted in blue**. Navigatio
 │ ◀ 1/7 ▶           🔍- 100% 🔍+              │
 ├─────────────────────────────────────────────┤
 │    ┌─────────────────────────────────────┐  │
-│    │     PDF PAGE CONTENT                │  │
+│    │     PDF PAGINA-INHOUD               │  │
 │    │                                     │  │
-│    │  ████ € 100.000,- highlighted ████  │  │
+│    │  ████ € 100.000,- gemarkeerd ████   │  │
 │    │                                     │  │
 │    └─────────────────────────────────────┘  │
 │  ┌─ Gevonden evidence: ──────────────────┐  │
@@ -568,87 +542,84 @@ In the PDF viewer, all evidence locations are **highlighted in blue**. Navigatio
 └─────────────────────────────────────────────┘
 ```
 
-**Troubleshooting "No Evidence Found":**
-- OCR quality issues → Try re-uploading with higher resolution
-- Unusual formatting → System tries multiple formats automatically
-- Value not in document → Check extracted value is correct
-
-### Artifact Structure
+### Bestandsstructuur per document
 
 ```
 data/subjects/{subject_id}/documents/{document_id}/
-├── original/{filename}
+├── original/{bestandsnaam}
 ├── text/
-│   ├── extracted.json      # Per-page extraction info
-│   └── extracted.txt       # Combined text
+│   ├── extracted.json      # Extractie-info per pagina
+│   └── extracted.txt       # Gecombineerde tekst
 ├── llm/
-│   ├── classification_*.txt  # LLM classification artifacts
-│   └── extraction_*.txt      # LLM extraction with timing
+│   ├── classification_*.txt  # LLM-classificatieartifacten
+│   └── extraction_*.txt      # LLM-extractie met tijdsduur
 ├── metadata/
-│   ├── result.json         # Extracted fields
-│   ├── validation.json     # Field validation results
-│   └── evidence.json       # Quote evidence for fields
+│   ├── result.json         # Geëxtraheerde velden
+│   ├── validation.json     # Validatieresultaten
+│   └── evidence.json       # Bronverwijzingen per veld
 └── risk/
-    └── result.json         # Fraud analysis results
+    └── result.json         # Fraudeanalyseresultaten
 ```
 
-## Troubleshooting
+---
 
-### Text Extraction Issues
+## Problemen oplossen
 
-**Garbage text (corrupted fonts):**
-- System automatically detects and switches to OCR
-- Look for log: `"Text extraction garbage text detected, using OCR"`
+### Tekstextractie
 
-**Low OCR quality:**
-- Ensure Tesseract language packs are installed
-- Check image resolution (min 150 DPI recommended)
-- System tries multiple rotations automatically
+**Rommel-tekst (gecorrumpeerde lettertypen):**
+- Het systeem schakelt automatisch over naar OCR
+- Log: `"Text extraction garbage text detected, using OCR"`
 
-### Ollama Issues
+**Slechte OCR-kwaliteit:**
+- Controleer of de Tesseract-taalpakketten geïnstalleerd zijn
+- Minimale beeldresolutie: 150 DPI
+- Het systeem probeert automatisch vier rotaties
+
+### Ollama
 
 ```bash
-# Check if running
+# Controleer of Ollama draait
 curl http://localhost:11434/api/tags
 
-# List models
+# Beschikbare modellen
 ollama list
 
-# Restart
+# Herstarten
 pkill ollama && ollama serve
 ```
 
-### vLLM Issues
+### vLLM
 
 ```bash
-# Check if running (OpenAI-compatible endpoint)
+# Controleer of vLLM draait
 curl http://localhost:8000/v1/models
 
-# Test chat completion
+# Test een aanroep
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "llama3.2:3b",
-    "messages": [{"role": "user", "content": "Hello"}],
+    "messages": [{"role": "user", "content": "Hallo"}],
     "max_tokens": 50
   }'
 
-# Check GPU memory
+# GPU-geheugen controleren
 nvidia-smi
 ```
 
-### LLM Response Issues
+### LLM-antwoorden afgekapt of te kort
 
-**Truncated responses / context length errors:**
-- Set **Context venster** in Settings → LLM to match your model's actual context window (e.g. 4096)
-- Output tokens = context window − input tokens. If misconfigured the system auto-corrects once per session.
-- System automatically repairs malformed JSON
+- Stel **Contextvenster** in via **Instellingen → LLM** op de werkelijke contextlengte van uw model (bijv. `4096`).
+- Het beschikbare aantal outputtokens = contextvenster − inputtokens − marge.
+- Bij een verkeerde instelling corrigeert het systeem zichzelf eenmalig per sessie (log: `"Auto-corrected context_length to …"`).
 
-**Wrong JSON structure:**
-- System merges separate data/evidence objects
-- Converts string "null" to proper null values
+### Verkeerde JSON-structuur van LLM
 
-### Database Reset
+- Het systeem voegt losse `data`- en `evidence`-objecten automatisch samen.
+- String `"null"` wordt automatisch omgezet naar `null`.
+
+### Database resetten
 
 ```bash
 cd backend
@@ -656,9 +627,11 @@ rm -f data/app.db
 python3 -m alembic upgrade head
 ```
 
-## Development
+---
 
-### Run Tests
+## Ontwikkeling
+
+### Tests uitvoeren
 
 ```bash
 cd backend
@@ -666,13 +639,15 @@ source venv/bin/activate
 pytest tests/ -v
 ```
 
-### Lint Frontend
+### Frontend linten
 
 ```bash
 cd frontend
 npm run lint
 ```
 
-## License
+---
 
-MIT License - See LICENSE file for details.
+## Licentie
+
+MIT — zie het `LICENSE`-bestand voor details.
