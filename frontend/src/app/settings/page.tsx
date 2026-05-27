@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect, useRef, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -471,6 +472,8 @@ function ModelTab() {
   const { selectedModel, setSelectedModel } = useModel();
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showStopwordsModal, setShowStopwordsModal] = useState(false);
+  const dropdownTriggerRef = useRef<HTMLDivElement>(null);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
   const [activeSection, setActiveSection] = useState<string>('naive-bayes');
   const isProgrammaticScrollRef = useRef(false);
 
@@ -718,49 +721,81 @@ function ModelTab() {
 
   return (
     <div className="space-y-4">
-      {/* Status header */}
-      <div className="glass-card p-4 sm:p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-          {/* Left: icon + title + status */}
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-              isTraining ? 'bg-amber-100 border border-amber-200' :
-              trainingDetails?.model_exists ? 'bg-emerald-100 border border-emerald-200' :
-              'bg-slate-100 border border-slate-200'
-            }`}>
-              <FontAwesomeIcon
-                icon={isTraining ? faSpinner : faRobot}
-                className={`w-5 h-5 ${isTraining ? 'text-amber-500 animate-spin' : trainingDetails?.model_exists ? 'text-emerald-500' : 'text-slate-400'}`}
-              />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-slate-800 font-semibold text-base">Classificatie Model</h2>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                  isTraining ? 'bg-amber-100 text-amber-700' :
-                  trainingDetails?.model_exists ? 'bg-emerald-100 text-emerald-700' :
-                  'bg-slate-100 text-slate-500'
-                }`}>
-                  {isTraining ? 'Aan het trainen...' : trainingDetails?.model_exists ? 'Actief' : 'Niet getraind'}
-                </span>
-              </div>
-              <p className="text-slate-400 text-xs mt-0.5">
-                {trainingDetails?.model_exists
-                  ? `${trainedLabels.length} type${trainedLabels.length !== 1 ? 's' : ''} herkend · Getraind op ${new Date(trainingDetails.model!.updated_at).toLocaleDateString('nl-NL', { day: '2-digit', month: 'short', year: 'numeric' })}`
-                  : 'Bevestig documenten in de lijst om het model te trainen'}
-              </p>
-            </div>
+      {/* Hero status banner */}
+      <div className={`relative overflow-hidden rounded-2xl border p-5 sm:p-6 ${
+        isTraining
+          ? 'bg-gradient-to-br from-amber-50 to-amber-100/40 border-amber-200'
+          : trainingDetails?.model_exists
+            ? 'bg-gradient-to-br from-[#22d3d3]/5 via-white to-[#FFC1F3]/5 border-[#22d3d3]/20'
+            : 'bg-gradient-to-br from-slate-50 to-slate-100/50 border-slate-200'
+      }`}>
+        {trainingDetails?.model_exists && !isTraining && (
+          <>
+            <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-[#22d3d3]/10 blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-10 -left-10 w-40 h-40 rounded-full bg-[#FFC1F3]/10 blur-3xl pointer-events-none" />
+          </>
+        )}
+
+        <div className="relative flex flex-col sm:flex-row sm:items-start gap-4 sm:gap-5">
+          {/* Icon */}
+          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${
+            isTraining
+              ? 'bg-amber-100 border border-amber-200'
+              : trainingDetails?.model_exists
+                ? 'bg-gradient-to-br from-[#22d3d3]/20 to-[#FFC1F3]/20 border border-[#22d3d3]/30'
+                : 'bg-slate-100 border border-slate-200'
+          }`}>
+            <FontAwesomeIcon
+              icon={isTraining ? faSpinner : faRobot}
+              className={`text-2xl ${isTraining ? 'text-amber-500 animate-spin' : trainingDetails?.model_exists ? 'text-[#22d3d3]' : 'text-slate-400'}`}
+            />
           </div>
 
-          {/* Right: action buttons */}
-          <div className="flex gap-2 shrink-0">
+          {/* Info */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2.5 flex-wrap mb-1">
+              <h2 className="text-slate-800 font-bold text-lg tracking-tight">Classificatie Model</h2>
+              <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold tracking-widest uppercase ${
+                isTraining ? 'bg-amber-100 text-amber-700' :
+                trainingDetails?.model_exists ? 'bg-emerald-100 text-emerald-700' :
+                'bg-slate-100 text-slate-500'
+              }`}>
+                {isTraining ? '⏳ Trainen' : trainingDetails?.model_exists ? '● Actief' : '○ Niet getraind'}
+              </span>
+            </div>
+            <p className="text-slate-400 text-sm">
+              {trainingDetails?.model_exists
+                ? `${trainedLabels.length} type${trainedLabels.length !== 1 ? 's' : ''} herkend · Getraind op ${new Date(trainingDetails.model!.updated_at).toLocaleDateString('nl-NL', { day: '2-digit', month: 'short', year: 'numeric' })}`
+                : 'Bevestig documenten in de lijst om het model te trainen'}
+            </p>
+
+            {/* Stat strip */}
+            {trainingDetails?.model_exists && trainingDetails.model && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">
+                {[
+                  { label: 'Trainingsdocs', value: Object.values(classDocCounts).reduce((s: number, n) => s + Number(n), 0).toLocaleString() },
+                  { label: 'Documenttypes', value: String(trainedLabels.length) },
+                  { label: 'Vocabulaire', value: trainingDetails.model.vocab_size.toLocaleString() },
+                  { label: 'Min. zekerheid', value: `${(trainingDetails.model.threshold * 100).toFixed(0)}%` },
+                ].map(stat => (
+                  <div key={stat.label} className="bg-white/70 backdrop-blur-sm rounded-xl p-3 border border-white/80 shadow-sm">
+                    <div className="text-slate-400 text-[9px] uppercase tracking-widest mb-1">{stat.label}</div>
+                    <div className="text-slate-800 text-xl font-bold tabular-nums leading-none">{stat.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Train button */}
+          <div className="shrink-0 self-start">
             <button
               onClick={() => trainMutation.mutate({ modelName: selectedModel, incremental: false })}
               disabled={isTraining}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                 isTraining
                   ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                  : 'bg-[#22d3d3] hover:bg-[#1ab8b8] text-white cursor-pointer'
+                  : 'bg-[#22d3d3] hover:bg-[#1ab8b8] text-white cursor-pointer shadow-[0_2px_14px_rgba(34,211,211,0.35)] hover:shadow-[0_4px_20px_rgba(34,211,211,0.45)]'
               }`}
             >
               <FontAwesomeIcon icon={faRefresh} className={`w-3.5 h-3.5 ${isTraining ? 'animate-spin' : ''}`} />
@@ -771,15 +806,13 @@ function ModelTab() {
 
         {/* Training progress */}
         {isTraining && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
+          <div className="relative mt-4 pt-4 border-t border-amber-200/60">
             <div className="flex items-center gap-2 mb-2">
               <FontAwesomeIcon icon={faSpinner} className="w-3.5 h-3.5 text-amber-500 animate-spin" />
               <span className="text-slate-700 text-sm font-medium">
-                {classifierStatus?.current_label
-                  ? `Type: ${classifierStatus.current_label}`
-                  : 'Documenten verwerken...'}
+                {classifierStatus?.current_label ? `Bezig met: ${classifierStatus.current_label}` : 'Documenten verwerken...'}
               </span>
-              <span className="text-slate-400 text-xs ml-auto">
+              <span className="text-slate-400 text-xs ml-auto tabular-nums">
                 {(() => {
                   const h = Math.floor(trainingElapsed / 3600);
                   const m = Math.floor((trainingElapsed % 3600) / 60);
@@ -788,7 +821,7 @@ function ModelTab() {
                 })()}
               </span>
             </div>
-            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+            <div className="h-1.5 bg-amber-100 rounded-full overflow-hidden">
               <div className="h-full bg-gradient-to-r from-[#22d3d3] to-[#FFC1F3] rounded-full animate-pulse" style={{ width: '60%' }} />
             </div>
             {classifierStatus?.last_error && (
@@ -801,39 +834,50 @@ function ModelTab() {
         )}
       </div>
 
-      {/* Trained document types */}
+      {/* Document types — horizontal bar chart */}
       {trainingDetails?.model_exists && trainedLabels.length > 0 && (
         <div className="glass-card p-4 sm:p-5">
-          <h3 className="text-slate-700 font-semibold text-sm mb-3 flex items-center gap-2">
+          <h3 className="text-slate-700 font-semibold text-sm mb-4 flex items-center gap-2">
             <FontAwesomeIcon icon={faList} className="w-3.5 h-3.5 text-[#22d3d3]" />
             Herkende documenttypes
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {trainedLabels.map((label: string) => {
-              const count = Number(classDocCounts[label] ?? 0);
-              const color = count >= 10 ? 'emerald' : count >= 3 ? 'amber' : 'red';
-              return (
-                <div key={label} className={`flex items-center justify-between p-3 rounded-lg border ${
-                  color === 'emerald' ? 'bg-emerald-50 border-emerald-200' :
-                  color === 'amber' ? 'bg-amber-50 border-amber-200' :
-                  'bg-red-50 border-red-200'
-                }`}>
-                  <span className="text-slate-800 text-sm font-medium truncate mr-2">
-                    {label.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                  </span>
-                  <span className={`text-xs font-bold shrink-0 ${
-                    color === 'emerald' ? 'text-emerald-600' :
-                    color === 'amber' ? 'text-amber-600' :
-                    'text-red-600'
-                  }`}>
-                    {count} doc{count !== 1 ? 's' : ''}
-                  </span>
-                </div>
-              );
-            })}
+          <div className="space-y-2.5">
+            {(() => {
+              const maxCount = Math.max(...trainedLabels.map((l: string) => Number(classDocCounts[l] ?? 0)), 1);
+              return [...trainedLabels]
+                .sort((a: string, b: string) => Number(classDocCounts[b] ?? 0) - Number(classDocCounts[a] ?? 0))
+                .map((label: string) => {
+                  const count = Number(classDocCounts[label] ?? 0);
+                  const pct = Math.max((count / maxCount) * 100, 3);
+                  const color = count >= 10 ? 'emerald' : count >= 3 ? 'amber' : 'red';
+                  return (
+                    <div key={label} className="flex items-center gap-3">
+                      <div className="w-36 sm:w-48 text-slate-700 text-sm font-medium truncate shrink-0 leading-tight">
+                        {label.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      </div>
+                      <div className="flex-1 h-5 bg-slate-100 rounded-lg overflow-hidden">
+                        <div
+                          className={`h-full rounded-lg transition-all duration-700 ${
+                            color === 'emerald' ? 'bg-gradient-to-r from-emerald-400 to-emerald-500' :
+                            color === 'amber' ? 'bg-gradient-to-r from-amber-400 to-amber-500' :
+                            'bg-gradient-to-r from-red-400 to-red-500'
+                          }`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <div className={`text-xs font-bold tabular-nums shrink-0 w-14 text-right ${
+                        color === 'emerald' ? 'text-emerald-600' :
+                        color === 'amber' ? 'text-amber-600' : 'text-red-500'
+                      }`}>
+                        {count} doc{count !== 1 ? 's' : ''}
+                      </div>
+                    </div>
+                  );
+                });
+            })()}
           </div>
           {trainedLabels.some((l: string) => Number(classDocCounts[l] ?? 0) < 3) && (
-            <p className="text-amber-600 text-xs mt-3 flex items-center gap-1.5">
+            <p className="text-amber-600 text-xs mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
               <FontAwesomeIcon icon={faExclamationTriangle} className="w-3 h-3" />
               Types met minder dan 3 voorbeelden zijn minder betrouwbaar. Bevestig meer documenten.
             </p>
@@ -848,9 +892,11 @@ function ModelTab() {
       )}
 
       {!trainingDetails?.model_exists && !isTraining && (
-        <div className="glass-card p-5 text-center">
-          <FontAwesomeIcon icon={faGraduationCap} className="w-8 h-8 text-slate-300 mb-3" />
-          <p className="text-slate-600 font-medium mb-1">Nog niet getraind</p>
+        <div className="glass-card p-8 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto mb-4">
+            <FontAwesomeIcon icon={faGraduationCap} className="w-7 h-7 text-slate-300" />
+          </div>
+          <p className="text-slate-600 font-semibold mb-1">Nog niet getraind</p>
           <p className="text-slate-400 text-sm max-w-sm mx-auto">
             Bevestig documentclassificaties in de documentenlijst en klik dan op "Hertrainen".
           </p>
@@ -875,18 +921,24 @@ function ModelTab() {
                 </h3>
                 <p className="text-slate-500 text-xs mt-0.5">Voor multi-tenant omgevingen</p>
               </div>
-              <div className="relative">
+              <div className="relative" ref={dropdownTriggerRef}>
                 <button
-                  onClick={() => setShowModelDropdown(!showModelDropdown)}
+                  onClick={() => {
+                    if (!showModelDropdown && dropdownTriggerRef.current) {
+                      const rect = dropdownTriggerRef.current.getBoundingClientRect();
+                      setDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                    }
+                    setShowModelDropdown(!showModelDropdown);
+                  }}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 text-sm font-medium transition-all min-w-[140px] justify-between shadow-sm cursor-pointer"
                 >
                   <span>{selectedModel || 'Standaard'}</span>
                   <FontAwesomeIcon icon={faChevronDown} className="w-3 h-3 opacity-60" />
                 </button>
-                {showModelDropdown && (
+                {showModelDropdown && typeof document !== 'undefined' && createPortal(
                   <>
-                    <div className="fixed inset-0 z-[100]" onClick={() => setShowModelDropdown(false)} />
-                    <div className="absolute top-full right-0 mt-1 z-[101] min-w-[180px] rounded-xl border border-slate-300 shadow-2xl overflow-hidden bg-white">
+                    <div className="fixed inset-0 z-[9998]" onClick={() => setShowModelDropdown(false)} />
+                    <div className="fixed z-[9999] min-w-[180px] rounded-xl border border-slate-300 shadow-2xl overflow-hidden bg-white" style={{ top: dropdownPos.top, right: dropdownPos.right }}>
                       <button onClick={() => { setSelectedModel(undefined); setShowModelDropdown(false); }}
                         className={`w-full px-4 py-2.5 text-left text-sm hover:bg-slate-100 transition-colors cursor-pointer ${!selectedModel ? 'text-slate-800 bg-slate-50' : 'text-slate-500'}`}>
                         Standaard (alle types)
@@ -901,7 +953,8 @@ function ModelTab() {
                         </button>
                       ))}
                     </div>
-                  </>
+                  </>,
+                  document.body
                 )}
               </div>
             </div>
@@ -909,7 +962,6 @@ function ModelTab() {
 
           {/* NaiveBayes detail section */}
           <div id="naive-bayes" className="glass-card p-5 scroll-mt-4">
-
             <h3 className="text-slate-800 font-semibold mb-4 flex items-center gap-2">
               <div className="w-7 h-7 rounded-lg bg-[#22d3d3]/10 border border-[#22d3d3]/20 flex items-center justify-center">
                 <FontAwesomeIcon icon={faGraduationCap} className="text-[#22d3d3] w-3.5 h-3.5" />
@@ -985,36 +1037,6 @@ function ModelTab() {
               {totalStopwords} veelgebruikte woorden worden genegeerd tijdens training (de, het, van, ...).
               Deze worden niet meegewogen bij documentclassificatie.
             </p>
-          </div>
-
-          {/* Fraud detection quick toggles */}
-          <div className="glass-card p-5">
-            <h3 className="text-slate-800 font-semibold mb-3 flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-red-100 border border-red-200 flex items-center justify-center">
-                <FontAwesomeIcon icon={faShieldAlt} className="text-red-500 w-3.5 h-3.5" />
-              </div>
-              Fraude detectie
-            </h3>
-            <div className="space-y-3">
-              {[
-                { key: 'ela_enabled', label: 'ELA (beeldmanipulatie detectie)', desc: 'Detecteert JPEG-manipulaties', enabled: elaEnabled },
-                { key: 'exif_enabled', label: 'EXIF analyse', desc: 'Analyseert foto-metadata', enabled: exifEnabled },
-              ].map(({ key, label, desc, enabled }) => (
-                <div key={key} className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-slate-800 text-sm font-medium">{label}</p>
-                    <p className="text-slate-400 text-xs">{desc}</p>
-                  </div>
-                  <button
-                    onClick={() => updateSettingMutation.mutate({ key, value: enabled ? 'false' : 'true' })}
-                    disabled={updateSettingMutation.isPending}
-                    className={`relative shrink-0 w-12 h-6 rounded-full transition-colors cursor-pointer ${enabled ? 'bg-emerald-400' : 'bg-slate-200'}`}
-                  >
-                    <div className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform shadow ${enabled ? 'translate-x-6' : 'translate-x-0'}`} />
-                  </button>
-                </div>
-              ))}
-            </div>
           </div>
         </div>
       </details>
@@ -1830,6 +1852,7 @@ function LLMTab() {
   const [editUrl, setEditUrl] = useState('');
   const [editModel, setEditModel] = useState('');
   const [editMaxTokens, setEditMaxTokens] = useState('');
+  const [editContextLength, setEditContextLength] = useState('');
   const [editSaved, setEditSaved] = useState(false);
 
   const updateMutation = useMutation({
@@ -1850,6 +1873,7 @@ function LLMTab() {
     setEditUrl(prov?.base_url || '');
     setEditModel(prov?.model || '');
     setEditMaxTokens(String(prov?.max_tokens || ''));
+    setEditContextLength(String(prov?.context_length || ''));
     setEditingProvider(provider);
   };
 
@@ -1862,6 +1886,7 @@ function LLMTab() {
         base_url: editUrl || undefined,
         model: editModel || undefined,
         max_tokens: editMaxTokens ? parseInt(editMaxTokens, 10) : undefined,
+        context_length: (editingProvider === 'vllm' && editContextLength) ? parseInt(editContextLength, 10) : undefined,
       },
     });
   };
@@ -2091,8 +2116,12 @@ function LLMTab() {
                     <input type="text" value={editModel} onChange={e => setEditModel(e.target.value)} className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-xs text-slate-700 focus:outline-none focus:border-blue-400" />
                   </div>
                   <div>
-                    <label className="text-slate-400 text-xs block mb-1">Max tokens</label>
+                    <label className="text-slate-400 text-xs block mb-1">Max tokens (output)</label>
                     <input type="number" value={editMaxTokens} onChange={e => setEditMaxTokens(e.target.value)} className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-xs text-slate-700 focus:outline-none focus:border-blue-400" />
+                  </div>
+                  <div>
+                    <label className="text-slate-400 text-xs block mb-1">Context venster (input + output)</label>
+                    <input type="number" value={editContextLength} onChange={e => setEditContextLength(e.target.value)} className="w-full px-2 py-1 bg-white border border-slate-300 rounded text-xs text-slate-700 focus:outline-none focus:border-blue-400" placeholder="4096" />
                   </div>
                   <div className="flex gap-2 pt-1">
                     <button onClick={saveEdit} disabled={updateMutation.isPending} className="flex items-center gap-1 px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:opacity-50">
@@ -2117,6 +2146,10 @@ function LLMTab() {
                   <div className="flex justify-between">
                     <span className="text-slate-400">Max tokens:</span>
                     <span className="text-slate-600">{settings?.providers.vllm.max_tokens?.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Context venster:</span>
+                    <span className="text-slate-600">{settings?.providers.vllm.context_length?.toLocaleString() ?? '4096'}</span>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-400">Status:</span>

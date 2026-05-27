@@ -903,6 +903,7 @@ export interface LLMProviderConfig {
   timeout: number;
   max_retries: number;
   max_tokens: number;
+  context_length?: number;
   is_active: boolean;
   is_reachable?: boolean;
 }
@@ -966,6 +967,7 @@ export interface UpdateProviderSettingsRequest {
   timeout?: number;
   max_retries?: number;
   max_tokens?: number;
+  context_length?: number;
 }
 
 export const updateLLMSettings = async (provider: 'ollama' | 'vllm', data: UpdateProviderSettingsRequest): Promise<{ updated: string[]; provider: string }> => {

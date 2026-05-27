@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     vllm_timeout: float = 180.0
     vllm_max_retries: int = 3
     vllm_max_tokens: int = 2048  # Lower default for smaller context models
+    vllm_context_length: int = 4096  # Total context window of the vLLM model (input + output)
 
     # File storage
     data_dir: str = "./data"
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
                 "timeout": self.vllm_timeout,
                 "max_retries": self.vllm_max_retries,
                 "max_tokens": self.vllm_max_tokens,
+                "context_length": self.vllm_context_length,
             }
         else:
             return {

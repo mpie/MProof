@@ -21,6 +21,7 @@ class LLMProviderConfig(BaseModel):
     timeout: float
     max_retries: int
     max_tokens: int
+    context_length: Optional[int] = None
     is_active: bool
     is_reachable: Optional[bool] = None
 
@@ -37,6 +38,7 @@ class UpdateProviderRequest(BaseModel):
     timeout: Optional[float] = None
     max_retries: Optional[int] = None
     max_tokens: Optional[int] = None
+    context_length: Optional[int] = None
 
 
 class SwitchProviderRequest(BaseModel):
@@ -120,13 +122,15 @@ async def get_llm_settings(db: AsyncSession = Depends(get_db)):
     active = s.get("llm_provider", "ollama")
 
     def cfg(p: str) -> LLMProviderConfig:
+        base_cfg = settings.get_llm_config(p)
         return LLMProviderConfig(
             provider=p,
-            base_url=s.get(f"{p}_base_url", settings.get_llm_config(p)["base_url"]),
-            model=s.get(f"{p}_model", settings.get_llm_config(p)["model"]),
-            timeout=float(s.get(f"{p}_timeout", settings.get_llm_config(p)["timeout"])),
-            max_retries=int(s.get(f"{p}_max_retries", settings.get_llm_config(p)["max_retries"])),
-            max_tokens=int(s.get(f"{p}_max_tokens", settings.get_llm_config(p)["max_tokens"])),
+            base_url=s.get(f"{p}_base_url", base_cfg["base_url"]),
+            model=s.get(f"{p}_model", base_cfg["model"]),
+            timeout=float(s.get(f"{p}_timeout", base_cfg["timeout"])),
+            max_retries=int(s.get(f"{p}_max_retries", base_cfg["max_retries"])),
+            max_tokens=int(s.get(f"{p}_max_tokens", base_cfg["max_tokens"])),
+            context_length=int(s[f"{p}_context_length"]) if f"{p}_context_length" in s else base_cfg.get("context_length"),
             is_active=(active == p),
         )
 
@@ -148,6 +152,7 @@ async def update_provider_settings(
         "timeout": (f"{provider}_timeout", float),
         "max_retries": (f"{provider}_max_retries", int),
         "max_tokens": (f"{provider}_max_tokens", int),
+        "context_length": (f"{provider}_context_length", int),
     }
 
     updated = []

@@ -35,7 +35,7 @@ class LLMClient:
         self.timeout = config["timeout"]
         self.max_retries = config["max_retries"]
         self.max_tokens = config.get("max_tokens", 2048)
-        self._detected_context_length: Optional[int] = None  # populated on first 400 context-limit error
+        self.context_length: int = config.get("context_length", 4096)  # from DB; used to cap output tokens
 
         # Validate base_url format
         if not self.base_url.startswith(('http://', 'https://')):
@@ -144,22 +144,21 @@ class LLMClient:
         normalized_messages = self._normalize_messages(messages)
 
         if self.provider == "vllm":
-            # Use detected context length (from a prior 400 response) or env var default
-            MODEL_CONTEXT = self._detected_context_length or int(os.environ.get("MPROOF_VLLM_CONTEXT_LENGTH", "8192"))
-            SAFETY_MARGIN = 100  # Buffer for tokenization differences
+            # context_length comes from DB setting (vllm_context_length); auto-correct updates it on 400
+            MODEL_CONTEXT = self.context_length
+            SAFETY_MARGIN = 100
 
             input_tokens = self._estimate_input_tokens(normalized_messages)
             available_tokens = MODEL_CONTEXT - input_tokens - SAFETY_MARGIN
 
-            # JSON responses can be large; use the full available budget
-            max_cap = available_tokens if json_mode else 2048
             if available_tokens <= 0:
                 safe_max_tokens = 50
             else:
-                safe_max_tokens = min(available_tokens, max_cap)
+                # Respect configured max_tokens but never exceed what the model can fit
+                safe_max_tokens = min(self.max_tokens, available_tokens)
                 safe_max_tokens = max(safe_max_tokens, 50)
 
-            logger.info(f"vLLM request: input ~{input_tokens} tokens, available ~{available_tokens}, max_tokens={safe_max_tokens}, json_mode={json_mode}")
+            logger.info(f"vLLM request: input ~{input_tokens} tokens, context={MODEL_CONTEXT}, available ~{available_tokens}, max_tokens={safe_max_tokens}")
             payload: Dict[str, Any] = {
                 "model": self.model,
                 "messages": normalized_messages,
@@ -304,10 +303,10 @@ class LLMClient:
                             f"Context limit auto-correct: model_ctx={actual_ctx}, "
                             f"input_tokens={actual_input}, retrying with max_tokens={corrected}"
                         )
-                        # Cache so future calls don't hit 400 again
-                        if self._detected_context_length != actual_ctx:
-                            self._detected_context_length = actual_ctx
-                            logger.info(f"Cached model context length: {actual_ctx} tokens")
+                        # Update in-memory context length so future calls don't hit 400 again
+                        if self.context_length != actual_ctx:
+                            self.context_length = actual_ctx
+                            logger.info(f"Auto-corrected context_length to {actual_ctx} tokens (configure vllm_context_length in settings to avoid this)")
                         payload = {**payload, "max_tokens": corrected}
                         continue  # retry with corrected payload
                     raise LLMClientError(f"LLM request rejected (400): {error_body}")
