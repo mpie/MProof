@@ -26,6 +26,10 @@ function stageLabel(stage?: string): string {
   if (!stage) return '';
   const m = stage.match(/^extracting_metadata_(?:selecting|chunk)_(\d+)_(?:of_)?(\d+)/);
   if (m) return `Extractie (${m[1]}/${m[2]})`;
+  const mChunk = stage.match(/^extracting_metadata_llm_chunk_(\d+)_of_(\d+)$/);
+  if (mChunk) return `Extractie (${mChunk[1]}/${mChunk[2]})`;
+  const mSel = stage.match(/^extracting_metadata_llm_selected_(\d+)_of_\d+_chunks$/);
+  if (mSel) return `Extractie: ${mSel[1]} chunks geselecteerd`;
   const map: Record<string, string> = {
     sniffing: 'Bestand inspecteren',
     extracting_text: 'Tekst extraheren (OCR)',
@@ -101,7 +105,11 @@ export default function Dashboard() {
   const { data: recentDocs } = useQuery({
     queryKey: ['documents-recent'],
     queryFn: () => listDocuments(undefined, undefined, 20, 0),
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const data = (query.state.data as DocumentListResponse | undefined);
+      const hasProcessing = data?.documents.some(d => d.status === 'processing' || d.status === 'queued');
+      return hasProcessing ? false : 5000;
+    },
     structuralSharing: (old: unknown, n: unknown) => {
       const o = old as DocumentListResponse | undefined;
       const nw = n as DocumentListResponse;
@@ -112,7 +120,15 @@ export default function Dashboard() {
         documents: nw.documents.map(d => {
           const prev = map.get(d.id);
           if (!prev || d.status === 'done' || d.status === 'error') return d;
-          return { ...d, doc_type_slug: d.doc_type_slug ?? prev.doc_type_slug, doc_type_confidence: d.doc_type_confidence ?? prev.doc_type_confidence };
+          const isProcessing = d.status === 'processing' || d.status === 'queued';
+          const keepProgress = isProcessing && prev.progress != null && prev.progress > (d.progress ?? 0);
+          return {
+            ...d,
+            doc_type_slug: d.doc_type_slug ?? prev.doc_type_slug,
+            doc_type_confidence: d.doc_type_confidence ?? prev.doc_type_confidence,
+            progress: keepProgress ? prev.progress : d.progress,
+            stage: keepProgress ? prev.stage : d.stage,
+          };
         }),
       };
     },
@@ -352,7 +368,8 @@ export default function Dashboard() {
                       </span>
                     )}
                     {doc.risk_score != null && (
-                      <span className={`text-[10px] font-bold tabular-nums ${riskStyle(doc.risk_score).text}`}>
+                      <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold tabular-nums ${riskStyle(doc.risk_score).text}`} title="Fraude risico score">
+                        <FontAwesomeIcon icon={faShieldAlt} className="w-2.5 h-2.5" />
                         {doc.risk_score}%
                       </span>
                     )}
@@ -533,7 +550,8 @@ function EmptyState({ docs, onSelect }: { docs: Document[]; onSelect: (id: numbe
                     <span className="text-[#22d3d3] text-[10px]">{fmtType(doc.doc_type_slug)}</span>
                   )}
                   {doc.risk_score != null && (
-                    <span className={`text-[10px] font-bold ${riskStyle(doc.risk_score).text}`}>
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold ${riskStyle(doc.risk_score).text}`} title="Fraude risico score">
+                      <FontAwesomeIcon icon={faShieldAlt} className="w-2.5 h-2.5" />
                       {doc.risk_score}%
                     </span>
                   )}
@@ -562,11 +580,25 @@ function ProcessingPanel({ doc, step }: { doc: Document; step: number }) {
   const pct = isQueued ? 0 : Math.round(doc.progress || 0);
 
   return (
-    <div className="flex items-center justify-center p-6 sm:p-10 min-h-full">
-      <div className="glass-card w-full max-w-xs p-6">
+    <div className="flex items-start sm:items-center justify-center pt-4 px-3 pb-4 sm:p-8">
+      <div className="glass-card w-full max-w-sm p-5">
 
-        {/* Accent bar */}
-        <div className="h-0.5 w-16 rounded-full bg-gradient-to-r from-[#22d3d3] via-[#FFC1F3] to-[#FCE2CE] mb-5 opacity-70" />
+        {/* Orbit animation */}
+        <div className="flex justify-center mb-5">
+          <div className="relative w-16 h-16 flex items-center justify-center">
+            <div className="absolute w-12 h-12 rounded-full border border-[#22d3d3]/30 ai-pulse-ring" />
+            <div className="w-3.5 h-3.5 rounded-full bg-[#22d3d3] ai-node-pulse" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="ai-orbit-1"><div className="w-1.5 h-1.5 rounded-full bg-[#22d3d3] shadow-[0_0_5px_#22d3d3]" /></div>
+            </div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="ai-orbit-2"><div className="w-1 h-1 rounded-full bg-[#FFC1F3] shadow-[0_0_4px_#FFC1F3]" /></div>
+            </div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="ai-orbit-3"><div className="w-1 h-1 rounded-full bg-blue-400 shadow-[0_0_4px_rgba(96,165,250,0.8)]" /></div>
+            </div>
+          </div>
+        </div>
 
         {/* Filename */}
         <p className="text-slate-800 text-sm font-semibold truncate mb-0.5">{doc.original_filename}</p>

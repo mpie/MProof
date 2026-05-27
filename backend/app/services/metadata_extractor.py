@@ -57,6 +57,21 @@ class MetadataExtractorMixin:
                 })
             if "bouwjaar" in combined or "construction year" in combined or "built year" in combined:
                 terms.update({"bouw jaar", "bouwjaar", "construction year", "built", "built year"})
+            if "energielabel" in combined or "energie label" in combined:
+                terms.update({"energielabel", "energie label", "energieklasse",
+                               "energieprestatie", "energie certificaat", "epc"})
+            if "exploitatielasten" in combined or "exploitatie lasten" in combined:
+                terms.update({"exploitatielasten", "totale exploitatielasten",
+                               "exploitatiekosten", "exploitatie kosten",
+                               "kapitalisatiefactoren", "bar nar kapitalisatie",
+                               "barinar kapitalisatie"})
+            if "locatie_beoordeling" in combined or "locatie beoordeling" in combined:
+                terms.update({"ligging", "locatie", "beoordeling locatie", "locatiebeoordeling",
+                               "bereikbaarheid", "omgeving", "locatie beoordeling"})
+            if "vastgoedtype" in combined or "type vastgoed" in combined or "vastgoed type" in combined:
+                terms.update({"vastgoedtype", "type vastgoed", "bedrijfsruimte",
+                               "gebruik", "bestemming", "object type", "soort vastgoed",
+                               "bedrijfsverzamelgebouw", "appartementsrecht"})
 
             term_config[field_key] = {
                 "key": key_term,
@@ -413,7 +428,7 @@ class MetadataExtractorMixin:
         top_n: int = 0,
         per_field_top_n: int = 2,
         threshold: int = 70,
-        max_context_chars: int = 3500,
+        max_context_chars: int = 20000,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Select relevant chunks before metadata LLM extraction."""
         field_terms = self._build_field_search_terms(fields)
@@ -428,7 +443,9 @@ class MetadataExtractorMixin:
                 selected_nums.add(scored["chunk_num"])
                 selected_reasons.setdefault(scored["chunk_num"], []).append("top_overall")
 
+        fields_covered: Set[str] = set()
         for field_key in field_terms.keys():
+            # Tier 1: strict — label AND concrete value found near label
             field_scored = [
                 scored for scored in scored_chunks
                 if field_key in scored["field_matches"]
@@ -444,8 +461,10 @@ class MetadataExtractorMixin:
                 )[:per_field_top_n]:
                     selected_nums.add(scored["chunk_num"])
                     selected_reasons.setdefault(scored["chunk_num"], []).append(f"best_for_field:{field_key}")
+                fields_covered.add(field_key)
                 continue
 
+            # Tier 2: regex fallback
             regex_fallback = [
                 scored for scored in scored_chunks
                 if field_key in scored["field_matches"]
@@ -460,6 +479,41 @@ class MetadataExtractorMixin:
                 best = max(regex_fallback, key=lambda item: (item["field_matches"][field_key]["score"], -item["chunk_num"]))
                 selected_nums.add(best["chunk_num"])
                 selected_reasons.setdefault(best["chunk_num"], []).append(f"regex_fallback_for_field:{field_key}")
+                fields_covered.add(field_key)
+
+        # Tier 3: label-only fallback — for fields not covered by tiers 1/2, pick the best
+        # chunk that at least has the label, even without a confirmed concrete value nearby.
+        for field_key in field_terms.keys():
+            if field_key in fields_covered:
+                continue
+            label_only = [
+                scored for scored in scored_chunks
+                if field_key in scored["field_matches"]
+                and scored["field_matches"][field_key].get("has_label_context")
+                and scored["field_matches"][field_key].get("label_score", 0) > 0
+            ]
+            if label_only:
+                best = max(label_only, key=lambda item: (-item["field_matches"][field_key]["score"], -item["chunk_num"]))
+                selected_nums.add(best["chunk_num"])
+                selected_reasons.setdefault(best["chunk_num"], []).append(f"label_only_fallback_for_field:{field_key}")
+
+        # Tier 4: fill remaining budget with highest-scoring chunks not yet selected.
+        # This ensures the LLM sees enough context even when keyword matching is sparse.
+        current_chars = sum(len(str(c.get("text") or "")) for c in chunks if c["chunk_num"] in selected_nums)
+        remaining_budget = max_context_chars - current_chars
+        if remaining_budget > 800:
+            unselected_by_score = sorted(
+                [s for s in scored_chunks if s["chunk_num"] not in selected_nums],
+                key=lambda s: (-s["score"], s["chunk_num"]),
+            )
+            for scored in unselected_by_score:
+                chunk_text = str(next((c.get("text") or "" for c in chunks if c["chunk_num"] == scored["chunk_num"]), ""))
+                chunk_len = len(chunk_text)
+                if chunk_len == 0 or remaining_budget - chunk_len < 0:
+                    continue
+                selected_nums.add(scored["chunk_num"])
+                selected_reasons.setdefault(scored["chunk_num"], []).append("fill_budget_by_score")
+                remaining_budget -= chunk_len
 
         if not selected_nums and scored_chunks:
             concrete_scored = [
@@ -1018,16 +1072,21 @@ class MetadataExtractorMixin:
                     )
                     logger.info("Starting single-call selected-chunk metadata extraction")
                     try:
-                        # Tick progress 68→79 while LLM responds
+                        # Tick progress 68→78 while LLM responds; simulate per-chunk progress
                         _tick_pct = [68]
+                        _tick_count = [0]
+                        _n_selected = len(selected_chunks)
+                        _max_ticks = 5
                         async def _llm_ticker():
                             import asyncio as _aio
                             while True:
                                 await _aio.sleep(2.5)
                                 if _tick_pct[0] < 78:
                                     _tick_pct[0] += 2
+                                    _tick_count[0] += 1
+                                    simulated = min(_n_selected, max(1, round(_tick_count[0] / _max_ticks * _n_selected)))
                                     try:
-                                        await progress_callback(document.id, _tick_pct[0], f"extracting_metadata_llm_selected_{len(selected_chunks)}_of_{total_chunks}_chunks")
+                                        await progress_callback(document.id, _tick_pct[0], f"extracting_metadata_llm_chunk_{simulated}_of_{_n_selected}")
                                     except Exception:
                                         pass
                         _ticker = asyncio.create_task(_llm_ticker()) if progress_callback else None
