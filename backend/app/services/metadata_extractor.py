@@ -1635,13 +1635,27 @@ class MetadataExtractorMixin:
                     for s in spans
                 ]
 
+        def _find_with_boundary(text: str, needle: str) -> int:
+            """Find needle with word-boundary check. Returns start index or -1."""
+            start = 0
+            while True:
+                idx = text.find(needle, start)
+                if idx < 0:
+                    return -1
+                before_ok = idx == 0 or not text[idx - 1].isalnum()
+                after_ok = idx + len(needle) >= len(text) or not text[idx + len(needle)].isalnum()
+                if before_ok and after_ok:
+                    return idx
+                start = idx + 1
+
         # Then search ALL pages for ALL field values to find additional occurrences
         for key, value in evidence_data.data.items():
             if key not in expected_field_keys or value is None:
                 continue
 
             value_str = str(value).strip()
-            if not value_str:
+            # Skip values too short to match reliably (single letters/digits match everywhere)
+            if len(value_str) < 5:
                 continue
 
             # Get existing evidence pages for this field
@@ -1662,29 +1676,30 @@ class MetadataExtractorMixin:
                 page_text_normalized = ' '.join(page_text.split())
                 found_snippet = None
 
-                # Try various matching strategies
-                if value_str in page_text:
+                # Try various matching strategies (word-boundary aware)
+                if _find_with_boundary(page_text, value_str) >= 0:
                     found_snippet = value_str
-                elif value_str_normalized in page_text_normalized:
+                elif _find_with_boundary(page_text_normalized, value_str_normalized) >= 0:
                     found_snippet = value_str_normalized
-                elif value_str.lower() in page_text.lower():
-                    start_pos = page_text.lower().find(value_str.lower())
-                    found_snippet = page_text[start_pos:start_pos + len(value_str)]
                 else:
-                    # Try numeric formats
-                    if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '').replace(',', '').isdigit()):
-                        try:
-                            num_value = float(str(value).replace(',', '.')) if isinstance(value, str) else float(value)
-                            european_format = f"{num_value:,.0f}".replace(',', '.')
-                            euro_format = f"€ {european_format}"
-                            euro_format_alt = f"€{european_format}"
+                    idx = _find_with_boundary(page_text.lower(), value_str.lower())
+                    if idx >= 0:
+                        found_snippet = page_text[idx:idx + len(value_str)]
+                    else:
+                        # Try numeric formats
+                        if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace('.', '').replace(',', '').isdigit()):
+                            try:
+                                num_value = float(str(value).replace(',', '.')) if isinstance(value, str) else float(value)
+                                european_format = f"{num_value:,.0f}".replace(',', '.')
+                                euro_format = f"€ {european_format}"
+                                euro_format_alt = f"€{european_format}"
 
-                            for fmt in [european_format, euro_format, euro_format_alt, f"{int(num_value)}"]:
-                                if fmt in page_text or fmt in page_text_normalized:
-                                    found_snippet = fmt
-                                    break
-                        except (ValueError, TypeError):
-                            pass
+                                for fmt in [european_format, euro_format, euro_format_alt, f"{int(num_value)}"]:
+                                    if len(fmt) >= 5 and (_find_with_boundary(page_text, fmt) >= 0 or _find_with_boundary(page_text_normalized, fmt) >= 0):
+                                        found_snippet = fmt
+                                        break
+                            except (ValueError, TypeError):
+                                pass
 
                 if found_snippet:
                     merged_evidence[key].append({
